@@ -53,7 +53,7 @@ class DynamicHotKeyRedisTest {
     @AfterEach
     void tearDown() {
         if (context != null) {
-            cache.clear();
+            //cache.clear();
             context.close();
         }
     }

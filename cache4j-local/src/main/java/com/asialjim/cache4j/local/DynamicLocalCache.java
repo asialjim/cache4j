@@ -113,6 +113,11 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     }
 
     @Override
+    public boolean accepts(CacheKey key) {
+        return hotKeys.containsKey(key);
+    }
+
+    @Override
     public boolean coordinationReady() {
         return dynamic.coordination() != LocalCacheSpec.Coordination.GLOBAL || coordinator != null;
     }
@@ -258,8 +263,9 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
         if (!hotKeys.containsKey(key)) {
             // 冷 key 不落本地：写不计频次，也就不可能因为它"热"。需要 read-your-write 请用 STATIC。
+            // 日志由编排层按"调用方写入"还是"内部回填"分别记录（见 DefaultTwoLevelCache），
+            // 这里只负责计数，避免把读路径的回填误报成"写"。
             counters.increment(CacheCounters.Counter.DYNAMIC_PUT_DISCARDED);
-            LOG.debug(spec.namespace(), "写", () -> "冷 key 不落本地（DYNAMIC），key=" + key.masked());
             return;
         }
         Duration effective = min(ttl, dynamic.hotTtl());

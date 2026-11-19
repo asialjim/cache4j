@@ -85,6 +85,19 @@ class DynamicLocalCacheTest {
     }
 
     @Test
+    @DisplayName("accepts：只有已升热的 key 才会被本地接受写入")
+    void acceptsOnlyHotKeys() {
+        LocalCache<String> cache = dynamic(LocalCacheSpec.DynamicSpec.defaults(), null);
+        CacheKey hot = key("hot");
+
+        assertFalse(cache.accepts(hot), "冷 key 不应被接受");
+        for (int i = 0; i < 5; i++) {
+            cache.access(hot);
+        }
+        assertTrue(cache.accepts(hot), "升热后应被接受");
+    }
+
+    @Test
     @DisplayName("未达阈值的 key 不落本地")
     void coldKeysStayOut() {
         LocalCache<String> cache = dynamic(LocalCacheSpec.DynamicSpec.defaults(), null);

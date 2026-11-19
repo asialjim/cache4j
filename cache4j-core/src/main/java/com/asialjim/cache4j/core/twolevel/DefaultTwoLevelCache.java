@@ -191,7 +191,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                 return false;
             }
             count(CacheCounters.Counter.PUT);
-            putLocal(cacheKey, LocalEntry.hit(value, revision.get()), effective);
+            putLocal(cacheKey, LocalEntry.hit(value, revision.get()), effective, "写");
             return true;
         } catch (RuntimeException e) {
             count(CacheCounters.Counter.CENTRAL_ERROR);
@@ -399,17 +399,34 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                     + "，本地版本=" + current.revision());
             return;
         }
-        putLocal(cacheKey, entry, entry.isNegative() ? centralSpec.nullTtl() : null);
+        putLocal(cacheKey, entry, entry.isNegative() ? centralSpec.nullTtl() : null, "回填");
     }
 
-    private void putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective) {
+    /**
+     * 写本地（调用方写入与内部回填共用）。
+     *
+     * <p>日志语义靠 {@code process} 区分：调用方写入记 {@code 写}，读路径回填记 {@code 回填} ——
+     * 两者都会让"冷 key 不落本地"，但这是两件不同的事，不能都写成"写"。</p>
+     *
+     * @param cacheKey   key
+     * @param entry      条目
+     * @param effective  生效 TTL（可空）
+     * @param process    过程名：{@code 写} 或 {@code 回填}
+     */
+    private void putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective, String process) {
         if (!local.available()) {
             return;
         }
         Duration localTtl = localSpec.ttl();
         Duration chosen = effective != null && localTtl != null && effective.compareTo(localTtl) < 0
                 ? effective : localTtl;
-        local.put(cacheKey, entry, chosen);
+
+        boolean accepted = local.accepts(cacheKey);
+        local.put(cacheKey, entry, chosen);          // 是否真的写入由本地实现决定（DYNAMIC 会拒绝冷 key）
+        if (!accepted) {
+            LOG.debug(cacheKey.namespace(), process, () -> "冷 key 不落本地（DYNAMIC），key="
+                    + cacheKey.masked() + "，strategy=" + localSpec.strategy());
+        }
     }
 
     // ------------------------------------------------------------------ 写路径
@@ -429,7 +446,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             return Lookup.hit(value);
         }
         count(CacheCounters.Counter.PUT);
-        putLocal(cacheKey, LocalEntry.hit(value, revision), effective);
+        putLocal(cacheKey, LocalEntry.hit(value, revision), effective, "写");
         return Lookup.hit(value);
     }
 
@@ -439,7 +456,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         }
         try {
             long revision = central.putNegativeAndGetRevision(cacheKey, centralSpec.nullTtl());
-            putLocal(cacheKey, LocalEntry.negative(revision), centralSpec.nullTtl());
+            putLocal(cacheKey, LocalEntry.negative(revision), centralSpec.nullTtl(), "写");
             return Lookup.negative();
         } catch (RuntimeException e) {
             count(CacheCounters.Counter.CENTRAL_ERROR);
@@ -456,7 +473,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             try {
                 long revision = central.putNegativeAndGetRevision(cacheKey, effective);
                 count(CacheCounters.Counter.PUT);
-                putLocal(cacheKey, LocalEntry.negative(revision), effective);
+                putLocal(cacheKey, LocalEntry.negative(revision), effective, "写");
                 return;
             } catch (RuntimeException e) {
                 count(CacheCounters.Counter.CENTRAL_ERROR);

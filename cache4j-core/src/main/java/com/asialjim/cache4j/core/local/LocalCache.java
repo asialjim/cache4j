@@ -90,6 +90,19 @@ public interface LocalCache<V> extends Cache<CacheKey, LocalEntry<V>> {
     LocalCacheSpec spec();
 
     /**
+     * 本地是否会接受对该 key 的写入（<strong>不实际写入</strong>）。
+     *
+     * <p>编排层用它来准确描述"本地拒绝写入"的日志语义：
+     * 调用方写入与内部回填是两件事，日志里不能都写成"写"。</p>
+     *
+     * @param key key
+     * @return 是否会被接受；默认等于 {@link #available()}
+     */
+    default boolean accepts(CacheKey key) {
+        return available();
+    }
+
+    /**
      * 热 key 协调是否已就绪。
      *
      * <p>{@code DYNAMIC + coordination=GLOBAL} 且未提供 {@code HotKeyCoordinator} 时必须返回

@@ -1191,6 +1191,9 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格
 - **主题**：缓存相关日志用 `namespace`；全局/装配/关闭类日志用 `cache4j`；
 - **子过程**：固定词表 —— 装配 / 读 / 写 / 失效 / 清空 / 对账 / 回填 / 回源 / 热key /
   空值缓存 / 编解码 / key编码 / 降级 / 关闭；
+- **`写` 只用于调用方发起的写操作**（`put` / `putIfAbsent` / 负缓存写）。内部写入必须用
+  `回填`（读路径把中央值回写本地）等字眼 —— 同一次"本地拒绝写入"在两条路径上含义完全不同，
+  混用会让人误以为业务在写缓存；
 - **具体信息**：不打印原始 key，一律 `CacheKey#masked()`（`namespace#hash`）。
 
 示例：
@@ -1199,6 +1202,8 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格
 [cache4j]-装配-缓存装配完成，strategy=STATIC，localTtl=PT1M，centralTtl=PT10M，coordinator=none
 [user:detail]-对账-对账完成，清除失效副本 1 条
 [user:detail]-读-中央读取失败，按未命中降级，key=user:detail#38e3649f，原因=CacheException:central down
+[user:detail]-写-冷 key 不落本地（DYNAMIC），key=user:detail#38e3649f，strategy=DYNAMIC
+[user:detail]-回填-冷 key 不落本地（DYNAMIC），key=user:detail#38e3649f，strategy=DYNAMIC
 [product:hot]-热key-升热，来源=本地阈值，key=product:hot#1befe33d，估计频次=5，热点集合大小=1
 [product:hot]-热key-降热，来源=中央 COOLING，key=product:hot#1befe33d，进入冷却=PT30S，热点集合大小=0
 [product:hot]-热key-冷却期内拒绝升热，key=product:hot#1befe33d，估计频次=11，剩余冷却=1991ms
@@ -1216,7 +1221,8 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格
 | 缓存装配、缓存关闭、provider 关闭 | **INFO** | 每个缓存一行 + 一行汇总 |
 | 对账轮次结果（清除条数） | **DEBUG** | 每轮一次 |
 | 升热 / 降热 | **DEBUG** | 每次；含来源（本地阈值 / 中央 HOT / 中央 COOLING）与冷却时长 |
-| 冷 key 写被丢弃（`DYNAMIC`） | **DEBUG** | 每次；提示"写不计频次" |
+| 冷 key 写入被丢弃（`DYNAMIC`，调用方写入） | **DEBUG** | 每次；子过程用 `写` |
+| 冷 key 回填被拒绝（`DYNAMIC`，读路径回填） | **DEBUG** | 每次；子过程用 `回填`，不得写成"写" |
 | 回填被丢弃（版本更旧） | **DEBUG** | 每次；含读到的版本与本地版本 |
 | 热 key 上报批次 | **DEBUG** | 每次；含分区号与上报 key 数 |
 | 缓存命中 / 未命中 | **不打日志** | 热路径，靠 `CacheStats` 统计 |

@@ -170,6 +170,13 @@ public abstract class LocalCacheContractTest {
     }
 
     @Test
+    @DisplayName("STATIC 接受任意 key 的写入（accepts 恒为 true）")
+    void acceptsAnyKeyForStatic() {
+        LocalCache<String> cache = newCache(100);
+        assertTrue(cache.accepts(key("a")), implementation());
+    }
+
+    @Test
     @DisplayName("NONE 策略：不存值、不参与版本对账")
     void noOpHasNoState() {
         LocalCache<String> cache = new NoOpLocalCache<>(LocalCacheSpec.noLocal("user:detail"));
