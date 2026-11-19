@@ -47,11 +47,12 @@ public interface CentralCache<V> extends Cache<CacheKey, V> {
     @Override
     void evict(CacheKey key);
 
-    /** 批量取版本（对账用）：顺序与入参一致，缺失为 null */
-    List<byte[]> revisions(Collection<CacheKey> keys);
-
-    /** 批量删掉版本 field（对账时清理已按 TTL 过期、但 field 还留着的死版本） */
-    void dropRevisions(Collection<CacheKey> keys);
+    /**
+     * 批量取版本（对账用）：只取版本、不取数据值。
+     * 返回 map 中缺失的 key 表示中央已不再持有它（删除 / 清空 / 数据已按 TTL 过期）。
+     * 存储实现应在读取时顺手清理自己的过期元数据（如 Redis 的 __rev 死 field），对编排层透明。
+     */
+    Map<CacheKey, Long> revisions(Collection<CacheKey> keys);
 
     /** 轻量探活；不抛异常，失败返回 false */
     boolean ping();
@@ -873,7 +874,6 @@ public final class SpringRedisCommands implements RedisCommands {
 - 版本 field 缺失时返回 `(0, 0)`；`evict` 后该 field 消失（删除对账可见）；
 - `clear` 后版本表消失，后续读返回 revision `0`；
 - `revisions(keys)` 批量取版本：顺序一致、缺失为 `null`、不拉数据值；
-- `dropRevisions(keys)` 只删指定 field，不影响其他 key 的版本与数据 key。
 
 ### 10.2 Redis 语义专项（`cache4j-central-redis`，无客户端）
 

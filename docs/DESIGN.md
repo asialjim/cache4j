@@ -651,7 +651,7 @@ Lookup<V> lookup(K key) {
         if (versionGate.due(ck.namespace(), now)
                 && versionGate.tryAcquire(ck.namespace())) {
             try {
-                reconcile(ck.namespace(), now);   // HMGET 本地全部 key → 清除不一致副本
+                reconcile(ck.namespace());        // 批量取版本 → 清除不一致副本
                 versionGate.reschedule(ck.namespace(), now);
             } catch (RuntimeException e) {
                 versionGate.backoff(ck.namespace(), now);        // 不推进任何版本，只推迟下次
@@ -711,46 +711,30 @@ Lookup<V> lookup(K key) {
 
 ```java
 /**
- * 一次 HMGET 把该命名空间下「本地已知的全部 key」的版本取回来，逐条比对；
- * 顺手清掉中央已按 TTL 过期、但 field 还没被删的死版本。
+ * 一次批量取版本，把该命名空间下「本地已知的全部 key」的版本取回来，逐条比对。
+ * 版本表自身的清理（TTL 死 field）由存储实现负责，对这里透明。
  */
-void reconcile(String namespace, long now) {
+void reconcile(String namespace) {
     if (!local.available()) return;
 
-    Set<CacheKey> localKeys = local.keys();        // 本地当前条目（≤ maxSize）
+    Set<CacheKey> localKeys = local.keys();          // 本地当前条目（≤ maxSize）
     if (localKeys.isEmpty()) return;
 
     for (List<CacheKey> batch : partition(localKeys, version.reconcileBatchSize)) {  // 默认 1000
-        List<byte[]> raw = central.revisions(batch);   // HMGET __rev field1 field2 ...
-        List<CacheKey> deadFields = new ArrayList<>();
+        Map<CacheKey, Long> latest = central.revisions(batch);   // 只取版本，不取数据值
 
-        for (int i = 0; i < batch.size(); i++) {
-            CacheKey ck = batch.get(i);
-            byte[] v = raw.get(i);
-
-            if (v == null) {                  // 中央没有这个 field → 该 key 已被删除
+        for (CacheKey ck : batch) {
+            Long revision = latest.get(ck);
+            if (revision == null) {                  // 中央已不再持有（删除 / 清空 / 数据过期）
                 local.evict(ck);
                 stats.versionInvalidation();
                 continue;
             }
-
-            RevAndExpire re = decodeRevision(v);        // "<revision>|<expireAtMillis>"
-            if (re.expireAt() > 0 && re.expireAt() <= now) {   // 数据已过期，只是 field 没清
-                deadFields.add(ck);
-                local.evict(ck);
-                continue;
-            }
-
             LocalEntry<V> e = local.entry(ck);
-            if (e != null && e.revision() != re.revision()) {  // 版本变了
+            if (e != null && e.revision() != revision) {   // 版本变了
                 local.evict(ck);
                 stats.versionInvalidation();
             }
-        }
-
-        if (!deadFields.isEmpty()) {
-            central.dropRevisions(deadFields);            // 批量 HDEL 死 field
-            stats.deadFieldDropped(deadFields.size());
         }
     }
 }
@@ -764,7 +748,7 @@ void reconcile(String namespace, long now) {
 - 为什么不在读路径上逐 key 校验：那样 I/O 次数 = 活跃 key 数 ×（1/`checkInterval`），而批量对账是"每个命名空间每 `checkInterval` 一次"，且能覆盖到冷 key；
 - 没有访问就没有对账，也没有定时任务；`version.checkInterval` 是"整个命名空间最大不一致窗口"的上界，不是调度周期。
 
-> 对账同时承担了**版本表 cleanup**：`evict` 会 `HDEL` field，所以删除不留残余；而数据 key 因 TTL 自然过期时，`expireAt` 就在 field 的 value 里，对账一次就能识别并 `HDEL`。于是 `HLEN` 收敛到"存活 key 数 + 一个对账周期的滞后"。
+> **版本表 cleanup 属于存储实现**：`evict` 会 `HDEL` field，删除不留残余；数据 key 因 TTL 自然过期时，`expireAt` 就在 field 的 value 里，存储实现在返回 `revisions(...)` 时顺手 `HDEL` 即可（计数记在存储侧 `deadFieldDropped`）。对编排层来说，这一切都表现为"该 key 不在返回的 map 里"，于是 `HLEN` 收敛到"存活 key 数 + 一个对账周期的滞后"。
 
 > 对账是**抽查**而不是每次读都校验：一个命名空间在 `version.checkInterval` 内只付一次（分批的）中央往返，其余访问全速读本地。`STATIC` / `DYNAMIC` 必须配置正的间隔，不提供"关闭版本机制"的选项，否则长 TTL 配置缓存无法感知变更。
 

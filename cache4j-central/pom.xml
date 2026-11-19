@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.asialjim</groupId>
+        <artifactId>cache4j</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>cache4j-central</artifactId>
+    <packaging>jar</packaging>
+    <name>cache4j-central</name>
+    <description>中央缓存 SPI + 内存参考实现（仅供测试与单机），不认识 Redis 与任何客户端</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.asialjim</groupId>
+            <artifactId>cache4j-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

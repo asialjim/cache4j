@@ -12,7 +12,7 @@
 
 核心模块不依赖 Spring、Solon 或任何运行时框架；框架适配放在独立的 `cache4j-spring`、`cache4j-solon` 模块中。
 
-> 当前状态：**设计阶段**，本仓库只有文档，尚未开始编码。完整设计见：
+> 当前状态：**P1 骨架已落地**——`cache4j-core`（契约 + `TwoLevelCache` 编排）、`cache4j-local`（`NONE`/`STATIC`/`DYNAMIC` + 分段 LRU）、`cache4j-central`（内存参考实现 + 热 key 协调）可编译、73 个测试全绿；Redis 与 Spring / Solon 适配尚未开始。完整设计见：
 >
 > - [总体设计](docs/DESIGN.md)
 > - [本地缓存与三种策略](docs/LOCAL.md)
