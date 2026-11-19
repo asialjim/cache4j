@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.core.log;
 
+import com.asialjim.cache4j.core.CacheKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -57,9 +58,9 @@ public final class CacheLogger {
      */
     public static final class Subject {
         /** 编排门面（`DefaultTwoLevelCache`）。 */
-        public static final String TWO_LEVEL = "二级缓存";
-        /** 本地存储实现（HashMap / Caffeine）。 */
-        public static final String LOCAL = "本地缓存";
+        public static final String TWO_LEVEL = "统一中央缓存";
+        /** STATIC 本地存储（HashMap / Caffeine）。 */
+        public static final String STATIC_LOCAL = "静态本地缓存";
         /** DYNAMIC 装饰器（热点门控、上报、冷却）。 */
         public static final String DYNAMIC_LOCAL = "动态本地缓存";
         /** 缓存装配与生命周期（`TwoLevelCacheManager` / Spring 配置）。 */
@@ -76,6 +77,20 @@ public final class CacheLogger {
         public static final String SPRING_BRIDGE = "Spring缓存桥接";
         /** 日志组件自检。 */
         public static final String LOG = "日志";
+
+        /**
+         * 按本地策略给出本地层组件名。
+         *
+         * @param strategy 本地策略
+         * @return {@code 静态本地缓存} / {@code 动态本地缓存} / {@code 统一中央缓存}（NONE）
+         */
+        public static String localOf(com.asialjim.cache4j.core.local.LocalStrategy strategy) {
+            return switch (strategy) {
+                case STATIC -> STATIC_LOCAL;
+                case DYNAMIC -> DYNAMIC_LOCAL;
+                case NONE -> TWO_LEVEL;
+            };
+        }
 
         private Subject() {
         }
@@ -235,6 +250,125 @@ public final class CacheLogger {
         if (delegate.isDebugEnabled()) {
             delegate.debug(format(subject, process, detail.get()));
         }
+    }
+
+    /**
+     * 读操作日志：{@code [主题]-读-[key]-详细信息}。
+     *
+     * @param subject 主题（组件名）
+     * @param key     key（只输出 {@code namespace#hash}）
+     * @param detail  详细信息
+     */
+    public void read(String subject, CacheKey key, String detail) {
+        if (delegate.isDebugEnabled()) {
+            delegate.debug(formatRead(subject, key, detail));
+        }
+    }
+
+    /**
+     * 读操作日志（详情延迟构造）。
+     *
+     * @param subject 主题
+     * @param key     key
+     * @param detail  详细信息
+     */
+    public void read(String subject, CacheKey key, Supplier<String> detail) {
+        if (delegate.isDebugEnabled()) {
+            delegate.debug(formatRead(subject, key, detail.get()));
+        }
+    }
+
+    /**
+     * 写操作日志：{@code [主题]-写-[key]-详细信息}。
+     *
+     * @param subject 主题（组件名）
+     * @param key     key
+     * @param detail  详细信息
+     */
+    public void write(String subject, CacheKey key, String detail) {
+        if (delegate.isDebugEnabled()) {
+            delegate.debug(formatWrite(subject, key, detail));
+        }
+    }
+
+    /**
+     * 写操作日志（详情延迟构造）。
+     *
+     * @param subject 主题
+     * @param key     key
+     * @param detail  详细信息
+     */
+    public void write(String subject, CacheKey key, Supplier<String> detail) {
+        if (delegate.isDebugEnabled()) {
+            delegate.debug(formatWrite(subject, key, detail.get()));
+        }
+    }
+
+    /**
+     * 读操作告警（限流 30s）：{@code [主题]-读-[key]-详细信息}。
+     *
+     * @param subject 主题
+     * @param key     key
+     * @param detail  详细信息（延迟构造）
+     */
+    public void warnRead(String subject, CacheKey key, Supplier<String> detail) {
+        warnKeyOp(subject, "读", key, detail);
+    }
+
+    /**
+     * 写操作告警（限流 30s）：{@code [主题]-写-[key]-详细信息}。
+     *
+     * @param subject 主题
+     * @param key     key
+     * @param detail  详细信息（延迟构造）
+     */
+    public void warnWrite(String subject, CacheKey key, Supplier<String> detail) {
+        warnKeyOp(subject, "写", key, detail);
+    }
+
+    private void warnKeyOp(String subject, String operation, CacheKey key, Supplier<String> detail) {
+        if (!delegate.isWarnEnabled()) {
+            return;
+        }
+        // 限流按 (主题, 操作, namespace) 计：key 本身可能无限多，不能进限流 key
+        String throttleKey = nullSafe(subject) + '|' + operation + '|'
+                + (key == null ? "-" : key.namespace());
+        long now = System.nanoTime();
+        Long last = lastThrottledAt.get(throttleKey);
+        if (last != null && now - last < DEFAULT_THROTTLE_NANOS) {
+            return;
+        }
+        lastThrottledAt.put(throttleKey, now);
+        delegate.warn(formatKeyOp(subject, operation, key, detail.get()));
+    }
+
+    /**
+     * 读操作日志格式：{@code [主题]-读-[namespace#hash]-详细信息}。
+     *
+     * @param subject 主题
+     * @param key     key
+     * @param detail  详细信息
+     * @return 文本
+     */
+    public static String formatRead(String subject, CacheKey key, String detail) {
+        return formatKeyOp(subject, "读", key, detail);
+    }
+
+    /**
+     * 写操作日志格式：{@code [主题]-写-[namespace#hash]-详细信息}。
+     *
+     * @param subject 主题
+     * @param key     key
+     * @param detail  详细信息
+     * @return 文本
+     */
+    public static String formatWrite(String subject, CacheKey key, String detail) {
+        return formatKeyOp(subject, "写", key, detail);
+    }
+
+    private static String formatKeyOp(String subject, String operation, CacheKey key, String detail) {
+        return '[' + nullSafe(subject) + "]-" + operation + "-["
+                + (key == null ? "-" : key.masked()) + "]-" + nullSafe(detail);
     }
 
     /**

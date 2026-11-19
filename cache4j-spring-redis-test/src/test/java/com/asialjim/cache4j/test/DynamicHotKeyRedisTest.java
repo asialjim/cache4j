@@ -77,6 +77,15 @@ class DynamicHotKeyRedisTest {
         cache.lookup("k1");
         assertTrue(cache.stats().localHitCount() >= 1L, "升热后应命中本地");
         assertEquals(centralBefore, cache.stats().centralHitCount(), "本地命中不应再读中央");
+
+        // 热 key 的本地副本被清掉后：仍是热点，但这一次要硬读中央并回填
+        cache.local().evict(new com.asialjim.cache4j.core.CacheKey(NS, "s2:k1"));
+        assertEquals("v1", cache.lookup("k1").optional().orElseThrow());
+        assertEquals(centralBefore + 1L, cache.stats().centralHitCount(),
+                "热 key 本地 miss 时应硬读中央");
+        assertEquals(1L, hotKeyCount(), "本次读不应影响热点身份");
+        assertTrue(cache.local().containsKey(new com.asialjim.cache4j.core.CacheKey(NS, "s2:k1")),
+                "热 key 读中央后应回填本地");
     }
 
     @Test

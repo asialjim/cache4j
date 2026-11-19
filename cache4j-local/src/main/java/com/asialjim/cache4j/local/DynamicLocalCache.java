@@ -144,16 +144,16 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         boolean cooling = isCooling(key, now);
         if (cooling && freq >= dynamic.localHotThreshold()) {
             // 冷却期：频次够了也不许升热（抑制"降热→立刻又升热"的抖动）
-            LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "冷却期内拒绝升热，key=" + key.masked()
-                    + "，估计频次=" + freq + "，剩余冷却=" + cooldownRemainingMillis(key, now) + "ms");
+            LOG.read(CacheLogger.Subject.DYNAMIC_LOCAL, key, () -> "冷却期内拒绝升热，估计频次=" + freq
+                    + "，剩余冷却=" + cooldownRemainingMillis(key, now) + "ms");
         }
         if (!cooling && freq >= dynamic.localHotThreshold()) {
             addDelta(key);
             promote(key, freq, now);
             counters.increment(CacheCounters.Counter.PROMOTION);
             counters.increment(CacheCounters.Counter.LOCAL_PROMOTION);
-            LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "升热，来源=本地阈值，key=" + key.masked()
-                    + "，估计频次=" + freq + "，热点集合大小=" + hotKeys.size());
+            LOG.read(CacheLogger.Subject.DYNAMIC_LOCAL, key, () -> "触发热升，估计频次=" + freq
+                    + "，热点集合大小=" + hotKeys.size());
             return true;
         }
 
@@ -283,7 +283,8 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
 
     @Override
     public void evict(CacheKey key) {
-        forget(key);
+        // 只失效数据，不动热点身份：热点由"读频次"决定，与值是否新鲜无关。
+        // 因此失效后下一次读仍按热 key 处理（本地 miss 就硬读中央并回填）。
         delegate.evict(key);
     }
 

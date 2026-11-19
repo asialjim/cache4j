@@ -1182,30 +1182,69 @@ TwoLevelCache<String, User> cache = TwoLevelCache.<String, User>builder("user:de
 ### 7.2 日志
 
 **门面**：`org.slf4j`（`cache4j-core` 唯一的第三方依赖，只引 `slf4j-api`；实现由使用方提供，
-Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格式固定**：
+Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，格式分两类：
+
+#### 一、缓存读写日志：`[主题]-业务操作-[key]-详细信息`
+
+**业务操作只有 `读` 与 `写`**；key 单独成段，用 `namespace#hash`（不打印原始 key）。
+内部行为放在"详细信息"里（回填、触发热升…），不再单独占用"子过程"位。
 
 ```text
-[主题]-子过程-具体信息
+[动态本地缓存]-写-[it:hot:dynamic#25bae46a]-冷key，不落本地，仅写中央
+[动态本地缓存]-读-[it:hot:dynamic#25bae46a]-冷key，miss，硬读中央缓存
+[动态本地缓存]-读-[it:hot:dynamic#25bae46a]-冷key，miss，硬读中央缓存
+[动态本地缓存]-读-[it:hot:dynamic#25bae46a]-触发热升，估计频次=3，热点集合大小=1
+[动态本地缓存]-读-[it:hot:dynamic#25bae46a]-热升回填到本地
+[动态本地缓存]-读-[it:hot:dynamic#25bae46a]-热key，命中
+[动态本地缓存]-读-[it:hot:dynamic#25bae46a]-热key，miss，硬读中央缓存
+[动态本地缓存]-读-[it:hot:dynamic#25bae46a]-回填到本地
+[静态本地缓存]-读-[user:detail#38e3649f]-miss，硬读中央缓存
+[静态本地缓存]-读-[user:detail#38e3649f]-回填到本地
+[静态本地缓存]-写-[user:detail#38e3649f]-写中央并写本地
+[统一中央缓存]-写-[user:detail#38e3649f]-本地策略=NONE，仅写中央
 ```
 
-- **主题 = 组件名**：告诉运维"当前跑到哪个组件了"，固定词表见下表。
-  **不要用 namespace 当主题** —— 具体缓存放在详情的 `namespace=...` 或 `key=namespace#hash` 里；
-- **子过程**：见下方固定词表；
-- 子过程固定词表 —— 装配 / 读 / 写 / 失效 / 清空 / 对账 / 回填 / 回源 / 热key /
-  空值缓存 / 编解码 / key编码 / 降级 / 关闭；
-- **`写` 只用于调用方发起的写操作**（`put` / `putIfAbsent` / 负缓存写）。内部写入必须用
-  `回填`（读路径把中央值回写本地）等字眼 —— 同一次"本地拒绝写入"在两条路径上含义完全不同，
-  混用会让人误以为业务在写缓存；
-- **具体信息**：不打印原始 key，一律 `CacheKey#masked()`（`namespace#hash`）。
+读路径详情词表：
 
-**主题（组件）固定词表**：
+| 详情 | 含义 |
+|---|---|
+| `冷key，miss，硬读中央缓存` | `DYNAMIC` 下未升热的 key 缺席，直接读中央（本地不接受回填） |
+| `热key，miss，硬读中央缓存` | 热点 key 的本地副本失效（TTL / 容量 / 失效），读中央 |
+| `触发热升，估计频次=N，热点集合大小=N` | 本次读触发升热 |
+| `热升回填到本地` | 升热后的第一次回填 |
+| `回填到本地` | 普通回填（已热、或静态策略） |
+| `热key，命中` / `命中` | 本地命中 |
+| `冷却期内拒绝升热，估计频次=N，剩余冷却=Nms` | 冷却期挡住升热 |
+| `本地已有更新版本，丢弃本次回填，读到的版本=…，本地版本=…` | 回填被更旧的版本挡下 |
+
+写路径详情词表：`写中央并写本地` / `写中央并写本地（空值）` / `冷key，不落本地，仅写中央` /
+`本地策略=NONE，仅写中央`；失败用 `中央写失败，按 failOpen 降级（不写本地），原因=…`（WARN 限流）。
+
+#### 二、非读写日志：`[主题]-子过程-详细信息`
+
+装配 / 关闭 / 失效 / 清空 / 对账 / 热key / 编解码 / 降级 / 自检属于这一类：
+
+```text
+[缓存装配]-装配-namespace=user:detail，装配完成，strategy=STATIC，centralTtl=PT10M，coordinator=none
+[缓存装配]-装配-共装配 2 个缓存：user:detail, product:hot
+[统一中央缓存]-对账-namespace=user:detail，对账完成，清除失效副本 1 条
+[统一中央缓存]-读-[user:detail#38e3649f]-中央读取失败，按未命中降级，原因=CacheException:central down
+[动态本地缓存]-热key-降热，来源=中央 COOLING，key=product:hot#1befe33d，进入冷却=PT30S，热点集合大小=0
+[Redis存储]-编解码-反序列化失败，key=user:detail#38e3649f，serializer=StringRedisSerializer
+[缓存key]-编码-不支持的 key 类型：java.lang.Object，请实现 KeyWritable 或提供自定义 KeyEncoder
+```
+
+#### 主题（组件）固定词表
+
+**主题 = 组件名**，告诉运维"跑到哪个组件了"；**不要用 namespace 当主题**，
+具体缓存放在详情里（`namespace=…` 或 `[namespace#hash]`）。
 
 | 主题 | 对应组件 |
 |---|---|
-| `二级缓存` | `DefaultTwoLevelCache`（编排：读/写/失效/清空/对账/回填/回源/降级） |
-| `本地缓存` | 本地存储实现（`HashMapLocalCache` / `CaffeineLocalCache`） |
-| `动态本地缓存` | `DynamicLocalCache`（热点门控、上报、冷却） |
-| `缓存装配` | `TwoLevelCacheManager` / Spring 配置（装配与生命周期） |
+| `统一中央缓存` | `DefaultTwoLevelCache`（编排门面：读/写/失效/清空/对账/降级/装配/关闭） |
+| `静态本地缓存` | `STATIC` 策略下的本地存储（`HashMapLocalCache` / `CaffeineLocalCache`） |
+| `动态本地缓存` | `DynamicLocalCache`（热点门控、升热、冷却、上报） |
+| `缓存装配` | `TwoLevelCacheManager` / Spring 配置 |
 | `中央缓存` | `RedisCentralCache`（Redis 语义层） |
 | `Redis存储` | `SpringRedisValueStore`（适配层，含编解码） |
 | `热key协调` | `RedisHotKeyCoordinator` / `InMemoryHotKeyCoordinator` |
@@ -1213,37 +1252,16 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格
 | `Spring缓存桥接` | `SpringCacheAdapter` / `Cache4jCacheErrorHandler` |
 | `日志` | `CacheLogger` 自检 |
 
-示例：
-
-```text
-[缓存装配]-装配-namespace=user:detail，装配完成，strategy=STATIC，localTtl=PT1M，centralTtl=PT10M，coordinator=none
-[缓存装配]-装配-共装配 2 个缓存：user:detail, product:hot
-[二级缓存]-对账-namespace=user:detail，对账完成，清除失效副本 1 条
-[二级缓存]-读-中央读取失败，按未命中降级，key=user:detail#38e3649f，原因=CacheException:central down
-[二级缓存]-写-冷 key 不落本地（DYNAMIC），key=user:detail#38e3649f，strategy=DYNAMIC
-[二级缓存]-回填-冷 key 不落本地（DYNAMIC），key=user:detail#38e3649f，strategy=DYNAMIC
-[动态本地缓存]-热key-升热，来源=本地阈值，key=product:hot#1befe33d，估计频次=5，热点集合大小=1
-[动态本地缓存]-热key-降热，来源=中央 COOLING，key=product:hot#1befe33d，进入冷却=PT30S，热点集合大小=0
-[动态本地缓存]-热key-冷却期内拒绝升热，key=product:hot#1befe33d，估计频次=11，剩余冷却=1991ms
-[缓存key]-编码-不支持的 key 类型：java.lang.Object，请实现 KeyWritable 或提供自定义 KeyEncoder
-```
+#### 级别
 
 | 事件 | 级别 | 频率 / 说明 |
 |---|---|---|
 | 编解码失败、key 编码失败、配置非法 | **ERROR** | 每次都记；数据/编程错误永不降级，配置错误随启动失败 |
-| 中央读 / 写 / 失效 / 清空失败 | **WARN** | 按 `(主题, 子过程)` 限流 30s；含 key 哈希与原因 |
-| 版本对账失败 | **WARN** | 限流；含退避时长与原因 |
-| 热 key 上报失败 | **WARN** | 限流；含退避与"整批回填"事实 |
-| loader 执行失败 | **WARN** | 限流；异常仍原样抛给业务 |
-| namespace 缺 `dynamic.global` | **WARN** | 限流；说明全局热 key 判定被跳过（不猜阈值） |
+| 中央读 / 写失败（降级） | **WARN** | 按 `(主题, 操作, namespace)` 限流 30s |
+| 版本对账失败、热 key 上报失败、loader 失败、缺 `dynamic.global` | **WARN** | 限流；含退避与原因 |
 | 缓存装配、缓存关闭、provider 关闭 | **INFO** | 每个缓存一行 + 一行汇总 |
-| 对账轮次结果（清除条数） | **DEBUG** | 每轮一次 |
-| 升热 / 降热 | **DEBUG** | 每次；含来源（本地阈值 / 中央 HOT / 中央 COOLING）与冷却时长 |
-| 冷 key 写入被丢弃（`DYNAMIC`，调用方写入） | **DEBUG** | 每次；子过程用 `写` |
-| 冷 key 回填被拒绝（`DYNAMIC`，读路径回填） | **DEBUG** | 每次；子过程用 `回填`，不得写成"写" |
-| 回填被丢弃（版本更旧） | **DEBUG** | 每次；含读到的版本与本地版本 |
-| 热 key 上报批次 | **DEBUG** | 每次；含分区号与上报 key 数 |
-| 缓存命中 / 未命中 | **不打日志** | 热路径，靠 `CacheStats` 统计 |
+| 本地命中 / 未命中 / 回填 / 升热 / 冷却 / 对账轮次 / 上报批次 | **DEBUG** | 每次；即上面"一"类日志 |
+| 缓存命中计数 | 不打汇总日志 | 走 `CacheStats` |
 
 参数化日志统一用 `Supplier` 延迟拼接：关闭对应级别时不产生字符串构造开销。
 
