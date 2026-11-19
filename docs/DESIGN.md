@@ -743,9 +743,10 @@ void reconcile(String namespace) {
 
 - **分区号是 key 的属性，首次访问即算出并保存**：`DefaultTwoLevelCache` 持有
   `Map<CacheKey, Integer> keyPartitions`，`lookup` / `put` / `putIfAbsent` / `evict` 入口先落一次
-  `partitionOf(key)`（已保存则直接取，不再算 hash）；另有 `List<Set<CacheKey>> localPartitions`
-  （下标 = 分区号）记录"确实持有本地副本"的 key，对账时直接 `get(partition)` 取候选，
-  **不必每次访问都遍历 `local.keys()` 重算分区**；
+  `partitionOf(key)`（已保存则直接取，不再算 hash）；另有 `Map<Integer, Set<CacheKey>> localPartitions`
+  （分区号 → 该分区内确实持有副本的 key，空桶惰性创建）记录副本归属，对账时直接
+  `get(partition)` 取候选，**不必每次访问都遍历 `local.keys()` 重算分区**；
+  分区数由 `partitions` 字段显式持有（= `version.reconcilePartitions`）；
 - 本地拒绝写入（DYNAMIC 冷 key）时该 key 的分区号一并摘除，避免无界增长；
   存储层自行过期/淘汰造成的"幽灵条目"会在对账比对阶段（`local.entry(key) == null`）顺手剔除；
 - **取版本范围由本地规模决定，两条规则**：

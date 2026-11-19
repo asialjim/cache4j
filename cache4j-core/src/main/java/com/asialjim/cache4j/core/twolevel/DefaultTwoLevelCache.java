@@ -75,12 +75,17 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     private final Map<CacheKey, Integer> keyPartitions = new ConcurrentHashMap<>();
 
     /**
-     * 本地副本的<strong>分区索引</strong>：下标 = 分区号，元素 = 该分区内、确实持有副本的 key。
+     * 分区数（2 的幂）：由 {@code version.reconcilePartitions} 决定；分区号范围 {@code [0, partitions)}。
+     */
+    private final int partitions;
+
+    /**
+     * 本地副本的<strong>分区索引</strong>：分区号 → 该分区内、确实持有副本的 key（空桶惰性创建）。
      *
      * <p>对账时直接 {@code get(partition)} 取，不必遍历 {@code local.keys()} 重算分区；
      * 存储层自己的过期/淘汰造成的"幽灵条目"会在对账比对阶段顺手剔除（见 {@code reconcile}）。</p>
      */
-    private final List<Set<CacheKey>> localPartitions;
+    private final Map<Integer, Set<CacheKey>> localPartitions = new ConcurrentHashMap<>();
 
     /**
      * 命名空间级对账信号量：下一次对账时间点（纳秒）；0 表示尚未初始化。
@@ -103,12 +108,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         this.nanoClock = builder.nanoClock;
         this.milliClock = builder.milliClock;
 
-        int partitions = localSpec.version() == null ? 1 : localSpec.version().reconcilePartitions();
-        List<Set<CacheKey>> buckets = new ArrayList<>(partitions);
-        for (int i = 0; i < partitions; i++) {
-            buckets.add(ConcurrentHashMap.newKeySet());
-        }
-        this.localPartitions = buckets;
+        this.partitions = localSpec.version() == null ? 1 : localSpec.version().reconcilePartitions();
 
         LOG.debug(CacheLogger.Subject.TWO_LEVEL, "装配", () -> "namespace=" + namespace
                 + "，strategy=" + localSpec.strategy()
@@ -262,7 +262,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         } finally {
             local.clear();
             keyPartitions.clear();
-            localPartitions.forEach(Set::clear);
+            localPartitions.clear();
             count(CacheCounters.Counter.CLEAR);
         }
     }
@@ -323,7 +323,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         if (saved != null) {
             return saved;
         }
-        int partition = HashPartitions.of(cacheKey, localPartitions.size());
+        int partition = HashPartitions.of(cacheKey, partitions);
         Integer previous = keyPartitions.putIfAbsent(cacheKey, partition);
         return previous != null ? previous : partition;
     }
@@ -337,7 +337,10 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         local.evict(cacheKey);
         Integer partition = keyPartitions.remove(cacheKey);
         if (partition != null) {
-            localPartitions.get(partition).remove(cacheKey);
+            Set<CacheKey> bucket = localPartitions.get(partition);
+            if (bucket != null) {
+                bucket.remove(cacheKey);
+            }
         }
     }
 
@@ -535,7 +538,8 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         boolean accepted = local.accepts(cacheKey);
         local.put(cacheKey, entry, chosen);          // 是否真的写入由本地实现决定（DYNAMIC 会拒绝冷 key）
         if (accepted) {
-            localPartitions.get(partitionOf(cacheKey)).add(cacheKey);
+            localPartitions.computeIfAbsent(partitionOf(cacheKey), p -> ConcurrentHashMap.newKeySet())
+                    .add(cacheKey);
         } else {
             // 本地不持有副本（DYNAMIC 冷 key）→ 分区号也不保留，避免无界增长
             keyPartitions.remove(cacheKey);
@@ -687,7 +691,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         int batchSize = version.reconcileBatchSize();
         // 本地副本总数直接来自索引（O(分区数)），不用遍历 local.keys()
         int localSize = 0;
-        for (Set<CacheKey> bucket : localPartitions) {
+        for (Set<CacheKey> bucket : localPartitions.values()) {
             localSize += bucket.size();
         }
         if (localSize == 0) {
@@ -701,11 +705,14 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
 
         List<CacheKey> selected = new ArrayList<>(Math.min(localSize, batchSize));
         if (wholeScope) {
-            for (Set<CacheKey> bucket : localPartitions) {
+            for (Set<CacheKey> bucket : localPartitions.values()) {
                 selected.addAll(bucket);
             }
         } else {
-            selected.addAll(localPartitions.get(partition));
+            Set<CacheKey> bucket = localPartitions.get(partition);
+            if (bucket != null) {
+                selected.addAll(bucket);
+            }
         }
         if (selected.isEmpty()) {
             return new ReconcileOutcome(0, wholeScope, partition, partitions, 0);
