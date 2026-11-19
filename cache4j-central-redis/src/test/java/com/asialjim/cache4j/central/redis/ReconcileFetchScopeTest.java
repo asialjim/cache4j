@@ -1,6 +1,7 @@
 package com.asialjim.cache4j.central.redis;
 
 import com.asialjim.cache4j.core.CacheKey;
+import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCache;
@@ -28,29 +29,54 @@ class ReconcileFetchScopeTest {
     private final MutableClock clock = new MutableClock();
 
     @Test
-    @DisplayName("一次对账把本地全部 key 的版本一起取回（单次 HMGET）")
-    void reconcileFetchesAllLocalKeys() {
+    @DisplayName("一次对账取回「当前 key 所属分区」里本地全部 key 的版本（单次 HMGET）")
+    void reconcileFetchesAllKeysInCurrentPartition() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        TwoLevelCache<String, String> cache = cache(store, 1_000);
+        TwoLevelCache<String, String> cache = cache(store, 1_000, 16);
 
-        // 本地放 3 个 key
         cache.put("a", "va");
         cache.put("b", "vb");
         cache.put("c", "vc");
         assertEquals(3, cache.local().keys().size());
 
-        // 第一次访问只设检查点，不做 I/O
+        // 首次访问只设检查点
         cache.lookup("a");
         assertEquals(0, store.revisionsCalls(), "首次访问只设点，不应对账");
 
-        // 过检查点后的下一次访问触发一次对账
         clock.advance(Duration.ofMillis(200));
         store.resetCounters();
         cache.lookup("a");
 
+        long expected = expectedPartitionPayload(cache, "a", 16);
         assertEquals(1, store.revisionsCalls(), "一次对账只应发一次批量取版本");
-        assertEquals(3, store.revisionsKeys(),
-                "必须取回本地全部 3 个 key 的版本，而不是只取当前访问的 key");
+        assertEquals(expected, store.revisionsKeys(),
+                "应取回与当前 key 同分区的全部本地 key（不是只取当前 key，也不是全部 key）");
+        assertTrue(store.revisionsKeys() <= 3);
+    }
+
+    @Test
+    @DisplayName("分区把对账载荷摊薄：本地 100 条、16 分区时一次对账只有 1 批且远小于 100")
+    void partitionsReducePayload() {
+        InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
+        TwoLevelCache<String, String> cache = cache(store, 1_000, 16);
+
+        for (int i = 0; i < 100; i++) {
+            cache.put("k" + i, "v" + i);
+        }
+        // 本地 maxSize=100 且分段实现会略超发/淘汰，取实际条目数做基准
+        int localSize = cache.local().keys().size();
+        assertTrue(localSize > 50, "本地应装入相当数量的条目，实际=" + localSize);
+
+        cache.lookup("k0");
+        clock.advance(Duration.ofMillis(200));
+        store.resetCounters();
+        cache.lookup("k0");
+
+        long expected = expectedPartitionPayload(cache, "k0", 16);
+        assertEquals(1, store.revisionsCalls(), "16 分区 + 批大小 1000 → 一次对账只需 1 次往返");
+        assertEquals(expected, store.revisionsKeys());
+        assertTrue(expected * 4 < localSize,
+                "单次对账载荷应远小于本地总条目数：本地=" + localSize + "，本次=" + expected);
     }
 
     @Test
@@ -58,7 +84,7 @@ class ReconcileFetchScopeTest {
     void reconcileFetchesAllKeysInBatches() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
         // reconcileBatchSize = 2，本地放 5 个 key → 3 批（2 + 2 + 1）
-        TwoLevelCache<String, String> cache = cache(store, 2);
+        TwoLevelCache<String, String> cache = cache(store, 2, 1);   // 分区=1 退化：等价全量
 
         for (String id : new String[]{"a", "b", "c", "d", "e"}) {
             cache.put(id, "v" + id);
@@ -134,9 +160,14 @@ class ReconcileFetchScopeTest {
 
     @SuppressWarnings("unchecked")
     private TwoLevelCache<String, String> cache(InMemoryValueStore<Object> store, int batchSize) {
+        return cache(store, batchSize, 1);
+    }
+
+    private TwoLevelCache<String, String> cache(InMemoryValueStore<Object> store, int batchSize,
+                                                int partitions) {
         LocalCacheSpec localSpec = LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1),
                 new LocalCacheSpec.VersionSpec(
-                        Duration.ofMillis(100), 0D, Duration.ofMillis(50), batchSize));
+                        Duration.ofMillis(100), 0D, Duration.ofMillis(50), batchSize, partitions));
         LocalCache<String> local = LocalCaches.create(localSpec, null, clock::nanos);
         CentralCache<String> central = new RedisCentralCache<>(
                 CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build(),
@@ -147,6 +178,23 @@ class ReconcileFetchScopeTest {
                 .nanoClock(clock::nanos)
                 .milliClock(clock::millis)
                 .build();
+    }
+
+    /**
+     * 期望的对账载荷：与给定 key 同分区、且当前在本地缓存里的 key 数。
+     *
+     * @param cache      门面
+     * @param visitor    访问的 key（明文）
+     * @param partitions 分区数
+     * @return 期望的 field 数
+     */
+    private long expectedPartitionPayload(TwoLevelCache<String, String> cache, String visitor,
+                                          int partitions) {
+        int wanted = HashPartitions.of(new CacheKey(NS, "s" + visitor.length() + ":" + visitor),
+                partitions);
+        return cache.local().keys().stream()
+                .filter(key -> HashPartitions.of(key, partitions) == wanted)
+                .count();
     }
 
     /**

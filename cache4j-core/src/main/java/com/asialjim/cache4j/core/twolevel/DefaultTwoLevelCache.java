@@ -4,6 +4,7 @@ import com.asialjim.cache4j.core.Cache;
 import com.asialjim.cache4j.core.CacheCounters;
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheKey;
+import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.CacheStats;
@@ -330,7 +331,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             local.access(cacheKey);              // DYNAMIC 可能在此触发升热（装饰器自己记日志）
             promoted = !hotBefore && local.accepts(cacheKey);
             local.hotSync(cacheKey);
-            maybeReconcile(now);
+            maybeReconcile(cacheKey, now);      // 用当前 key 选对账分区
 
             LocalEntry<V> entry = local.entry(cacheKey);
             if (entry != null) {
@@ -563,7 +564,14 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
 
     // ------------------------------------------------------------------ 版本对账
 
-    private void maybeReconcile(long now) {
+    /**
+     * 命名空间级对账信号量：到点时由当前访问线程对账一次，且只处理
+     * 「当前访问的 key 所属分区」的本地副本（见 {@link LocalCacheSpec.VersionSpec#reconcilePartitions()}）。
+     *
+     * @param accessedKey 当前访问的 key（决定分区）
+     * @param now         当前纳秒
+     */
+    private void maybeReconcile(CacheKey accessedKey, long now) {
         LocalCacheSpec.VersionSpec version = localSpec.version();
         if (version == null) {
             return;
@@ -581,10 +589,12 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             return;
         }
         try {
-            int invalidated = reconcile(version);
+            int invalidated = reconcile(version, accessedKey);
             nextCheckAtNanos = now + jittered(version);
             count(CacheCounters.Counter.VERSION_SYNC);
+            int partition = HashPartitions.of(accessedKey, version.reconcilePartitions());
             LOG.debug(CacheLogger.Subject.TWO_LEVEL, "对账", () -> "namespace=" + namespace
+                    + "，分区=" + partition + "/" + version.reconcilePartitions()
                     + "，对账完成，清除失效副本 " + invalidated + " 条");
         } catch (RuntimeException e) {
             nextCheckAtNanos = now + version.retryBackoff().toNanos();
@@ -600,13 +610,25 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         }
     }
 
-    private int reconcile(LocalCacheSpec.VersionSpec version) {
+    private int reconcile(LocalCacheSpec.VersionSpec version, CacheKey accessedKey) {
         Set<CacheKey> keys = local.keys();
         if (keys.isEmpty()) {
             return 0;
         }
+        // 只校验「当前访问 key 所属分区」的本地副本：载荷从"本地全部 key"降到 1/N，
+        // 而任何 key 被读时它自己必在被选中的分区里，因此每个被读 key 的失效上界仍是 checkInterval。
+        int partitions = version.reconcilePartitions();
+        int partition = HashPartitions.of(accessedKey, partitions);
         int invalidated = 0;
-        List<CacheKey> all = new ArrayList<>(keys);
+        List<CacheKey> all = new ArrayList<>();
+        for (CacheKey key : keys) {
+            if (HashPartitions.of(key, partitions) == partition) {
+                all.add(key);
+            }
+        }
+        if (all.isEmpty()) {
+            return 0;
+        }
         int batchSize = version.reconcileBatchSize();
         for (int from = 0; from < all.size(); from += batchSize) {
             List<CacheKey> batch = all.subList(from, Math.min(all.size(), from + batchSize));

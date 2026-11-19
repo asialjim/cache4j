@@ -741,9 +741,13 @@ void reconcile(String namespace) {
 }
 ```
 
-- **取版本范围 = 该命名空间下本地已知的全部 key**（`local.keys()`），一次对账只发批量
-  `HMGET`，**不是只取当前访问的那个 key**；本地 key 数超过 `reconcileBatchSize` 时按批拆分
-  （如 5 个 key / 批大小 2 → 3 批），但仍覆盖全部 key（回归用例：`ReconcileFetchScopeTest`）；
+- **取版本范围 = 「当前访问 key 所属分区」里本地已知的全部 key**：用
+  `HashPartitions.of(key, version.reconcilePartitions)` 把本地的 key 分成 N 个分区（默认 16，2 的幂），
+  一次对账只取**当前被访问 key 的那个分区**，再按 `reconcileBatchSize` 分批（通常 1 批）。
+  载荷从"本地全部 key"降到 `本地条目数 / N`；
+- **为什么分区也不会拉长失效窗口**：任何 key 被读时，它自己必落在被选中的分区里，所以
+  **每个被读 key 的失效上界仍是 `version.checkInterval`**；无人访问的分区不必对账（那些副本没人在用）；
+- 分区数配 1 时退化为"全量对账"（兼容语义）；回归用例：`ReconcileFetchScopeTest`；
 - 对账**只取版本、不取数据值**，因此不产生任何中央数据读；
 - 信号量属于**命名空间**：`nextSyncAtNanos` + `syncing` CAS；首次访问只设点，**不触发**对账；
 - 到点后由**当前访问线程**执行一次对账，完成后 `reschedule(now + checkInterval ± jitter)`；同一命名空间同一时刻只允许一个线程对账；
@@ -1138,6 +1142,7 @@ TwoLevelCache<String, User> cache = TwoLevelCache.<String, User>builder("user:de
 | `version.jitter` | `0.1` | 对账间隔抖动比例，避免多节点同时打中央 |
 | `version.retryBackoff` | `200ms` | 对账失败后的退避；退避期间不重复对账 |
 | `version.reconcileBatchSize` | `1000` | 一次 `HMGET` 的批量大小（控制单次命令载荷） |
+| `version.reconcilePartitions` | `16` | 对账分区数（2 的幂）：一次对账只覆盖当前 key 所属分区，载荷 = 本地条目数 / N |
 | `dynamic.syncInterval` | `1s` | `DYNAMIC` 热 key 同步点间隔（访问驱动） |
 | `dynamic.hotReportPartitions` | `16` | 热 key 上报分区数（2 的幂、≥ 2）；单次上报的 key 数 ≈ `maxHotKeys / N` |
 | `dynamic.hotReportBatchMax` | `64` | 单次 `reportAndStatusAll` 的硬上限（≈ 400 次 `redis.call`），防倾斜分区夯住 Redis |
@@ -1372,8 +1377,8 @@ key 可能包含手机号、证件号等敏感信息；日志中只打印 `Cache
 - `evict` 后 field 消失 → 其他节点下一轮对账清除副本（删除传播 ≤ 一个对账周期）；
 - 对账失败不修改任何副本，按 `retryBackoff` 推迟下次；
 - 同一命名空间并发到点，只有一个线程执行对账（CAS）；
-- **无饥饿回归**：同一命名空间 10 万 key 高频混访，某个低频 key 的副本也能在下一轮对账被发现（一次对账覆盖全部本地副本）；
-- **载荷回归**：本地 `maxSize=10_000`、中央该命名空间 100_000 key 时，一次对账的 field 数应为 10_000（按本地已知 key 取，不是 `HGETALL`）；
+- **无饥饿回归**：同一命名空间 10 万 key 高频混访，某个低频 key 的副本也能在它自己被读时被校验（它必然落在被选中的分区里）；
+- **载荷回归**：本地 `maxSize=10_000`、`reconcilePartitions=16` 时，一次对账的 field 数约为 `10_000/16`（不是 10_000，也不是 `HGETALL` 的全量）；
 - 读取与回填之间版本被推进（另一线程写入）→ 本次回填被丢弃（`backfillDiscarded` +1），不会把旧值盖回；
 - `NONE` 不参与版本对账。
 
@@ -1487,4 +1492,6 @@ key 可能包含手机号、证件号等敏感信息；日志中只打印 `Cache
 18. ~~`DYNAMIC` 的 `put` 对冷 key 静默丢弃~~（**已结案，记 D23**）：**设计如此，非缺陷**。hotkey 统计的是读频次（目的是减少 L2 读），写不产生频次、也无法保护 L2，所以冷 key 的写没资格占本地内存；`dynamicPutDiscarded` 是这个代价的可观测项。需要 read-your-write 请用 `STATIC`。
 19. ~~冷却集合清理依赖 `maintain()`~~（**已结案**）：改为 `access` 路径上读时惰性删 + 每 1024 次摊销清扫一条；**不引入中央侧 `demotedAt`**（补偿升热侧的振荡靠滞回带宽度调，不加参数）；`cooldown >= demoteWindows × global.window` 入启动校验。
 20. ~~`CentralCacheSpec.timeout` 是死配置~~（**已结案**）：字段已删除。`cache4j-central` 不持有连接，没有执行超时的位置；超时归客户端 —— Spring 用 `spring.data.redis.timeout`，自实现 `RedisValueStore` 的用户自定；本库只给"200–500ms 快速失败"的建议，不留占位字段。
-21. 大命名空间的自适应：本地 `maxSize` 很大（如 10 万）时，单轮对账的 `HMGET` 批次总载荷需要压测；是否让 `checkInterval` 与 `maxSize` 联动（条目越多间隔越长）。
+21. ~~大命名空间的自适应~~（**已结案**）：改用**分区对账**（`version.reconcilePartitions`，默认 16）——
+    一次对账只覆盖当前访问 key 所属的分区，载荷降为 `本地条目数 / N`，且不拉长失效上界
+    （任何 key 被读时必在自己的分区里）。剩余可选：`reconcilePartitions` 是否需要按 `maxSize` 自适应。

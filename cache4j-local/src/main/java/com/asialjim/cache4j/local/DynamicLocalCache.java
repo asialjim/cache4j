@@ -543,9 +543,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     // ------------------------------------------------------------------ 分区与时钟
 
     private int partitionOf(CacheKey key) {
-        int hash = key.logical().hashCode();
-        int spread = hash ^ (hash >>> 16);
-        return spread & (dynamic.hotReportPartitions() - 1);
+        return com.asialjim.cache4j.core.HashPartitions.of(key, dynamic.hotReportPartitions());
     }
 
     private long jitteredSyncInterval() {

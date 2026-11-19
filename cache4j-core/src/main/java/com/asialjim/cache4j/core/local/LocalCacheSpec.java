@@ -150,14 +150,35 @@ public record LocalCacheSpec(
      * @param jitter            对账间隔抖动比例（0–0.5）
      * @param retryBackoff      对账失败退避；必须为正
      * @param reconcileBatchSize 一次 {@code HMGET} 的批量大小；必须为正
+     * @param reconcilePartitions 对账分区数（2 的幂，默认 16）：一次对账只校验「当前访问 key 所属分区」
+     *                            的本地副本，载荷降为 {@code 本地条目数 / N}
      * @author Asial Jim
      */
     public record VersionSpec(
             Duration checkInterval,
             double jitter,
             Duration retryBackoff,
-            int reconcileBatchSize
+            int reconcileBatchSize,
+            int reconcilePartitions
     ) {
+
+        /**
+         * 默认对账分区数。
+         */
+        public static final int DEFAULT_PARTITIONS = 16;
+
+        /**
+         * 兼容构造：分区数取默认值。
+         *
+         * @param checkInterval      对账间隔
+         * @param jitter             抖动比例
+         * @param retryBackoff       失败退避
+         * @param reconcileBatchSize 批量大小
+         */
+        public VersionSpec(Duration checkInterval, double jitter, Duration retryBackoff,
+                           int reconcileBatchSize) {
+            this(checkInterval, jitter, retryBackoff, reconcileBatchSize, DEFAULT_PARTITIONS);
+        }
 
         /**
          * 默认版本参数。
@@ -165,7 +186,8 @@ public record LocalCacheSpec(
          * @return 默认值
          */
         public static VersionSpec defaults() {
-            return new VersionSpec(Duration.ofSeconds(1), 0.1D, Duration.ofMillis(200), 1_000);
+            return new VersionSpec(Duration.ofSeconds(1), 0.1D, Duration.ofMillis(200), 1_000,
+                    DEFAULT_PARTITIONS);
         }
 
         /**
@@ -185,6 +207,9 @@ public record LocalCacheSpec(
             }
             if (reconcileBatchSize <= 0) {
                 throw invalid("version.reconcileBatchSize 必须为正：" + reconcileBatchSize);
+            }
+            if (!com.asialjim.cache4j.core.HashPartitions.isValid(reconcilePartitions)) {
+                throw invalid("version.reconcilePartitions 必须为 2 的幂：" + reconcilePartitions);
             }
             return this;
         }
