@@ -43,6 +43,8 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
             new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.atomic.AtomicInteger revisionsKeys =
             new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger readCalls =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     /**
      * @param globalSpecs namespace → 中央阈值；为 {@code null} 时热 key 一律返回 {@code UNKNOWN}
@@ -56,6 +58,7 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
 
     @Override
     public VersionedLookup<V> read(CacheKey key) {
+        readCalls.incrementAndGet();
         Entry<V> entry = live(key);
         if (entry == null) {
             return new VersionedLookup<>(0L, Lookup.miss());
@@ -208,6 +211,15 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
     }
 
     /**
+     * 测试观察点：`read`（版本 + 值的合并读）被调用的次数。
+     *
+     * @return 次数
+     */
+    public int readCalls() {
+        return readCalls.get();
+    }
+
+    /**
      * 测试观察点：`revisions` 累计请求的 key 数。
      *
      * @return key 数
@@ -222,6 +234,7 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
     public void resetCounters() {
         revisionsCalls.set(0);
         revisionsKeys.set(0);
+        readCalls.set(0);
     }
 
     /**

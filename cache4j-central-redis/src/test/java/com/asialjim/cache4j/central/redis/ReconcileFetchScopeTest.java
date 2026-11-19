@@ -92,6 +92,44 @@ class ReconcileFetchScopeTest {
         assertEquals(1, store.revisionsCalls(), "对账本身仍取了一次版本");
     }
 
+    @Test
+    @DisplayName("对账触发且本地命中：只有对账的 I/O，没有第二次读")
+    void reconcileThenHitCostsOneIoGroup() {
+        InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
+        TwoLevelCache<String, String> cache = cache(store, 1_000);
+
+        cache.put("a", "va");
+        cache.lookup("a");                       // 设检查点
+        clock.advance(Duration.ofMillis(200));
+        store.resetCounters();
+        cache.lookup("a");                       // 到点：先对账，再命中本地
+
+        assertEquals(1, store.revisionsCalls(), "对账取版本：1 次");
+        assertEquals(0, store.readCalls(), "本地命中，不应再读中央");
+    }
+
+    @Test
+    @DisplayName("对账触发且本地未命中：对账 + 读 = 两次 I/O")
+    void reconcileThenMissCostsTwoIoGroups() {
+        InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
+        TwoLevelCache<String, String> cache = cache(store, 1_000);
+
+        cache.put("a", "va");
+        cache.put("b", "vb");
+        cache.lookup("a");                       // 设检查点
+        // 让 c 在本地缺席但在中央存在：模拟"本地没这条副本"
+        cache.central().putAndGetRevision(
+                new CacheKey(NS, "s1:c"), "vc", Duration.ofMinutes(10));
+        clock.advance(Duration.ofMillis(200));
+        store.resetCounters();
+
+        assertEquals("vc", cache.lookup("c").optional().orElseThrow());
+
+        assertEquals(1, store.revisionsCalls(), "对账取版本：1 次（本地 2 个 key）");
+        assertEquals(2, store.revisionsKeys(), "对账覆盖本地已有的 a、b（c 不在本地）");
+        assertEquals(1, store.readCalls(), "本地未命中 → 再读一次（版本 + 值）");
+    }
+
     // ------------------------------------------------------------------ 辅助
 
     @SuppressWarnings("unchecked")
