@@ -817,22 +817,29 @@ HashMapLocalCache
 ```java
 Caffeine.newBuilder()
         .maximumSize(spec.maxSize())
-        .expireAfter(perEntryExpiry(spec.ttl()))
+        .ticker(ticker)                       // 注入可替换时钟，便于测试
+        .expireAfter(perEntryExpiry())         // 从条目自带的 ttlNanos 读取
         .recordStats()
         .build();
 ```
 
-- 用 Caffeine 的 `Expiry` 支持**每条 entry 不同的 TTL**（`put` 传入的 TTL 可能短于默认值）；
-- `expireAfterWrite` 作为默认；v1 不启用 `expireAfterAccess`；
-- `recordStats()` 把 Caffeine 的 hit/miss/eviction 映射到 `CacheStats`；
-- `estimatedSize()` 直接用 Caffeine 的估算；
+- 值包装为 `TimedEntry(LocalEntry<V> entry, long ttlNanos)`，`Expiry` 直接读它 —— 因此支持
+  **每条 entry 不同的 TTL**（`put` 传入的 TTL 可能短于默认值），`null` TTL 用 `Long.MAX_VALUE` 表示不过期；
+- `expireAfterRead` **返回当前剩余时间**（不续期），等价于"写后过期"；v1 不启用 `expireAfterAccess`；
+- `ticker` 由构造函数注入（生产是 `System::nanoTime`，测试用可推进时钟）；
+- `recordStats()` 打开，但**统计口径以 cache4j 为准**：命中/未命中由本模块自己记
+  （`storeHitCount` / `storeMissCount`），Caffeine 的计数器只作诊断参考；
+- `estimatedSize()` 直接用 Caffeine 的估算（异步淘汰，可能短暂高于上限）；
+- `maintain()` 调 `cache.cleanUp()`，让容量淘汰与过期清理立即收敛；
 - 不改变 Caffeine 的 Window TinyLFU 淘汰策略；`DYNAMIC` 的热点门控在装饰器层完成。
 
 ### 7.2 注意
 
-- Caffeine 的 `Expiry` 在 entry 创建/更新/读取时回调；实现要避免在回调里做重活。
-- Caffeine 的 `maximumSize` 是全局上限，不是分段；与 `DYNAMIC` 的 `maxHotKeys` 配合时，建议 `maxSize >= 1.25 * maxHotKeys`。
-- Caffeine 的统计计数与 cache4j 的统计口径不完全一致（例如 negative 不存在）；适配层只取 hit/miss/eviction/load 相关计数，负缓存由上层统计。
+- Caffeine 的 `Expiry` 在 entry 创建/更新/读取时回调；实现只读一个 `long`，不做重活。
+- Caffeine 的 `maximumSize` 是全局上限（不分段），比 HashMap 实现的分段 LRU 更接近"全局 LRU"；
+  与 `DYNAMIC` 的 `maxHotKeys` 配合时，建议 `maxSize >= 1.25 * maxHotKeys`。
+- Caffeine 的统计计数与 cache4j 的统计口径不完全一致（例如没有 negative）；**适配层不把两者相加**，
+  负副本由上层统计。
 
 ---
 
@@ -891,4 +898,8 @@ Caffeine.newBuilder()
 
 ### 8.5 实现对比
 
-同一套契约测试跑 `HashMapLocalCache` / `CaffeineLocalCache` / `DynamicLocalCache(两者)`，保证行为一致。
+同一套契约测试（`LocalCacheContractTest`）跑 `HashMapLocalCache` 与 `CaffeineLocalCache`，
+保证两个存储实现行为一致；`DynamicLocalCache` 的装饰器逻辑对二者共用。
+
+契约里有一条需要显式声明的语义：**容量上限在实现完成一次维护（`maintain()`）后生效** ——
+分段 LRU（HashMap）与异步淘汰（Caffeine）都可能在两次维护之间短暂超过上限。

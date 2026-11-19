@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.asialjim</groupId>
+        <artifactId>cache4j</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>cache4j-local-caffeine</artifactId>
+    <packaging>jar</packaging>
+    <name>cache4j-local-caffeine</name>
+    <description>基于 Caffeine 的本地存储实现（只替换存储层，策略与版本语义不变）</description>
+
+    <properties>
+        <caffeine.version>3.2.4</caffeine.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.asialjim</groupId>
+            <artifactId>cache4j-local</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <version>${caffeine.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- 复用 cache4j-local 的契约测试（同一套用例跑两个存储实现） -->
+        <dependency>
+            <groupId>com.asialjim</groupId>
+            <artifactId>cache4j-local</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
