@@ -1265,12 +1265,41 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，格�
 
 参数化日志统一用 `Supplier` 延迟拼接：关闭对应级别时不产生字符串构造开销。
 
-**测试期级别**：各模块的 `src/test/resources/simplelogger.properties` 决定（IDEA 直接跑与
+#### 附加信息：交给使用方的日志框架
+
+cache4j **只产出消息体**（`[主题]-业务操作-[key]-详细信息` 或 `[主题]-子过程-详细信息`），
+<strong>不拼接</strong>时间、类名、行号、线程、会话号、链路追踪号等附加信息：
+
+- 这些属于"日志格式"，应由使用方的 appender / pattern 组装，而不是由库写死在消息里；
+- cache4j **不写也不清 MDC**（不污染链路追踪上下文），`traceId` 等由业务或 Tracing agent 放入；
+- 需要的组件信息有两个来源：消息里的 `[主题]`，或 pattern 里的 `%logger{0}`（我们的 logger 名就是组件类）。
+
+**Logback 示例**：
+
+```xml
+<appender name="CACHE" class="ch.qos.logback.core.ConsoleAppender">
+  <encoder>
+    <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{traceId:-}] %logger{0}:%line - %msg%n</pattern>
+  </encoder>
+</appender>
+```
+
+**Log4j2 示例**：
+
+```xml
+<PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%t] [%X{traceId}] %c{1.}:%L - %msg%n"/>
+```
+
+> `%line` / `%L` 有运行时开销；生产可按需保留，DEBUG 场景下建议只在排障时打开。
+
+**测试期配置**：各模块的 `src/test/resources/simplelogger.properties` 决定（IDEA 直接跑与
 `mvn test` 行为一致）：
 
-- 单元测试模块：`defaultLogLevel=info`（可见装配/关闭，不刷屏）；
-- 集成测试模块（`cache4j-spring-redis-test`）：整体 `info` + `org.slf4j.simpleLogger.log.com.asialjim.cache4j=debug`
-  （既能看到完整链路，又不会被 Lettuce / Netty 的内部 DEBUG 刷屏）。
+- 只输出消息体：`showDateTime=false`、`showThreadName=false`、`showLogName=false`、
+  `showShortLogName=false` —— 测试期<strong>不打印 logger 名</strong>，输出即
+  `DEBUG [动态本地缓存]-读-[it:hot:dynamic#25bae46a]-热key，命中`；
+- 单元测试模块 `defaultLogLevel=info`；集成测试模块 `cache4j-spring-redis-test` 整体 `info` +
+  `org.slf4j.simpleLogger.log.com.asialjim.cache4j=debug`（不被 Lettuce / Netty 内部 DEBUG 刷屏）。
 
 **绑定缺失自检**：`CacheLogger` 首次初始化时若发现所有级别都不可用（通常是没加 SLF4J 绑定），
 会向标准错误打印一次提示，而不是让日志静默消失：
