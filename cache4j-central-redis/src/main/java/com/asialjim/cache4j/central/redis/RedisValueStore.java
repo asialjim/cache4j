@@ -94,9 +94,11 @@ public interface RedisValueStore<V> extends AutoCloseable {
     void delete(CacheKey key);
 
     /**
-     * 清空该命名空间（含版本元数据）。
+     * 清空指定命名空间（含版本元数据）。
+     *
+     * @param namespace 缓存名
      */
-    void clear();
+    void clear(String namespace);
 
     /**
      * 批量取版本（对账用）：只取版本、不取数据值；缺失表示已失效。

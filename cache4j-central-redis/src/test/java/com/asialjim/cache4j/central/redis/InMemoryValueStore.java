@@ -108,9 +108,9 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
     }
 
     @Override
-    public void clear() {
-        data.clear();
-        hotState.clear();
+    public void clear(String namespace) {
+        data.keySet().removeIf(key -> key.namespace().equals(namespace));
+        hotState.remove(namespace);
     }
 
     @Override

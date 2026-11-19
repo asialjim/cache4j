@@ -295,8 +295,8 @@ public interface RedisValueStore<V> extends AutoCloseable {
     /** 删除数据并删掉该 key 的版本（删除对其他节点可见：对账时"中央已无此 key"） */
     void delete(CacheKey key);
 
-    /** 清空该命名空间 */
-    void clear();
+    /** 清空指定命名空间（含版本元数据） */
+    void clear(String namespace);
 
     /** 批量取版本（对账用）：缺失表示已失效 */
     Map<CacheKey, Long> revisions(Collection<CacheKey> keys);
@@ -321,7 +321,8 @@ public interface RedisValueStore<V> extends AutoCloseable {
 要点：
 
 - **没有 `byte[]`**：值就是 `V`，序列化在实现里完成；
-- **没有 key 拼接**：实现只收到 `CacheKey`（namespace + 规范编码）；
+- **没有 key 拼接**：实现只收到 `CacheKey`（namespace + 规范编码）；`clear` 也只收到 namespace；
+- **没有客户端类型**：实现必须把客户端异常翻译成 `RedisAccessException`；
 - **没有 Lua 约束**：怎么保证"值与版本原子"由实现决定（Lua、事务、`WATCH` 都行）；
 - `VersionedLookup` 复用 `cache4j-core` 的定义，上下层对"读到了什么"理解一致。
 
@@ -409,7 +410,7 @@ public void evict(CacheKey key) {
 }
 
 public void clear() {
-    store.clear();
+    store.clear(spec.namespace());
 }
 ```
 

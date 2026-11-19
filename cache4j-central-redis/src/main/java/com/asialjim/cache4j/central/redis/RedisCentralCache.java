@@ -135,7 +135,7 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
     @Override
     public void clear() {
         guarded(() -> {
-            store.clear();
+            store.clear(spec.namespace());
             return 0L;
         });
     }

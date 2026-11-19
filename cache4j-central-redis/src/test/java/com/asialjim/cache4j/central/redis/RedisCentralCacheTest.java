@@ -210,7 +210,7 @@ class RedisCentralCacheTest {
         }
 
         @Override
-        public void clear() {
+        public void clear(String namespace) {
             throw down();
         }
 
