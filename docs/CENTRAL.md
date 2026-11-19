@@ -370,6 +370,10 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
 它只做**语义与策略**：TTL 抖动、负缓存开关、统计、故障翻译。不拼 key、不封 envelope、不写 Lua、
 不碰字节 —— 这些全在 `RedisValueStore` 的实现里。
 
+> **单 key 版本读取的场景**：`lookupWithRevision`（本地未命中时读中央）与 `revision(key)`
+> （诊断）都是单 key 的；**批量对账走 `revisions(Collection)`**，一次拿回本地全部 key 的版本。
+> 两者不要混淆。
+
 ### 5.2 读
 
 ```java

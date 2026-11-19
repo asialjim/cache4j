@@ -39,6 +39,10 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
             new ConcurrentHashMap<>();
     private final Function<String, LocalCacheSpec.GlobalSpec> globalSpecs;
     private final LongSupplier milliClock;
+    private final java.util.concurrent.atomic.AtomicInteger revisionsCalls =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger revisionsKeys =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     /**
      * @param globalSpecs namespace → 中央阈值；为 {@code null} 时热 key 一律返回 {@code UNKNOWN}
@@ -115,6 +119,8 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
 
     @Override
     public Map<CacheKey, Long> revisions(Collection<CacheKey> keys) {
+        revisionsCalls.incrementAndGet();
+        revisionsKeys.addAndGet(keys.size());
         Map<CacheKey, Long> result = new HashMap<>(keys.size() * 2);
         for (CacheKey key : keys) {
             Entry<V> entry = live(key);
@@ -190,6 +196,32 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
     public void close() {
         data.clear();
         hotState.clear();
+    }
+
+    /**
+     * 测试观察点：`revisions` 被调用的次数。
+     *
+     * @return 次数
+     */
+    public int revisionsCalls() {
+        return revisionsCalls.get();
+    }
+
+    /**
+     * 测试观察点：`revisions` 累计请求的 key 数。
+     *
+     * @return key 数
+     */
+    public int revisionsKeys() {
+        return revisionsKeys.get();
+    }
+
+    /**
+     * 重置观察点。
+     */
+    public void resetCounters() {
+        revisionsCalls.set(0);
+        revisionsKeys.set(0);
     }
 
     /**

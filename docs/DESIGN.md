@@ -741,6 +741,10 @@ void reconcile(String namespace) {
 }
 ```
 
+- **取版本范围 = 该命名空间下本地已知的全部 key**（`local.keys()`），一次对账只发批量
+  `HMGET`，**不是只取当前访问的那个 key**；本地 key 数超过 `reconcileBatchSize` 时按批拆分
+  （如 5 个 key / 批大小 2 → 3 批），但仍覆盖全部 key（回归用例：`ReconcileFetchScopeTest`）；
+- 对账**只取版本、不取数据值**，因此不产生任何中央数据读；
 - 信号量属于**命名空间**：`nextSyncAtNanos` + `syncing` CAS；首次访问只设点，**不触发**对账；
 - 到点后由**当前访问线程**执行一次对账，完成后 `reschedule(now + checkInterval ± jitter)`；同一命名空间同一时刻只允许一个线程对账；
 - **一次对账覆盖全部本地副本**，不存在"哪个 key 轮不到校验"的问题（这是它相对 per-entry 校验的主要优势）；
