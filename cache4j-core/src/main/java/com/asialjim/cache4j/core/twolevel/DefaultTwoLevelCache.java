@@ -449,7 +449,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
      * @param cacheKey   key
      * @param entry      条目
      * @param effective  生效 TTL（可空）
-     * @param process    过程名：{@code 写} 或 {@code 回填}
+     * @param detail     详细信息
      */
     private void putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective, String detail) {
         putLocal(cacheKey, entry, effective, detail, false);
@@ -589,13 +589,12 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             return;
         }
         try {
-            int invalidated = reconcile(version, accessedKey);
+            ReconcileOutcome outcome = reconcile(version, accessedKey);
             nextCheckAtNanos = now + jittered(version);
             count(CacheCounters.Counter.VERSION_SYNC);
-            int partition = HashPartitions.of(accessedKey, version.reconcilePartitions());
             LOG.debug(CacheLogger.Subject.TWO_LEVEL, "对账", () -> "namespace=" + namespace
-                    + "，分区=" + partition + "/" + version.reconcilePartitions()
-                    + "，对账完成，清除失效副本 " + invalidated + " 条");
+                    + "，分区=" + outcome.describePartition()
+                    + "，对账完成，清除失效副本 " + outcome.invalidated() + " 条");
         } catch (RuntimeException e) {
             nextCheckAtNanos = now + version.retryBackoff().toNanos();
             count(CacheCounters.Counter.VERSION_SYNC_ERROR);
@@ -610,28 +609,38 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         }
     }
 
-    private int reconcile(LocalCacheSpec.VersionSpec version, CacheKey accessedKey) {
+    /**
+     * 一次对账：只校验「当前访问 key 所属分区」里本地已知的副本。
+     *
+     * @param version     版本参数
+     * @param accessedKey 当前访问的 key（决定分区）
+     * @return 对账结果
+     */
+    private ReconcileOutcome reconcile(LocalCacheSpec.VersionSpec version, CacheKey accessedKey) {
         Set<CacheKey> keys = local.keys();
         if (keys.isEmpty()) {
-            return 0;
+            return new ReconcileOutcome(0, 0, 1);
         }
-        // 只校验「当前访问 key 所属分区」的本地副本：载荷从"本地全部 key"降到 1/N，
-        // 而任何 key 被读时它自己必在被选中的分区里，因此每个被读 key 的失效上界仍是 checkInterval。
-        int partitions = version.reconcilePartitions();
+        // 分区数自适应：本地条目装得下一批时直接不分片 —— 一次往返就能全查完，
+        // 分区只会白白降低单次覆盖度（每个 key 虽然仍能在自己被读时校验，但没必要的分散）。
+        int partitions = effectivePartitions(keys.size(),
+                version.reconcileBatchSize(), version.reconcilePartitions());
         int partition = HashPartitions.of(accessedKey, partitions);
-        int invalidated = 0;
-        List<CacheKey> all = new ArrayList<>();
+
+        List<CacheKey> selected = new ArrayList<>();
         for (CacheKey key : keys) {
             if (HashPartitions.of(key, partitions) == partition) {
-                all.add(key);
+                selected.add(key);
             }
         }
-        if (all.isEmpty()) {
-            return 0;
+        if (selected.isEmpty()) {
+            return new ReconcileOutcome(0, partition, partitions);
         }
+
+        int invalidated = 0;
         int batchSize = version.reconcileBatchSize();
-        for (int from = 0; from < all.size(); from += batchSize) {
-            List<CacheKey> batch = all.subList(from, Math.min(all.size(), from + batchSize));
+        for (int from = 0; from < selected.size(); from += batchSize) {
+            List<CacheKey> batch = selected.subList(from, Math.min(selected.size(), from + batchSize));
             // 只取版本，不取数据值
             Map<CacheKey, Long> latest = central.revisions(batch);
             for (CacheKey cacheKey : batch) {
@@ -651,7 +660,50 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                 }
             }
         }
-        return invalidated;
+        return new ReconcileOutcome(invalidated, partition, partitions);
+    }
+
+    /**
+     * 自适应分区数：保证「每个分区尽量只装一批」，且不超过配置上限。
+     *
+     * <ul>
+     *   <li>本地条目数 ≤ 一批：返回 {@code 1}（不分片，一次往返覆盖全部本地副本）；</li>
+     *   <li>否则取 {@code ceil(本地条目数 / batchSize)} 向上取整到 2 的幂，并封顶到配置值 ——
+     *       既让单次对账通常是 1 批，又尽量让一次覆盖更多 key。</li>
+     * </ul>
+     *
+     * @param localSize   本地当前条目数
+     * @param batchSize   单批大小
+     * @param configured  配置的分区上限（2 的幂）
+     * @return 生效分区数（2 的幂，≥ 1）
+     */
+    static int effectivePartitions(int localSize, int batchSize, int configured) {
+        if (configured <= 1 || batchSize <= 0 || localSize <= batchSize) {
+            return 1;
+        }
+        int needed = (localSize + batchSize - 1) / batchSize;
+        int pow2 = Integer.highestOneBit(needed);
+        if (pow2 < needed) {
+            pow2 <<= 1;
+        }
+        return Math.max(1, Math.min(configured, pow2));
+    }
+
+    /**
+     * 对账结果。
+     *
+     * @param invalidated 清除的本地副本数
+     * @param partition   本次处理的分区号
+     * @param partitions  生效分区数（1 表示未分片）
+     */
+    private record ReconcileOutcome(int invalidated, int partition, int partitions) {
+
+        /**
+         * @return 适合写进日志的分区描述
+         */
+        String describePartition() {
+            return partitions <= 1 ? "未分片" : partition + "/" + partitions;
+        }
     }
 
     private long jittered(LocalCacheSpec.VersionSpec version) {

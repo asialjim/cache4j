@@ -747,7 +747,12 @@ void reconcile(String namespace) {
   载荷从"本地全部 key"降到 `本地条目数 / N`；
 - **为什么分区也不会拉长失效窗口**：任何 key 被读时，它自己必落在被选中的分区里，所以
   **每个被读 key 的失效上界仍是 `version.checkInterval`**；无人访问的分区不必对账（那些副本没人在用）；
-- 分区数配 1 时退化为"全量对账"（兼容语义）；回归用例：`ReconcileFetchScopeTest`；
+- **分区数自适应（小 namespace 不分片）**：生效分区数为
+  `clamp(ceil(本地条目数 / reconcileBatchSize) 向上取 2 的幂, 1, reconcilePartitions)`。
+  即：**本地条目装得进一批时直接不分片** —— 一次往返就能把全部本地副本查完，分片只会白白降低单次覆盖度；
+  只有条目数远超一批时才真正分片，保证"每分区约等于一批"。
+  本地 3 条 + 批大小 1000 ⇒ 未分片、一次对账覆盖 3 条；本地 100 条 + 批大小 10 ⇒ 16 分区、载荷约 6 条；
+- 分区数配 1 时同样退化为"全量对账"（兼容语义）；回归用例：`ReconcileFetchScopeTest`；
 - 对账**只取版本、不取数据值**，因此不产生任何中央数据读；
 - 信号量属于**命名空间**：`nextSyncAtNanos` + `syncing` CAS；首次访问只设点，**不触发**对账；
 - 到点后由**当前访问线程**执行一次对账，完成后 `reschedule(now + checkInterval ± jitter)`；同一命名空间同一时刻只允许一个线程对账；
@@ -1142,7 +1147,7 @@ TwoLevelCache<String, User> cache = TwoLevelCache.<String, User>builder("user:de
 | `version.jitter` | `0.1` | 对账间隔抖动比例，避免多节点同时打中央 |
 | `version.retryBackoff` | `200ms` | 对账失败后的退避；退避期间不重复对账 |
 | `version.reconcileBatchSize` | `1000` | 一次 `HMGET` 的批量大小（控制单次命令载荷） |
-| `version.reconcilePartitions` | `16` | 对账分区数（2 的幂）：一次对账只覆盖当前 key 所属分区，载荷 = 本地条目数 / N |
+| `version.reconcilePartitions` | `16` | 对账分区数**上限**（2 的幂）：实际生效值自适应 —— 本地条目 ≤ 一批时不分片，否则取 `ceil(本地条目数/批大小)` 向上到 2 的幂并封顶到该值 |
 | `dynamic.syncInterval` | `1s` | `DYNAMIC` 热 key 同步点间隔（访问驱动） |
 | `dynamic.hotReportPartitions` | `16` | 热 key 上报分区数（2 的幂、≥ 2）；单次上报的 key 数 ≈ `maxHotKeys / N` |
 | `dynamic.hotReportBatchMax` | `64` | 单次 `reportAndStatusAll` 的硬上限（≈ 400 次 `redis.call`），防倾斜分区夯住 Redis |

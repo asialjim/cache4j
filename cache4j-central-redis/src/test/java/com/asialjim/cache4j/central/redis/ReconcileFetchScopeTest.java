@@ -29,36 +29,34 @@ class ReconcileFetchScopeTest {
     private final MutableClock clock = new MutableClock();
 
     @Test
-    @DisplayName("一次对账取回「当前 key 所属分区」里本地全部 key 的版本（单次 HMGET）")
-    void reconcileFetchesAllKeysInCurrentPartition() {
+    @DisplayName("本地条目少（装得下一批）时不分片：一次对账覆盖本地全部 key")
+    void smallLocalCacheIsNotPartitioned() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        TwoLevelCache<String, String> cache = cache(store, 1_000, 16);
+        TwoLevelCache<String, String> cache = cache(store, 1_000, 16);   // 3 条 ≤ 批大小 1000
 
         cache.put("a", "va");
         cache.put("b", "vb");
         cache.put("c", "vc");
         assertEquals(3, cache.local().keys().size());
 
-        // 首次访问只设检查点
-        cache.lookup("a");
+        cache.lookup("a");                       // 只设检查点
         assertEquals(0, store.revisionsCalls(), "首次访问只设点，不应对账");
 
         clock.advance(Duration.ofMillis(200));
         store.resetCounters();
         cache.lookup("a");
 
-        long expected = expectedPartitionPayload(cache, "a", 16);
-        assertEquals(1, store.revisionsCalls(), "一次对账只应发一次批量取版本");
-        assertEquals(expected, store.revisionsKeys(),
-                "应取回与当前 key 同分区的全部本地 key（不是只取当前 key，也不是全部 key）");
-        assertTrue(store.revisionsKeys() <= 3);
+        assertEquals(1, store.revisionsCalls(), "一次对账只发一次批量取版本");
+        assertEquals(3, store.revisionsKeys(),
+                "本地装得下一批 → 自适应为未分片，一次对账覆盖全部 3 个 key");
     }
 
     @Test
-    @DisplayName("分区把对账载荷摊薄：本地 100 条、16 分区时一次对账只有 1 批且远小于 100")
+    @DisplayName("本地条目远超一批时才分片：一次对账只有 1 批，载荷约为 1/分区数")
     void partitionsReducePayload() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        TwoLevelCache<String, String> cache = cache(store, 1_000, 16);
+        // 批大小 10 + 上限 16 分区 → ceil(条目数/10) 向上取 2 的幂，封顶 16
+        TwoLevelCache<String, String> cache = cache(store, 10, 16);
 
         for (int i = 0; i < 100; i++) {
             cache.put("k" + i, "v" + i);
@@ -72,11 +70,13 @@ class ReconcileFetchScopeTest {
         store.resetCounters();
         cache.lookup("k0");
 
-        long expected = expectedPartitionPayload(cache, "k0", 16);
-        assertEquals(1, store.revisionsCalls(), "16 分区 + 批大小 1000 → 一次对账只需 1 次往返");
+        int partitions = partitionsFor(cache, localSize, 10, 16);
+        long expected = expectedPartitionPayload(cache, "k0", partitions);
+        assertEquals(1, store.revisionsCalls(), "分片后每批 ≤ 批大小 → 一次对账只需 1 次往返");
         assertEquals(expected, store.revisionsKeys());
-        assertTrue(expected * 4 < localSize,
-                "单次对账载荷应远小于本地总条目数：本地=" + localSize + "，本次=" + expected);
+        assertTrue(partitions > 1, "本地条目远超一批时应启用分区，实际分区数=" + partitions);
+        assertTrue(expected * 2 < localSize,
+                "单次对账载荷应明显小于本地总条目数：本地=" + localSize + "，本次=" + expected);
     }
 
     @Test
@@ -178,6 +178,28 @@ class ReconcileFetchScopeTest {
                 .nanoClock(clock::nanos)
                 .milliClock(clock::millis)
                 .build();
+    }
+
+    /**
+     * 与门面 `effectivePartitions` 同规则的测试侧计算（用于断言分区数）。
+     *
+     * @param cache      门面
+     * @param localSize  本地条目数
+     * @param batchSize  批大小
+     * @param configured 配置上限
+     * @return 生效分区数
+     */
+    private int partitionsFor(TwoLevelCache<String, String> cache, int localSize,
+                              int batchSize, int configured) {
+        if (configured <= 1 || localSize <= batchSize) {
+            return 1;
+        }
+        int needed = (localSize + batchSize - 1) / batchSize;
+        int pow2 = Integer.highestOneBit(needed);
+        if (pow2 < needed) {
+            pow2 <<= 1;
+        }
+        return Math.max(1, Math.min(configured, pow2));
     }
 
     /**
