@@ -5,7 +5,6 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.Lookup;
-import com.asialjim.cache4j.core.StringCacheCodec;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.VersionedLookup;
@@ -60,7 +59,7 @@ class TwoLevelCacheIntegrationTest {
     private CentralCache<String> central(Duration nullTtl) {
         return new InMemoryCentralCache<>(
                 CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).nullTtl(nullTtl).build(),
-                StringCacheCodec.INSTANCE, clock::millis);
+                clock::millis);
     }
 
     private LocalCacheSpec.VersionSpec fastVersion() {

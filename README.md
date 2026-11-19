@@ -24,13 +24,13 @@
 | 模块 | 职责 | 主要依赖 |
 |---|---|---|
 | `cache4j` | 父工程（`pom` 聚合 + 依赖版本管理） | — |
-| `cache4j-core` | 内核：`Cache`、`Lookup`、`CacheKey`、`LocalEntry`、`KeyEncoder`、`CacheCodec`、`CacheLoader`、本地/中央缓存接口与 Spec、`TwoLevelCache` **接口** + `DefaultTwoLevelCache` 默认编排、统计、错误码 | `standard4j` |
+| `cache4j-core` | 内核：`Cache`、`Lookup`、`CacheKey`、`LocalEntry`、`KeyEncoder`、`CacheLoader`、本地/中央缓存接口与 Spec、`TwoLevelCache` **接口** + `DefaultTwoLevelCache` 默认编排、统计、错误码 | `standard4j` |
 | `cache4j-local` | 本地缓存实现：`NONE`/`STATIC`/`DYNAMIC` 策略、默认 HashMap 实现（分段 LRU + TTL）、`LocalCacheProvider` | `cache4j-core` |
 | `cache4j-local-caffeine` | 基于 Caffeine 的本地存储实现 | `cache4j-local`、Caffeine |
 | `cache4j-central` | 中央缓存 **SPI**：`CentralCache` 契约、`CentralCacheSpec`、`CentralCacheProvider`、`HotKeyCoordinator` 内存实现，以及仅供测试/单机的内存参考实现 | `cache4j-core` |
-| `cache4j-central-redis` | Redis 缓存 **SPI**：`RedisCommands` 命令契约、key 布局、envelope、版本 Lua、热 key 窗口、`RedisCentralCache`；不接入任何 Redis 客户端 | `cache4j-central` |
+| `cache4j-central-redis` | Redis **语义层 + 泛型下行 SPI**：`RedisValueStore<V>`、`RedisCentralCache<V>`（版本/负缓存/TTL 抖动/对账/热 key 语义）；**不碰字节**，key 布局/envelope/Lua/序列化都归适配层 | `cache4j-central` |
 | `cache4j-spring` | Spring Boot 自动装配 + Spring Cache 桥接（不含 Redis 连接） | `cache4j-core`、`cache4j-local`、`cache4j-central`、Spring |
-| `cache4j-spring-redis` | 接入 Spring Data Redis 体系：用 `RedisConnectionFactory` 实现 `RedisCommands`；底层用 Jedis / Lettuce / 其他客户端由用户选择 | `cache4j-spring`、`cache4j-central-redis`、Spring Data Redis |
+| `cache4j-spring-redis` | 接入 Spring Data Redis：用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`，key 布局 / envelope / Lua / **serializer** 都在这里；底层客户端由用户选择 | `cache4j-spring`、`cache4j-central-redis`、Spring Data Redis |
 | `cache4j-solon` | Solon 插件 + `CacheService`（含 tags）桥接 | `cache4j-core`、`cache4j-local`、`cache4j-central`、`solon-data` |
 | `cache4j-starter` | **聚合/默认装配**：只拉依赖 + 按配置装配默认实现，**不含编排逻辑** | 上面若干模块 |
 
@@ -41,10 +41,10 @@ Redis 方向的三层边界：
 | 层 | 模块 | 定义什么 | 不做什么 |
 |---|---|---|---|
 | 中央缓存 SPI | `cache4j-central` | 中央缓存的读写、TTL、负缓存、版本、热 key 协调、provider 契约 | 不认识 Redis，也不认识任何客户端 |
-| Redis 缓存 SPI | `cache4j-central-redis` | Redis 命令契约 `RedisCommands`、key 布局、envelope、版本/热 key Lua、`RedisCentralCache` | 不依赖 Jedis / Lettuce / Redisson / Spring |
-| 框架接入 | `cache4j-spring-redis` | 用 `spring-data-redis` 的 `RedisConnectionFactory` 实现 `RedisCommands` | 不复制 key/envelope/缓存逻辑；不锁定底层客户端 |
+| Redis 语义层 | `cache4j-central-redis` | `RedisValueStore<V>` 泛型下行 SPI、`RedisCentralCache<V>`（版本 / 负缓存 / TTL / 对账 / 热 key 语义） | 不碰字节，不含 key 布局 / envelope / Lua / serializer，也不依赖任何客户端或 Spring |
+| 适配层（真正做 I/O） | `cache4j-spring-redis` | 用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer | 不复制版本/热 key 语义；不锁定底层客户端 |
 
-`cache4j-central-redis` **只有接口与纯逻辑**：不依赖 Jedis、Lettuce、Redisson 或 Spring。`cache4j-spring-redis` 只负责把 Spring Data Redis 的连接能力接到 `RedisCommands` 上；底层使用 Jedis、Lettuce 还是其他客户端，由用户在 Spring Boot 的 `spring.data.redis.*` 中自行选择。
+`cache4j-central-redis` **只有接口与纯语义**：不依赖 Jedis、Lettuce、Redisson 或 Spring，也不碰字节。`cache4j-spring-redis` 才是真正与 Redis 读写的地方，负责连接、key 布局、envelope、Lua 与 **serializer**；底层用 Jedis、Lettuce 还是其他客户端，由用户在 `spring.data.redis.*` 中自行选择。
 
 所有模块中只有父工程 `cache4j` 是 `pom` 打包；`cache4j-local`、`cache4j-central` 以及各实现/适配模块都是普通 `jar`，不做聚合 `pom`。
 
@@ -60,7 +60,7 @@ LocalCache<User> local = LocalCaches.create(
 );
 
 // redisProvider 由 cache4j-spring-redis 装配（Spring Data Redis），
-// 或由业务用自定义 RedisCommands 构造；cache4j-central-redis 本身不带客户端。
+// 或由业务自行实现 RedisValueStore<V>；cache4j-central-redis 本身不带客户端、也不碰序列化。
 CentralCache<User> central = redisProvider.create(
         CentralCacheSpec.builder("user:detail")
                 .ttl(Duration.ofMinutes(60))          // 中央 TTL 必须 >= 本地 TTL

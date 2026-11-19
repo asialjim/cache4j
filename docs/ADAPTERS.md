@@ -6,8 +6,8 @@
 >
 > - `cache4j-core` / `local` / `central` / `central-redis` 不出现 Spring、Solon、Jedis、Lettuce、Redisson 依赖；
 > - `cache4j-central` 定义中央缓存 SPI，不认识 Redis；
-> - `cache4j-central-redis` 定义 Redis 缓存 SPI（`RedisCommands`、key 布局、envelope、`RedisCentralCache`），**没有客户端**；
-> - `cache4j-spring-redis` 接入 Spring Data Redis，把 `RedisConnectionFactory` 适配成 `RedisCommands`；底层客户端由用户选择；
+> - `cache4j-central-redis` 定义 **Redis 语义层 + 泛型下行 SPI**（`RedisValueStore<V>`、版本/负缓存/热 key 语义），**没有客户端、也不碰字节**；
+> - `cache4j-spring-redis` 是**真正做 I/O 的适配层**：把 `RedisConnectionFactory` 实现成 `RedisValueStore<V>`，并自己负责 key 布局、envelope、Lua 与 serializer；底层客户端由用户选择；
 > - 适配层不复制缓存逻辑，只做配置绑定、Bean 装配、协议转换、key 转换、错误处理。
 
 ---
@@ -32,7 +32,7 @@ cache4j-starter                  聚合/默认装配：只拉依赖 + 装配默�
 | 模块 | 负责 | 不负责 |
 |---|---|---|
 | `cache4j-spring` | Spring Cache `CacheManager` / `Cache` 适配、属性绑定、本地缓存与二级缓存的 Bean 装配、错误处理 | Redis 连接、Redis 命令 |
-| `cache4j-spring-redis` | 用 `RedisConnectionFactory` 实现 `RedisCommands`；装配 `RedisCentralCacheProvider`；复用 `spring.data.redis.*` | Spring Cache 适配、缓存策略、key/envelope、锁定底层客户端 |
+| `cache4j-spring-redis` | 用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer；装配 `RedisCentralCacheProvider`；复用 `spring.data.redis.*` | Spring Cache 适配、版本/热 key 语义、锁定底层客户端 |
 | `cache4j-solon` | Solon `CacheService` / `CacheTagsService` 实现、插件生命周期、属性绑定 | 缓存策略、Redis 连接 |
 | `cache4j-starter` | 依赖聚合、默认装配（读 `cache4j.*` 创建默认实现）；Spring 用户另用 `cache4j-spring-boot-starter` | 编排逻辑（在 `cache4j-core`）、框架绑定 |
 
@@ -201,23 +201,27 @@ public CachingConfigurer cachingConfigurer(KeyGenerator keyGenerator,
   - 编解码错误永远不吞（由 `CacheException` 直接抛出）。
 - `CacheErrorHandler` 覆盖 `handleCacheGetError` / `handleCachePutError` / `handleCacheEvictError` / `handleCacheClearError`。
 
-### 2.5 值编解码
+### 2.5 值编解码（序列化归适配层）
 
-Spring 的 `@Cacheable` 返回值类型在编译期不一定能映射到某个 `CacheCodec`，因此适配器采用**按缓存名解析 codec**：
+**谁的 I/O 谁关心 codec**：`cache4j-core`、`cache4j-central`、`cache4j-central-redis` 都不知道序列化；
+只有真正读写 Redis 的模块才决定"值怎么变成字节"。Spring 适配层用 **`RedisSerializer<V>`**：
 
 ```java
-public interface CacheCodecResolver {
-    <V> CacheCodec<V> resolve(String cacheName);
+public interface CacheSerializerResolver {
+    /** 按缓存名解析 serializer；返回 null 表示该缓存未配置，启动阶段应失败 */
+    RedisSerializer<?> resolve(String cacheName);
 }
 ```
 
 - 默认实现：
-  1. 查找 `cache4j.caches.<name>.codec` 指定的 Bean 名；
-  2. 查找全局 `CacheCodec` Bean；
-  3. 仅当显式允许时回退到 `JdkCacheCodec`（要求值实现 `Serializable`）；
-  4. 都没有则在启动阶段失败，并提示配置 codec。
-- 推荐为每个缓存名提供一个 JSON codec Bean（由 `util4j` 或后续 `cache4j-codec-jackson` 提供）；
-- 不把 Spring 的 `RedisTemplate` value serializer 当作 codec；两者职责不同。
+  1. `cache4j.caches.<name>.serializer` 指定的 Bean 名；
+  2. 全局唯一的 `RedisSerializer` Bean；
+  3. 都没有 ⇒ **启动阶段失败**并提示配置（不静默回退 JDK 序列化）；
+- 推荐为每类实体提供一个 JSON serializer Bean（Jackson 适配由 `util4j` 或业务提供）；
+- **不使用 `RedisTemplate` 的 value serializer 做二次包装**：`RedisConnection` 的字节命令只调用一次，
+  encode/decode 各自只发生一次（envelope 直接写在这份字节里）；
+- 兼容性：不同适配器 / 不同 serializer 写出的数据**互不兼容**，同一 key 空间必须统一；更换时 bump
+  `globalPrefix` 或清空缓存，否则会抛 `CODEC_DECODE_FAILED`（显式失败，不静默当 miss）。
 
 ### 2.6 配置示例
 
@@ -242,7 +246,7 @@ cache4j:
         ttl: 10m
         null-ttl: 30s
         fail-open: true
-      codec: userCacheCodec       # 业务提供的 CacheCodec Bean 名
+      serializer: userCacheSerializer   # 业务提供的 RedisSerializer Bean 名（只在 spring-redis 生效）
 
     "[product:hot]":
       local-strategy: dynamic
@@ -270,7 +274,7 @@ cache4j:
       central:
         type: redis
         ttl: 10m
-      codec: productCacheCodec
+      serializer: productCacheSerializer
   redis:
     key-prefix: cache4j
     hash-tag: true
@@ -281,16 +285,17 @@ cache4j:
 
 ```java
 @Configuration
-public class CacheCodecConfig {
+public class CacheSerializerConfig {
 
     @Bean
-    public CacheCodec<User> userCacheCodec(ObjectMapper objectMapper) {
-        return new JacksonCacheCodec<>(objectMapper, User.class); // 具体实现待定
+    public RedisSerializer<User> userCacheSerializer(ObjectMapper objectMapper) {
+        // Spring Data Redis 的通用 JSON serializer 即可；envelope 由 cache4j-spring-redis 负责
+        return new GenericJackson2JsonRedisSerializer(objectMapper);
     }
 }
 ```
 
-### 2.7 生命周期与禁用
+### 2.7 生命周期与禁用### 2.7 生命周期与禁用
 
 - `cache4j.enabled=false` 关闭全部自动装配；
 - 业务已定义 `CacheManager` 时，适配器默认让位；可用 `cache4j.spring.primary=true` 强制注册 `@Primary`；
@@ -315,111 +320,82 @@ public class CacheCodecConfig {
 
 ### 3.1 职责
 
-只做一件事：把 Spring Data Redis 的连接适配成 `RedisCommands`，让 `cache4j-central-redis` 的 Redis 缓存 SPI 可以工作。
+只做一件事：把 Spring Data Redis 的连接适配成 `RedisValueStore<V>`，让 `cache4j-central-redis` 的语义层可以工作。key 布局、envelope、Lua 与 **serializer** 也都在本模块。
 
 ```text
 用户选择的底层客户端（Jedis / Lettuce / 其他）
         ↓
 Spring Data Redis: RedisConnectionFactory
         ↓
-SpringRedisCommands implements RedisCommands   (cache4j-spring-redis)
+SpringRedisValueStore implements RedisValueStore<V>   (cache4j-spring-redis)
         ↓
-RedisCentralCache                             (cache4j-central-redis)
+RedisCentralCache                                     (cache4j-central-redis)
         ↓
 TwoLevelCache                                 (cache4j-core)
 ```
 
-它**不**实现 key 布局、envelope、负缓存、TTL 抖动、命中统计；这些都在 `cache4j-central-redis` / `cache4j-core`。它也**不**决定底层客户端：Jedis、Lettuce 或其他实现由用户在 Spring Data Redis 侧选择。
+它**不**实现版本语义、负缓存策略、TTL 抖动、热 key 判定与命中统计；这些在 `cache4j-central-redis` / `cache4j-core`。它**要**实现 key 布局、envelope、Lua、序列化——因为真正做 I/O 的是它。它也**不**决定底层客户端：Jedis、Lettuce 或其他实现由用户在 Spring Data Redis 侧选择。
 
-### 3.2 `SpringRedisCommands`
+### 3.2 `SpringRedisValueStore`
 
 ```java
-public final class SpringRedisCommands implements RedisCommands {
+public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 
     private final RedisConnectionFactory factory;
+    private final RedisKeyFormatter keys;          // 本模块自己的 key 布局
+    private final RedisSerializer<V> serializer;   // 本模块自己的序列化方案
 
     @Override
-    public Optional<byte[]> get(byte[] key) {
+    public VersionedLookup<V> read(CacheKey key) {
         try (RedisConnection c = factory.getConnection()) {
-            return Optional.ofNullable(c.stringCommands().get(key));
-        }
-    }
+            // 一次往返：HGET __rev field + GET data（同一 hash tag 下用一个 Lua 合成）
+            List<?> raw = (List<?>) c.scriptingCommands().eval(
+                    RedisScripts.READ_WITH_REVISION, ReturnType.MULTI,
+                    2, keys.revision(key.namespace()), keys.format(key),
+                    key.encoded().getBytes(UTF_8));
 
-    @Override
-    public List<byte[]> getAll(List<byte[]> keys) {
-        try (RedisConnection c = factory.getConnection()) {
-            return c.stringCommands().mGet(keys.toArray(byte[][]::new));
-        }
-    }
-
-    @Override
-    public void set(byte[] key, byte[] value, Duration ttl) {
-        try (RedisConnection c = factory.getConnection()) {
-            c.stringCommands().set(key, value,
-                    Expiration.milliseconds(ttl.toMillis()),
-                    SetOption.upsert());
-        }
-    }
-
-    @Override
-    public boolean setIfAbsent(byte[] key, byte[] value, Duration ttl) {
-        try (RedisConnection c = factory.getConnection()) {
-            return Boolean.TRUE.equals(c.stringCommands().set(key, value,
-                    Expiration.milliseconds(ttl.toMillis()),
-                    SetOption.ifAbsent()));
-        }
-    }
-
-    @Override
-    public long del(byte[]... keys) {
-        try (RedisConnection c = factory.getConnection()) {
-            return c.keyCommands().del(keys);
-        }
-    }
-
-    @Override
-    public boolean expire(byte[] key, Duration ttl) {
-        try (RedisConnection c = factory.getConnection()) {
-            return Boolean.TRUE.equals(c.keyCommands().pexpire(key, ttl.toMillis()));
-        }
-    }
-
-    @Override
-    public Object eval(byte[] script, List<byte[]> keys, List<byte[]> args) {
-        try (RedisConnection c = factory.getConnection()) {
-            byte[][] keysAndArgs = concat(keys, args);
-            return c.scriptingCommands().eval(
-                    script, ReturnType.MULTI, keys.size(), keysAndArgs);
-        }
-    }
-
-    @Override
-    public void clearByPrefix(byte[] prefix, int batchSize) {
-        // SCAN MATCH prefix* COUNT batchSize + 分批 DEL/UNLINK
-        // cluster 连接需逐节点处理；v1 标记为 best-effort
-    }
-
-    @Override
-    public boolean ping() {
-        try (RedisConnection c = factory.getConnection()) {
-            return "PONG".equalsIgnoreCase(c.ping());
+            long revision = decodeRevision((byte[]) raw.get(0));     // 缺失 → 0
+            byte[] data = (byte[]) raw.get(1);
+            if (data == null) {
+                return new VersionedLookup<>(revision, Lookup.miss());
+            }
+            Envelope env = Envelope.decode(data);                    // magic / version / flags
+            if (env.negative()) {
+                return new VersionedLookup<>(revision, Lookup.negative());
+            }
+            return new VersionedLookup<>(revision, Lookup.hit(serializer.deserialize(env.payload())));
         } catch (RuntimeException e) {
-            return false;
+            throw translate(e);                                      // RedisAccessException
         }
     }
+
+    @Override
+    public long write(CacheKey key, V value, Duration ttl) {
+        byte[] payload = serializer.serialize(value);                // 失败 → CODEC_ENCODE_FAILED
+        byte[] raw = Envelope.value(payload);
+        try (RedisConnection c = factory.getConnection()) {
+            // 一个 Lua：SET data PX ttl + HSET __rev field "<rev>|<expireAt>"
+            return (Long) c.scriptingCommands().eval(
+                    RedisScripts.WRITE_WITH_REVISION, ReturnType.INTEGER,
+                    2, keys.revision(key.namespace()), keys.format(key),
+                    /* ARGV */ encodeArgs(key, raw, ttl, nowMillis()));
+        } catch (RuntimeException e) {
+            throw translate(e);
+        }
+    }
+
+    // writeNegative / writeIfAbsent / delete / clear / revisions / revision / reportHotKey* 同理
 }
 ```
 
 要点：
 
-- `RedisConnection` 不是线程安全的；每次操作取用、`close()` 归还；
-- 不缓存 `RedisConnection`，连接池/共享原生连接由 Spring 管理；
-- `clearByPrefix` 禁止 `KEYS`；`SCAN` 的 `COUNT` 用 `clearBatchSize`；
-- 底层异常统一翻译为 `RedisAccessException`（`UNAVAILABLE` / `TIMEOUT` / `COMMAND_FAILED`）；
-- **不使用 `RedisTemplate` 的 value serializer**，直接使用 `RedisConnection` 的 `byte[]` 命令，避免双重序列化；
-- 底层客户端由用户选择：Jedis、Lettuce 或其他 Spring Data Redis 支持的实现，适配器都不感知；
-- `eval` 使用 `ReturnType.MULTI`，把 Redis 数组映射为 `List<Object>`（元素为 `byte[]` 或 `Long`）；版本 Lua 只返回整数，热 key Lua 返回 `[status, total, active, hot]`，由 `cache4j-central-redis` 统一解码；
-- `eval` 不经过 `RedisTemplate.execute(RedisScript)`，避免 `RedisScript` 的结果反序列化器参与。`RedisConnection.scriptingCommands()` 直接返回原始字节。
+- **key 布局、envelope、Lua、serializer 全在本模块**：`RedisCentralCache` 只看见 `V` 与 `CacheKey`；
+- `RedisConnection` 不是线程安全的：每次操作取用、`close()` 归还；连接池/原生连接由 Spring 管理；
+- `clear` 用 `keyCommands().scan(ScanOptions...)`，cluster 需逐节点（v1 标记 best-effort）；禁止 `KEYS`；
+- 底层 `RedisConnectionFailureException` / `RedisSystemException` 翻译成 `RedisAccessException`；
+- **序列化失败直接抛 `CacheException(CODEC_ENCODE_FAILED / CODEC_DECODE_FAILED)`**，不静默当 miss；
+- 换 Redisson / Solon 插件：实现同一接口，key/envelope/Lua/serializer 换成自己的，语义层不动。
 
 ### 3.3 自动装配
 
@@ -433,31 +409,32 @@ public class Cache4jSpringRedisAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public RedisCommands redisCommands(RedisConnectionFactory factory,
-                                       Cache4jRedisProperties props) {
-        return new SpringRedisCommands(factory, props);
+    public RedisValueStore<Object> redisValueStore(RedisConnectionFactory factory,
+                                                   Cache4jRedisProperties props,
+                                                   CacheSerializerResolver serializers) {
+        // key 布局 / envelope / Lua / serializer 都在这里
+        return new SpringRedisValueStore<>(factory, props.keyFormatter(), serializers);
     }
 
     @Bean
     @ConditionalOnMissingBean
-    public CentralCacheProvider centralCacheProvider(RedisCommands commands,
-                                                     Cache4jRedisProperties props) {
-        return new RedisCentralCacheProvider(commands, props.keyFormatter());
+    public CentralCacheProvider centralCacheProvider(RedisValueStore<Object> store) {
+        return new RedisCentralCacheProvider(store);
     }
 
     @Bean
     @ConditionalOnMissingBean
-    public HotKeyCoordinator hotKeyCoordinator(RedisCommands commands,
-                                               Cache4jRedisProperties props,
+    public HotKeyCoordinator hotKeyCoordinator(RedisValueStore<Object> store,
                                                Cache4jProperties cache4jProperties) {
         // 阈值按缓存名解析：各缓存的 local.dynamic.global.* 不同
-        return new RedisHotKeyCoordinator(commands, props.keyFormatter(),
+        return new RedisHotKeyCoordinator(store,
                 namespace -> cache4jProperties.dynamicGlobalOf(namespace));
     }
 }
 ```
 
 - 复用 Spring Boot 的 `spring.data.redis.*`：host、port、password、database、SSL、sentinel、cluster、pool 全部由 Spring 配置；
+- `RedisValueStore<Object>` 是 Spring 侧的常规做法（与 `RedisTemplate<K,Object>` 同理）：serializer 按缓存名解析，内部做一次类型收窄；
 - cache4j 只增加 `cache4j.redis.*`：`key-prefix`、`hash-tag`、`clear-batch-size`；
 - 热 key 参数来自各缓存的 `local.dynamic.global.*`，不放进 `cache4j.redis.*`；`RedisHotKeyCoordinator` 通过 `namespace -> GlobalSpec` 解析器取值，因此同一个协调器可以服务多个 `DYNAMIC` 缓存；
 - 某个 namespace 没有 `dynamic.global` 配置时，协调器拒绝该 namespace 的上报（返回 `UNKNOWN` 并记 WARN），而不是用别的缓存的阈值；
@@ -465,17 +442,17 @@ public class Cache4jSpringRedisAutoConfiguration {
 - 不覆盖用户自定义的 `RedisConnectionFactory`；
 - `cache4j-spring-redis` 的 `pom.xml` 只依赖 `spring-data-redis` 的 API，不依赖 `spring-boot-starter-data-redis`，也不依赖 Jedis / Lettuce；避免替用户锁定客户端；
 - 不声明、也不锁定 Jedis / Lettuce 等具体客户端；由用户通过 Spring Data Redis 依赖与配置选择；
-- 若容器里已有 `CentralCacheProvider`，自动配置让位；
+- 若容器里已有 `CentralCacheProvider` 或 `RedisValueStore`，自动配置让位；
 - 若 `cache4j.central.type=redis` 但类路径没有 Spring Data Redis，启动失败并提示引入依赖。
 
 ### 3.4 序列化边界
 
-| 层 | 负责 |
-|---|---|
-| 业务 | 提供 `CacheCodec<V>` |
-| `cache4j-central-redis` | envelope + key 布局 + TTL/负缓存语义 |
-| `cache4j-spring-redis` | 连接与命令适配 |
-| Spring Data Redis | 连接池/集群/哨兵；客户端（Jedis / Lettuce / 其他）由用户选择；**不**参与 value 序列化 |
+| 层 | 负责 | 不负责 |
+|---|---|---|
+| 业务 | 实体 + （可选）自己的 `RedisSerializer<V>` | — |
+| `cache4j-core` / `cache4j-central-redis` | 编排、版本、负缓存、热 key **语义** | 序列化、key 布局、envelope、Lua |
+| `cache4j-spring-redis` | 连接 + key 布局 + envelope + Lua + **serializer** | 缓存语义 |
+| Spring Data Redis | 连接池/集群/哨兵；客户端（Jedis / Lettuce / 其他）由用户选择 | value 序列化（不做二次包装） |
 
 ### 3.5 集群与清理
 
@@ -530,7 +507,7 @@ Solon 的 `@Cache` / `@CachePut` / `@CacheRemove` 注解通过 `CacheService` �
 public final class Cache4jCacheService implements CacheService {
 
     private final TwoLevelCache<String, Object> cache; // identity key encoder
-    private final CacheCodec<Object> codec;
+    // Solon 侧同样把编解码放在这一层（CacheService 存的是 Object，由本模块决定序列化）
 
     @Override
     public void store(String key, Object obj, int seconds) {
@@ -632,7 +609,7 @@ cache4j:
     # sync-interval / coordination=global + global.*（见 LOCAL.md）
 ```
 
-> v1 的 `cache4j-solon` 不提供 Redis 客户端适配。若 Solon 应用需要 Redis，按同样模式新增 `cache4j-solon-redis`：用 Solon 的 Redis 插件实现 `RedisCommands`，再注入 `RedisCentralCacheProvider`。它与 `cache4j-spring-redis` 对称，不把 Solon 依赖带进 `cache4j-central-redis`。
+> v1 的 `cache4j-solon` 不提供 Redis 客户端适配。若 Solon 应用需要 Redis，按同样模式新增 `cache4j-solon-redis`：用 Solon 的 Redis 插件实现 `RedisValueStore<V>`（含自己的 key/envelope/Lua/serializer），再注入 `RedisCentralCacheProvider`。它与 `cache4j-spring-redis` 对称，不把 Solon 依赖带进 `cache4j-central-redis`。
 
 ### 4.6 测试
 
@@ -664,7 +641,7 @@ cache4j:
 | ID | 决策 | 理由 | 备选 |
 |---|---|---|---|
 | A1 | `cache4j-spring` 不接 Redis | 职责单一；没有 Redis 也能用本地/内存中央缓存 | 把 Redis 装配塞进 `cache4j-spring` |
-| A2 | `cache4j-spring-redis` 只实现 `RedisCommands` | 复用 Spring 连接池/集群/哨兵，不复制 Redis 语义 | 在 Spring 模块里重写 `RedisCentralCache` |
+| A2 | `cache4j-spring-redis` 实现 `RedisValueStore<V>`（连接 + key 布局 + envelope + Lua + serializer） | 复用 Spring 连接池/集群/哨兵，不复制版本与热 key 语义；序列化留在真正做 I/O 的地方 | 在 Spring 模块里重写 `RedisCentralCache` |
 | A3 | 不使用 `RedisTemplate` 的 value serializer | 避免双重序列化；Redis 数据格式由 cache4j 决定 | 直接用 `RedisTemplate` |
 | A4 | Spring key 展开 `SimpleKey` | 稳定、可复现；禁止对象哈希进 key | 用 `SimpleKey.toString()` |
 | A5 | Solon 通过 `CacheService` 接入 | Solon 注解体系原生依赖该接口；替换默认实现即可 | 自己实现 AOP |

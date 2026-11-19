@@ -2,7 +2,6 @@ package com.asialjim.cache4j.central;
 
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.Lookup;
-import com.asialjim.cache4j.core.StringCacheCodec;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.VersionedLookup;
@@ -38,7 +37,7 @@ class InMemoryCentralCacheTest {
     void setUp() {
         cache = new InMemoryCentralCache<>(
                 CentralCacheSpec.builder("user:detail").ttl(Duration.ofMinutes(10)).build(),
-                StringCacheCodec.INSTANCE, clock::millis);
+                clock::millis);
     }
 
     private CacheKey key(String value) {

@@ -1,6 +1,5 @@
 package com.asialjim.cache4j.central;
 
-import com.asialjim.cache4j.core.CacheCodec;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
@@ -42,8 +41,8 @@ public final class InMemoryCentralCacheProvider implements CentralCacheProvider 
     }
 
     @Override
-    public <V> CentralCache<V> create(CentralCacheSpec spec, CacheCodec<V> codec) {
-        return new InMemoryCentralCache<>(spec, codec, milliClock);
+    public <V> CentralCache<V> create(CentralCacheSpec spec) {
+        return new InMemoryCentralCache<>(spec, milliClock);
     }
 
     @Override

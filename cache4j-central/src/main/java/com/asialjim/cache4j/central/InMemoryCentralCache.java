@@ -1,6 +1,5 @@
 package com.asialjim.cache4j.central;
 
-import com.asialjim.cache4j.core.CacheCodec;
 import com.asialjim.cache4j.core.CacheCounters;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheStats;
@@ -25,7 +24,8 @@ import java.util.function.LongSupplier;
  * 写值与版本在同一临界区内完成；{@link #evict} 连同版本一起删除，因此删除对其他节点可观
  * （对账时"中央已无此 key"）。</p>
  *
- * <p>内存实现不做序列化：{@code codec} 只为与 {@code CentralCacheProvider} 的签名一致而接收。</p>
+ * <p><strong>内存实现不做序列化</strong>：直接持有 {@code V}。编解码只属于真正访问中央存储的
+ * 适配模块（如 {@code cache4j-spring-redis}），核心与本模块都不知情。</p>
  *
  * @param <V> 值类型
  * @author Asial Jim
@@ -33,19 +33,16 @@ import java.util.function.LongSupplier;
 public final class InMemoryCentralCache<V> implements CentralCache<V> {
 
     private final CentralCacheSpec spec;
-    private final CacheCodec<V> codec;
     private final ConcurrentHashMap<CacheKey, Entry<V>> data = new ConcurrentHashMap<>();
     private final CacheCounters counters = new CacheCounters();
     private final LongSupplier milliClock;
 
     /**
      * @param spec       配置
-     * @param codec      值编解码器（内存实现不序列化）
      * @param milliClock 毫秒时钟
      */
-    public InMemoryCentralCache(CentralCacheSpec spec, CacheCodec<V> codec, LongSupplier milliClock) {
+    public InMemoryCentralCache(CentralCacheSpec spec, LongSupplier milliClock) {
         this.spec = spec;
-        this.codec = codec;
         this.milliClock = milliClock;
     }
 
@@ -186,13 +183,6 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
      */
     public int size() {
         return data.size();
-    }
-
-    /**
-     * @return 接收到的编解码器（内存实现不序列化）
-     */
-    public CacheCodec<V> codec() {
-        return codec;
     }
 
     private long store(CacheKey key, V value, boolean negative, Duration ttl) {
