@@ -29,26 +29,29 @@ class ReconcileFetchScopeTest {
     private final MutableClock clock = new MutableClock();
 
     @Test
-    @DisplayName("本地条目少（装得下一批）时不分片：一次对账覆盖本地全部 key")
-    void smallLocalCacheIsNotPartitioned() {
+    @DisplayName("本地条目少也只用「同模 key」对账，绝不退化成全量")
+    void smallLocalCacheStillReconcilesOnlySameModuloKeys() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        TwoLevelCache<String, String> cache = cache(store, 1_000, 16);   // 3 条 ≤ 批大小 1000
+        // 分区数固定为 2：挑两个落在不同分区的 key，确保"只对账同模"可验证
+        TwoLevelCache<String, String> cache = cache(store, 1_000, 2);
 
-        cache.put("a", "va");
-        cache.put("b", "vb");
-        cache.put("c", "vc");
-        assertEquals(3, cache.local().keys().size());
+        String[] pair = twoKeysInDifferentPartitions(2);
+        String visitor = pair[0];
+        String other = pair[1];
+        cache.put(visitor, "v-" + visitor);
+        cache.put(other, "v-" + other);
+        assertEquals(2, cache.local().keys().size());
 
-        cache.lookup("a");                       // 只设检查点
+        cache.lookup(visitor);                   // 只设检查点
         assertEquals(0, store.revisionsCalls(), "首次访问只设点，不应对账");
 
         clock.advance(Duration.ofMillis(200));
         store.resetCounters();
-        cache.lookup("a");
+        cache.lookup(visitor);
 
         assertEquals(1, store.revisionsCalls(), "一次对账只发一次批量取版本");
-        assertEquals(3, store.revisionsKeys(),
-                "本地装得下一批 → 自适应为未分片，一次对账覆盖全部 3 个 key");
+        assertEquals(1, store.revisionsKeys(),
+                "只对账与访问 key 同模的那 1 个 key；不同模的 " + other + " 本次不参与");
     }
 
     @Test
@@ -70,11 +73,11 @@ class ReconcileFetchScopeTest {
         store.resetCounters();
         cache.lookup("k0");
 
-        int partitions = partitionsFor(cache, localSize, 10, 16);
+        int partitions = 16;
         long expected = expectedPartitionPayload(cache, "k0", partitions);
         assertEquals(1, store.revisionsCalls(), "分片后每批 ≤ 批大小 → 一次对账只需 1 次往返");
         assertEquals(expected, store.revisionsKeys());
-        assertTrue(partitions > 1, "本地条目远超一批时应启用分区，实际分区数=" + partitions);
+        assertTrue(partitions > 1, "应按配置分区：N=" + partitions);
         assertTrue(expected * 2 < localSize,
                 "单次对账载荷应明显小于本地总条目数：本地=" + localSize + "，本次=" + expected);
     }
@@ -181,25 +184,26 @@ class ReconcileFetchScopeTest {
     }
 
     /**
-     * 与门面 `effectivePartitions` 同规则的测试侧计算（用于断言分区数）。
+     * 挑两个落在不同分区的 key（用于验证"只对账同模 key"）。
      *
-     * @param cache      门面
-     * @param localSize  本地条目数
-     * @param batchSize  批大小
-     * @param configured 配置上限
-     * @return 生效分区数
+     * @param partitions 分区数
+     * @return 两个明文 key，{@code [0]} 与 {@code [1]} 必然不同模
      */
-    private int partitionsFor(TwoLevelCache<String, String> cache, int localSize,
-                              int batchSize, int configured) {
-        if (configured <= 1 || localSize <= batchSize) {
-            return 1;
+    private String[] twoKeysInDifferentPartitions(int partitions) {
+        String first = null;
+        int firstPartition = -1;
+        for (int i = 0; i < 64; i++) {
+            String candidate = "k" + i;
+            int partition = HashPartitions.of(
+                    new CacheKey(NS, "s" + candidate.length() + ":" + candidate), partitions);
+            if (first == null) {
+                first = candidate;
+                firstPartition = partition;
+            } else if (partition != firstPartition) {
+                return new String[]{first, candidate};
+            }
         }
-        int needed = (localSize + batchSize - 1) / batchSize;
-        int pow2 = Integer.highestOneBit(needed);
-        if (pow2 < needed) {
-            pow2 <<= 1;
-        }
-        return Math.max(1, Math.min(configured, pow2));
+        throw new IllegalStateException("未能构造出不同分区的两个 key");
     }
 
     /**

@@ -610,7 +610,8 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     }
 
     /**
-     * 一次对账：只校验「当前访问 key 所属分区」里本地已知的副本。
+     * 一次对账：按 {@code HashPartitions.of(accessedKey, N)} 取到分区号，只校验本地 key 中
+     * 「hash 取模结果相同」的那些副本 —— 范围恒为 1/N，不会因为本地 key 少而变成全量。
      *
      * @param version     版本参数
      * @param accessedKey 当前访问的 key（决定分区）
@@ -621,10 +622,9 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         if (keys.isEmpty()) {
             return new ReconcileOutcome(0, 0, 1);
         }
-        // 分区数自适应：本地条目装得下一批时直接不分片 —— 一次往返就能全查完，
-        // 分区只会白白降低单次覆盖度（每个 key 虽然仍能在自己被读时校验，但没必要的分散）。
-        int partitions = effectivePartitions(keys.size(),
-                version.reconcileBatchSize(), version.reconcilePartitions());
+        // 分区号由「当前访问的 key」决定；只对账本地 key 中 hash 取模结果与之相同的那些。
+        // 这就是分区的全部目的：一次对账的范围恒为 1/N，不随本地规模变化、也不退化成全量。
+        int partitions = version.reconcilePartitions();
         int partition = HashPartitions.of(accessedKey, partitions);
 
         List<CacheKey> selected = new ArrayList<>();
@@ -661,32 +661,6 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             }
         }
         return new ReconcileOutcome(invalidated, partition, partitions);
-    }
-
-    /**
-     * 自适应分区数：保证「每个分区尽量只装一批」，且不超过配置上限。
-     *
-     * <ul>
-     *   <li>本地条目数 ≤ 一批：返回 {@code 1}（不分片，一次往返覆盖全部本地副本）；</li>
-     *   <li>否则取 {@code ceil(本地条目数 / batchSize)} 向上取整到 2 的幂，并封顶到配置值 ——
-     *       既让单次对账通常是 1 批，又尽量让一次覆盖更多 key。</li>
-     * </ul>
-     *
-     * @param localSize   本地当前条目数
-     * @param batchSize   单批大小
-     * @param configured  配置的分区上限（2 的幂）
-     * @return 生效分区数（2 的幂，≥ 1）
-     */
-    static int effectivePartitions(int localSize, int batchSize, int configured) {
-        if (configured <= 1 || batchSize <= 0 || localSize <= batchSize) {
-            return 1;
-        }
-        int needed = (localSize + batchSize - 1) / batchSize;
-        int pow2 = Integer.highestOneBit(needed);
-        if (pow2 < needed) {
-            pow2 <<= 1;
-        }
-        return Math.max(1, Math.min(configured, pow2));
     }
 
     /**
