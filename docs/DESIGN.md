@@ -593,7 +593,11 @@ requestCount == localHitCount + localNegativeHitCount + centralHitCount
 - `nullTtl == 0` 时 `*NegativeHitCount ≡ 0`，`protectionRate == valueHitRate`，两个口径自动退化成同一个；
 - 存储实现把审计层字段返回 `0`、`estimatedSize` 返回 `-1`（中央不保证大小）；**不提供 `hitRate` 这类派生量的存储实现不允许拼接**；
 - `statsEnabled=false` 时全部计数器换成 **no-op**（不在热路径加 `if` 分支），派生量返回 `-1`（表示未统计，不用 `0` 与"真的全 miss"混淆）。默认值 `true`，需要零开销时显式关闭。
-- 计数用 `LongAdder`；`CacheStatsSnapshot` 是不可变记录，便于打点、日志、测试断言。
+- 计数用 `LongAdder`；`CacheStatsSnapshot` 是不可变记录，**同时实现 `CacheStats`**（组件访问器与接口方法同名），
+  因此快照既可用于打点，也可直接当作统计视图返回；
+- **门面的 `stats()` 是"合成快照"**：审计层（四格漏斗 / 回源）与版本层取门面自己的计数，
+  热 key 控制层（`promotion*` / `demotion*` / `hotSync*` / `hotReportDropped` / `dynamicPutDiscarded` /
+  `hotKeyCount` / `candidateCount`）取本地装饰器的计数。**每个字段只有唯一来源**，绝不相加。
 - **审计禁忌**：不得跨节点算术平均（用 `Σhit/Σ分母` 加权）、不得跨服务横向比较（`hitRate` 与访问分布强相关，只能纵向对比）。
 
 ### 4.7 异常与错误码

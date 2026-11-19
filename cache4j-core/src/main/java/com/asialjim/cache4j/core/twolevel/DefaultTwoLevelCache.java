@@ -7,6 +7,7 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.CacheStats;
+import com.asialjim.cache4j.core.CacheStatsSnapshot;
 import com.asialjim.cache4j.core.KeyEncoder;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
@@ -230,10 +231,44 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         if (counters == null) {
             return CacheStats.noop();
         }
-        counters.setEstimatedSize(local.available() ? local.stats().estimatedSize() : -1L);
-        counters.setHotKeyCount(local.stats().hotKeyCount());
-        counters.setCandidateCount(local.stats().candidateCount());
-        return counters;
+        // 审计层与版本/诊断取门面自己的计数；热 key 控制层取本地装饰器（唯一来源，避免双计）
+        CacheStats localStats = local.stats();
+        return new CacheStatsSnapshot(
+                counters.requestCount(),
+                counters.localHitCount(),
+                counters.localNegativeHitCount(),
+                counters.centralHitCount(),
+                counters.centralNegativeHitCount(),
+                counters.missCount(),
+                counters.sourceLoadCount(),
+                counters.sourceNullCount(),
+                counters.loadFailureCount(),
+                counters.putCount(),
+                counters.evictCount(),
+                counters.clearCount(),
+                localStats.promotionCount(),
+                localStats.demotionCount(),
+                localStats.localPromotionCount(),
+                localStats.globalPromotionCount(),
+                localStats.globalDemotionCount(),
+                localStats.dynamicPutDiscarded(),
+                localStats.hotKeyCount(),
+                localStats.candidateCount(),
+                localStats.hotSyncCount(),
+                localStats.hotSyncErrorCount(),
+                localStats.hotReportDropped(),
+                localStats.hotCompensationQueryCount(),
+                counters.versionSyncCount(),
+                counters.versionSyncErrorCount(),
+                counters.versionInvalidationCount(),
+                counters.deadFieldDropped(),
+                counters.backfillDiscardedCount(),
+                counters.storeHitCount(),
+                counters.storeMissCount(),
+                counters.commandCount(),
+                counters.centralErrorCount(),
+                counters.codecErrorCount(),
+                local.available() ? localStats.estimatedSize() : -1L);
     }
 
     @Override

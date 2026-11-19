@@ -3,6 +3,9 @@ package com.asialjim.cache4j.core;
 /**
  * 不可变统计快照，便于打点、日志与测试断言。
  *
+ * <p>记录组件的访问器与 {@link CacheStats} 的同名方法一一对应，因此快照本身也可直接当作
+ * 统计视图使用（编排层就是用它把"审计层取门面、控制层取本地装饰器"合成一份）。</p>
+ *
  * <p>派生量按需计算，不在构造时缓存，避免两处口径漂移。</p>
  *
  * @author Asial Jim
@@ -43,7 +46,7 @@ public record CacheStatsSnapshot(
         long centralErrorCount,
         long codecErrorCount,
         long estimatedSize
-) {
+) implements CacheStats {
 
     /**
      * @return 端到端下游保护率；无样本返回 {@code -1}

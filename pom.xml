@@ -40,6 +40,7 @@
         <module>cache4j-core</module>
         <module>cache4j-local</module>
         <module>cache4j-central</module>
+        <module>cache4j-central-redis</module>
     </modules>
 
     <properties>
