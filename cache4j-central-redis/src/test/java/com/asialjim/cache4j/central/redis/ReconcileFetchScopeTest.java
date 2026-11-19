@@ -29,11 +29,32 @@ class ReconcileFetchScopeTest {
     private final MutableClock clock = new MutableClock();
 
     @Test
-    @DisplayName("本地条目少也只用「同模 key」对账，绝不退化成全量")
-    void smallLocalCacheStillReconcilesOnlySameModuloKeys() {
+    @DisplayName("本地条目 ≤ 批大小：直接全量对账（一次 HMGET 装得下）")
+    void notLargerThanBatchMeansWholeScope() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        // 分区数固定为 2：挑两个落在不同分区的 key，确保"只对账同模"可验证
-        TwoLevelCache<String, String> cache = cache(store, 1_000, 2);
+        TwoLevelCache<String, String> cache = cache(store, 1_000, 16);   // 2 条 ≤ 批大小 1000
+
+        cache.put("a", "va");
+        cache.put("b", "vb");
+        assertEquals(2, cache.local().keys().size());
+
+        cache.lookup("a");                       // 只设检查点
+        assertEquals(0, store.revisionsCalls(), "首次访问只设点，不应对账");
+
+        clock.advance(Duration.ofMillis(200));
+        store.resetCounters();
+        cache.lookup("a");
+
+        assertEquals(1, store.revisionsCalls(), "全量也只需一次批量取版本");
+        assertEquals(2, store.revisionsKeys(), "装得下一批 → 全部本地 key 一起对账");
+    }
+
+    @Test
+    @DisplayName("本地条目 > 批大小：按同模 key 分区，只对账与访问 key 同模的那些")
+    void largerThanBatchMeansModuloPartition() {
+        InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
+        // 批大小 1、分区 2：本地 2 条 > 批大小 1 → 进入分区模式
+        TwoLevelCache<String, String> cache = cache(store, 1, 2);
 
         String[] pair = twoKeysInDifferentPartitions(2);
         String visitor = pair[0];
@@ -42,16 +63,13 @@ class ReconcileFetchScopeTest {
         cache.put(other, "v-" + other);
         assertEquals(2, cache.local().keys().size());
 
-        cache.lookup(visitor);                   // 只设检查点
-        assertEquals(0, store.revisionsCalls(), "首次访问只设点，不应对账");
-
+        cache.lookup(visitor);
         clock.advance(Duration.ofMillis(200));
         store.resetCounters();
         cache.lookup(visitor);
 
-        assertEquals(1, store.revisionsCalls(), "一次对账只发一次批量取版本");
         assertEquals(1, store.revisionsKeys(),
-                "只对账与访问 key 同模的那 1 个 key；不同模的 " + other + " 本次不参与");
+                "只对账与访问 key 同模的那 1 个；不同模的 " + other + " 本次不参与");
     }
 
     @Test

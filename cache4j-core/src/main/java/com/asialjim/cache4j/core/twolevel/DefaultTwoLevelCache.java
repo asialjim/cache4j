@@ -593,7 +593,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             nextCheckAtNanos = now + jittered(version);
             count(CacheCounters.Counter.VERSION_SYNC);
             LOG.debug(CacheLogger.Subject.TWO_LEVEL, "对账", () -> "namespace=" + namespace
-                    + "，分区=" + outcome.describePartition()
+                    + "，范围=" + outcome.describeScope()
                     + "，对账完成，清除失效副本 " + outcome.invalidated() + " 条");
         } catch (RuntimeException e) {
             nextCheckAtNanos = now + version.retryBackoff().toNanos();
@@ -610,35 +610,40 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     }
 
     /**
-     * 一次对账：按 {@code HashPartitions.of(accessedKey, N)} 取到分区号，只校验本地 key 中
-     * 「hash 取模结果相同」的那些副本 —— 范围恒为 1/N，不会因为本地 key 少而变成全量。
+     * 一次对账。范围由本地规模决定：
+     *
+     * <ul>
+     *   <li><b>本地条目 ≤ 批大小</b>：直接全量对账（一次 {@code HMGET} 就装得下）；</li>
+     *   <li><b>本地条目 &gt; 批大小</b>：按 key 的 hash 取模分区，只对账「与当前访问 key 同模」的那些。</li>
+     * </ul>
      *
      * @param version     版本参数
-     * @param accessedKey 当前访问的 key（决定分区）
+     * @param accessedKey 当前访问的 key（分区模式下决定分区号）
      * @return 对账结果
      */
     private ReconcileOutcome reconcile(LocalCacheSpec.VersionSpec version, CacheKey accessedKey) {
         Set<CacheKey> keys = local.keys();
         if (keys.isEmpty()) {
-            return new ReconcileOutcome(0, 0, 1);
+            return new ReconcileOutcome(0, true, 0, 1, 0);
         }
-        // 分区号由「当前访问的 key」决定；只对账本地 key 中 hash 取模结果与之相同的那些。
-        // 这就是分区的全部目的：一次对账的范围恒为 1/N，不随本地规模变化、也不退化成全量。
-        int partitions = version.reconcilePartitions();
-        int partition = HashPartitions.of(accessedKey, partitions);
+        int batchSize = version.reconcileBatchSize();
+        int localSize = keys.size();
+        // 本地装得下一批 → 全量；超出批大小 → 按同模 key 分区，一次只覆盖 1/N。
+        boolean wholeScope = localSize <= batchSize;
+        int partitions = wholeScope ? 1 : version.reconcilePartitions();
+        int partition = wholeScope ? 0 : HashPartitions.of(accessedKey, partitions);
 
-        List<CacheKey> selected = new ArrayList<>();
+        List<CacheKey> selected = new ArrayList<>(Math.min(localSize, batchSize));
         for (CacheKey key : keys) {
-            if (HashPartitions.of(key, partitions) == partition) {
+            if (wholeScope || HashPartitions.of(key, partitions) == partition) {
                 selected.add(key);
             }
         }
         if (selected.isEmpty()) {
-            return new ReconcileOutcome(0, partition, partitions);
+            return new ReconcileOutcome(0, wholeScope, partition, partitions, 0);
         }
 
         int invalidated = 0;
-        int batchSize = version.reconcileBatchSize();
         for (int from = 0; from < selected.size(); from += batchSize) {
             List<CacheKey> batch = selected.subList(from, Math.min(selected.size(), from + batchSize));
             // 只取版本，不取数据值
@@ -660,23 +665,26 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                 }
             }
         }
-        return new ReconcileOutcome(invalidated, partition, partitions);
+        return new ReconcileOutcome(invalidated, wholeScope, partition, partitions, selected.size());
     }
 
     /**
      * 对账结果。
      *
      * @param invalidated 清除的本地副本数
-     * @param partition   本次处理的分区号
-     * @param partitions  生效分区数（1 表示未分片）
+     * @param wholeScope  是否全量对账（本地条目 ≤ 批大小）
+     * @param partition   分区号（全量时为 0）
+     * @param partitions  分区数（全量时为 1）
+     * @param scopeSize   本次对账覆盖的 key 数
      */
-    private record ReconcileOutcome(int invalidated, int partition, int partitions) {
+    private record ReconcileOutcome(int invalidated, boolean wholeScope,
+                                    int partition, int partitions, int scopeSize) {
 
         /**
-         * @return 适合写进日志的分区描述
+         * @return 适合写进日志的对账范围描述
          */
-        String describePartition() {
-            return partitions <= 1 ? "未分片" : partition + "/" + partitions;
+        String describeScope() {
+            return wholeScope ? "全量(" + scopeSize + " 条)" : partition + "/" + partitions;
         }
     }
 

@@ -741,16 +741,15 @@ void reconcile(String namespace) {
 }
 ```
 
-- **取版本范围 = 「当前访问 key 所属分区」里本地已知的全部 key**：用
-  `HashPartitions.of(key, version.reconcilePartitions)` 把本地的 key 分成 N 个分区（默认 16，2 的幂），
-  一次对账只取**当前被访问 key 的那个分区**，再按 `reconcileBatchSize` 分批（通常 1 批）。
-  载荷从"本地全部 key"降到 `本地条目数 / N`；
+- **取版本范围由本地规模决定，两条规则**：
+  1. **本地条目 ≤ `reconcileBatchSize`** → **直接全量对账**（一次 `HMGET` 就装得下，没必要分片）；
+  2. **本地条目 > `reconcileBatchSize`** → 按 key 的 hash 取模分区：先用
+     `HashPartitions.of(accessedKey, version.reconcilePartitions)` 得到访问 key 的分区号，
+     再对本地 key 同样取模，**只对账取模结果相同的那些**（载荷 ≈ `本地条目数 / N`，默认 N=16）；
 - **为什么分区也不会拉长失效窗口**：任何 key 被读时，它自己必落在被选中的分区里，所以
   **每个被读 key 的失效上界仍是 `version.checkInterval`**；无人访问的分区不必对账（那些副本没人在用）；
-- **范围恒为 1/N，不随规模变化**：即使本地只有两三个 key，也仍然只对账「与访问 key 同模」的那几条，
-  **不会退化成一次访问查全部本地 key** —— 分区的目的就是限制单次范围。本地 key 少时同模的天然就少，
-  不需要额外"不分片"的开关；
-- 分区数配 1 时退化为"全量对账"（显式配置才允许）；回归用例：`ReconcileFetchScopeTest`；
+- 分区模式下范围恒为 1/N，与本地规模无关（数量小时走规则 1 的全量，本来就只需一次往返）；
+  分区数配 1 表示始终全量（显式配置）；回归用例：`ReconcileFetchScopeTest`；
 - 对账**只取版本、不取数据值**，因此不产生任何中央数据读；
 - 信号量属于**命名空间**：`nextSyncAtNanos` + `syncing` CAS；首次访问只设点，**不触发**对账；
 - 到点后由**当前访问线程**执行一次对账，完成后 `reschedule(now + checkInterval ± jitter)`；同一命名空间同一时刻只允许一个线程对账；
@@ -1145,7 +1144,7 @@ TwoLevelCache<String, User> cache = TwoLevelCache.<String, User>builder("user:de
 | `version.jitter` | `0.1` | 对账间隔抖动比例，避免多节点同时打中央 |
 | `version.retryBackoff` | `200ms` | 对账失败后的退避；退避期间不重复对账 |
 | `version.reconcileBatchSize` | `1000` | 一次 `HMGET` 的批量大小（控制单次命令载荷） |
-| `version.reconcilePartitions` | `16` | 对账分区数（2 的幂，固定）：一次对账只覆盖「与当前访问 key 同模」的本地副本，载荷约为本地条目数 / N；配 1 表示全量 |
+| `version.reconcilePartitions` | `16` | 对账分区数（2 的幂）：**仅当本地条目 > `reconcileBatchSize` 时生效**，此时一次对账只覆盖「与当前访问 key 同模」的副本；配 1 表示始终全量 |
 | `dynamic.syncInterval` | `1s` | `DYNAMIC` 热 key 同步点间隔（访问驱动） |
 | `dynamic.hotReportPartitions` | `16` | 热 key 上报分区数（2 的幂、≥ 2）；单次上报的 key 数 ≈ `maxHotKeys / N` |
 | `dynamic.hotReportBatchMax` | `64` | 单次 `reportAndStatusAll` 的硬上限（≈ 400 次 `redis.call`），防倾斜分区夯住 Redis |
@@ -1381,7 +1380,7 @@ key 可能包含手机号、证件号等敏感信息；日志中只打印 `Cache
 - 对账失败不修改任何副本，按 `retryBackoff` 推迟下次；
 - 同一命名空间并发到点，只有一个线程执行对账（CAS）；
 - **无饥饿回归**：同一命名空间 10 万 key 高频混访，某个低频 key 的副本也能在它自己被读时被校验（它必然落在被选中的分区里）；
-- **载荷回归**：本地 `maxSize=10_000`、`reconcilePartitions=16` 时，一次对账的 field 数约为 `10_000/16`（不是 10_000，也不是 `HGETALL` 的全量）；
+- **载荷回归**：本地条目 > 批大小时（如 `maxSize=10_000`、批 1000、`reconcilePartitions=16`），一次对账的 field 数约为 `本地条目数/16`；本地条目 ≤ 批大小时则一次全量（field 数 = 本地条目数）；
 - 读取与回填之间版本被推进（另一线程写入）→ 本次回填被丢弃（`backfillDiscarded` +1），不会把旧值盖回；
 - `NONE` 不参与版本对账。
 
