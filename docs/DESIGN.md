@@ -1221,6 +1221,20 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格
 
 参数化日志统一用 `Supplier` 延迟拼接：关闭对应级别时不产生字符串构造开销。
 
+**测试期级别**：各模块的 `src/test/resources/simplelogger.properties` 决定（IDEA 直接跑与
+`mvn test` 行为一致）：
+
+- 单元测试模块：`defaultLogLevel=info`（可见装配/关闭，不刷屏）；
+- 集成测试模块（`cache4j-spring-redis-test`）：整体 `info` + `org.slf4j.simpleLogger.log.com.asialjim.cache4j=debug`
+  （既能看到完整链路，又不会被 Lettuce / Netty 的内部 DEBUG 刷屏）。
+
+**绑定缺失自检**：`CacheLogger` 首次初始化时若发现所有级别都不可用（通常是没加 SLF4J 绑定），
+会向标准错误打印一次提示，而不是让日志静默消失：
+
+```text
+[cache4j]-日志-未检测到可用的 SLF4J 绑定（或全部级别被关闭），cache4j 日志将被丢弃；请加入 slf4j-simple / logback-classic / log4j-slf4j2-impl 之一，并确认日志级别不高于 INFO
+```
+
 key 可能包含手机号、证件号等敏感信息；日志中只打印 `CacheKey#masked()`，默认不打印完整 key。
 
 ### 7.3 健康检查

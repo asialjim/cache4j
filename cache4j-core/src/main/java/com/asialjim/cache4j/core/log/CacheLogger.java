@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 /**
@@ -53,11 +54,36 @@ public final class CacheLogger {
      */
     public static final String GLOBAL_SUBJECT = "cache4j";
 
+    /**
+     * 自检只做一次：绑定缺失或全部级别被关闭时提示一次，而不是让日志静默消失。
+     */
+    private static final AtomicBoolean DIAGNOSED = new AtomicBoolean();
+
     private final Logger delegate;
     private final ConcurrentHashMap<String, Long> lastThrottledAt = new ConcurrentHashMap<>();
 
     private CacheLogger(Logger delegate) {
         this.delegate = delegate;
+        diagnose(delegate);
+    }
+
+    /**
+     * 诊断：若所有级别都不可用（通常是没加 SLF4J 绑定），向标准错误提示一次。
+     *
+     * @param logger 目标 logger
+     */
+    private static void diagnose(Logger logger) {
+        if (!DIAGNOSED.compareAndSet(false, true)) {
+            return;
+        }
+        if (logger.isErrorEnabled() || logger.isWarnEnabled()
+                || logger.isInfoEnabled() || logger.isDebugEnabled()) {
+            return;
+        }
+        System.err.println(format(GLOBAL_SUBJECT, "日志",
+                "未检测到可用的 SLF4J 绑定（或全部级别被关闭），cache4j 日志将被丢弃；"
+                        + "请加入 slf4j-simple / logback-classic / log4j-slf4j2-impl 之一，"
+                        + "并确认日志级别不高于 INFO"));
     }
 
     /**
