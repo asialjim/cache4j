@@ -69,11 +69,16 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     private final ConcurrentHashMap<CacheKey, CompletableFuture<Lookup<V>>> inflight = new ConcurrentHashMap<>();
 
     /**
-     * 本地副本的<strong>分区索引</strong>：下标 = 分区号，元素 = 该分区内的本地 key。
+     * 每个 key 的分区号：<strong>首次访问该 key 时计算一次并保存在本地</strong>，之后对账直接取，
+     * 不再重复算 hash。
+     */
+    private final Map<CacheKey, Integer> keyPartitions = new ConcurrentHashMap<>();
+
+    /**
+     * 本地副本的<strong>分区索引</strong>：下标 = 分区号，元素 = 该分区内、确实持有副本的 key。
      *
-     * <p>写入本地时就登记，所以对账时直接 {@code get(partition)} 取，不必遍历
-     * {@code local.keys()} 重新计算每个 key 的分区。存储层自己的过期/淘汰造成的"幽灵条目"
-     * 会在对账比对阶段顺手剔除（见 {@code reconcile}）。</p>
+     * <p>对账时直接 {@code get(partition)} 取，不必遍历 {@code local.keys()} 重算分区；
+     * 存储层自己的过期/淘汰造成的"幽灵条目"会在对账比对阶段顺手剔除（见 {@code reconcile}）。</p>
      */
     private final List<Set<CacheKey>> localPartitions;
 
@@ -125,6 +130,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public Lookup<V> lookup(K key) {
         CacheKey cacheKey = encode(key);
+        partitionOf(cacheKey);                       // 首次访问即算出并保存分区号
         count(CacheCounters.Counter.REQUEST);
         ReadResult<V> result = read(cacheKey);
         countOutcome(result);
@@ -191,6 +197,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public void put(K key, V value, Duration ttl) {
         CacheKey cacheKey = encode(key);
+        partitionOf(cacheKey);
         if (value == null) {
             writeNegativeOrEvict(cacheKey, ttl);
             return;
@@ -201,6 +208,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public boolean putIfAbsent(K key, V value, Duration ttl) {
         CacheKey cacheKey = encode(key);
+        partitionOf(cacheKey);
         Duration effective = ttl != null ? ttl : centralSpec.ttl();
         try {
             Optional<Long> revision = central.putIfAbsentAndGetRevision(cacheKey, value, effective)
@@ -224,6 +232,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public void evict(K key) {
         CacheKey cacheKey = encode(key);
+        partitionOf(cacheKey);
         try {
             central.evict(cacheKey);
         } catch (RuntimeException e) {
@@ -252,6 +261,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                     + "namespace=" + namespace + "，原因=" + e.getMessage());
         } finally {
             local.clear();
+            keyPartitions.clear();
             localPartitions.forEach(Set::clear);
             count(CacheCounters.Counter.CLEAR);
         }
@@ -303,13 +313,32 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     }
 
     /**
+     * 取 key 的分区号：<strong>第一次访问时计算并保存</strong>，之后直接命中缓存，不再算 hash。
+     *
+     * @param cacheKey key
+     * @return 分区号
+     */
+    private int partitionOf(CacheKey cacheKey) {
+        Integer saved = keyPartitions.get(cacheKey);
+        if (saved != null) {
+            return saved;
+        }
+        int partition = HashPartitions.of(cacheKey, localPartitions.size());
+        Integer previous = keyPartitions.putIfAbsent(cacheKey, partition);
+        return previous != null ? previous : partition;
+    }
+
+    /**
      * 失效本地副本并同步分区索引。
      *
      * @param cacheKey key
      */
     private void evictLocal(CacheKey cacheKey) {
         local.evict(cacheKey);
-        localPartitions.get(HashPartitions.of(cacheKey, localPartitions.size())).remove(cacheKey);
+        Integer partition = keyPartitions.remove(cacheKey);
+        if (partition != null) {
+            localPartitions.get(partition).remove(cacheKey);
+        }
     }
 
     @Override
@@ -506,7 +535,10 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         boolean accepted = local.accepts(cacheKey);
         local.put(cacheKey, entry, chosen);          // 是否真的写入由本地实现决定（DYNAMIC 会拒绝冷 key）
         if (accepted) {
-            localPartitions.get(HashPartitions.of(cacheKey, localPartitions.size())).add(cacheKey);
+            localPartitions.get(partitionOf(cacheKey)).add(cacheKey);
+        } else {
+            // 本地不持有副本（DYNAMIC 冷 key）→ 分区号也不保留，避免无界增长
+            keyPartitions.remove(cacheKey);
         }
         String subject = CacheLogger.Subject.localOf(localSpec.strategy());
 
@@ -665,7 +697,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         // 本地装得下一批 → 全量；超出批大小 → 只取与访问 key 同模的分区
         boolean wholeScope = localSize <= batchSize;
         int partitions = wholeScope ? 1 : version.reconcilePartitions();
-        int partition = wholeScope ? 0 : HashPartitions.of(accessedKey, partitions);
+        int partition = wholeScope ? 0 : partitionOf(accessedKey);   // 首次访问已算好，直接取
 
         List<CacheKey> selected = new ArrayList<>(Math.min(localSize, batchSize));
         if (wholeScope) {
