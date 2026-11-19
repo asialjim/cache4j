@@ -1188,26 +1188,44 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格
 [主题]-子过程-具体信息
 ```
 
-- **主题**：缓存相关日志用 `namespace`；全局/装配/关闭类日志用 `cache4j`；
-- **子过程**：固定词表 —— 装配 / 读 / 写 / 失效 / 清空 / 对账 / 回填 / 回源 / 热key /
+- **主题 = 组件名**：告诉运维"当前跑到哪个组件了"，固定词表见下表。
+  **不要用 namespace 当主题** —— 具体缓存放在详情的 `namespace=...` 或 `key=namespace#hash` 里；
+- **子过程**：见下方固定词表；
+- 子过程固定词表 —— 装配 / 读 / 写 / 失效 / 清空 / 对账 / 回填 / 回源 / 热key /
   空值缓存 / 编解码 / key编码 / 降级 / 关闭；
 - **`写` 只用于调用方发起的写操作**（`put` / `putIfAbsent` / 负缓存写）。内部写入必须用
   `回填`（读路径把中央值回写本地）等字眼 —— 同一次"本地拒绝写入"在两条路径上含义完全不同，
   混用会让人误以为业务在写缓存；
 - **具体信息**：不打印原始 key，一律 `CacheKey#masked()`（`namespace#hash`）。
 
+**主题（组件）固定词表**：
+
+| 主题 | 对应组件 |
+|---|---|
+| `二级缓存` | `DefaultTwoLevelCache`（编排：读/写/失效/清空/对账/回填/回源/降级） |
+| `本地缓存` | 本地存储实现（`HashMapLocalCache` / `CaffeineLocalCache`） |
+| `动态本地缓存` | `DynamicLocalCache`（热点门控、上报、冷却） |
+| `缓存装配` | `TwoLevelCacheManager` / Spring 配置（装配与生命周期） |
+| `中央缓存` | `RedisCentralCache`（Redis 语义层） |
+| `Redis存储` | `SpringRedisValueStore`（适配层，含编解码） |
+| `热key协调` | `RedisHotKeyCoordinator` / `InMemoryHotKeyCoordinator` |
+| `缓存key` | `KeyEncoders` |
+| `Spring缓存桥接` | `SpringCacheAdapter` / `Cache4jCacheErrorHandler` |
+| `日志` | `CacheLogger` 自检 |
+
 示例：
 
 ```text
-[cache4j]-装配-缓存装配完成，strategy=STATIC，localTtl=PT1M，centralTtl=PT10M，coordinator=none
-[user:detail]-对账-对账完成，清除失效副本 1 条
-[user:detail]-读-中央读取失败，按未命中降级，key=user:detail#38e3649f，原因=CacheException:central down
-[user:detail]-写-冷 key 不落本地（DYNAMIC），key=user:detail#38e3649f，strategy=DYNAMIC
-[user:detail]-回填-冷 key 不落本地（DYNAMIC），key=user:detail#38e3649f，strategy=DYNAMIC
-[product:hot]-热key-升热，来源=本地阈值，key=product:hot#1befe33d，估计频次=5，热点集合大小=1
-[product:hot]-热key-降热，来源=中央 COOLING，key=product:hot#1befe33d，进入冷却=PT30S，热点集合大小=0
-[product:hot]-热key-冷却期内拒绝升热，key=product:hot#1befe33d，估计频次=11，剩余冷却=1991ms
-[cache4j]-key编码-不支持的 key 类型：java.lang.Object，请实现 KeyWritable 或提供自定义 KeyEncoder
+[缓存装配]-装配-namespace=user:detail，装配完成，strategy=STATIC，localTtl=PT1M，centralTtl=PT10M，coordinator=none
+[缓存装配]-装配-共装配 2 个缓存：user:detail, product:hot
+[二级缓存]-对账-namespace=user:detail，对账完成，清除失效副本 1 条
+[二级缓存]-读-中央读取失败，按未命中降级，key=user:detail#38e3649f，原因=CacheException:central down
+[二级缓存]-写-冷 key 不落本地（DYNAMIC），key=user:detail#38e3649f，strategy=DYNAMIC
+[二级缓存]-回填-冷 key 不落本地（DYNAMIC），key=user:detail#38e3649f，strategy=DYNAMIC
+[动态本地缓存]-热key-升热，来源=本地阈值，key=product:hot#1befe33d，估计频次=5，热点集合大小=1
+[动态本地缓存]-热key-降热，来源=中央 COOLING，key=product:hot#1befe33d，进入冷却=PT30S，热点集合大小=0
+[动态本地缓存]-热key-冷却期内拒绝升热，key=product:hot#1befe33d，估计频次=11，剩余冷却=1991ms
+[缓存key]-编码-不支持的 key 类型：java.lang.Object，请实现 KeyWritable 或提供自定义 KeyEncoder
 ```
 
 | 事件 | 级别 | 频率 / 说明 |
@@ -1240,7 +1258,7 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格
 会向标准错误打印一次提示，而不是让日志静默消失：
 
 ```text
-[cache4j]-日志-未检测到可用的 SLF4J 绑定（或全部级别被关闭），cache4j 日志将被丢弃；请加入 slf4j-simple / logback-classic / log4j-slf4j2-impl 之一，并确认日志级别不高于 INFO
+[日志]-自检-未检测到可用的 SLF4J 绑定（或全部级别被关闭），cache4j 日志将被丢弃；请加入 slf4j-simple / logback-classic / log4j-slf4j2-impl 之一，并确认日志级别不高于 INFO
 ```
 
 key 可能包含手机号、证件号等敏感信息；日志中只打印 `CacheKey#masked()`，默认不打印完整 key。

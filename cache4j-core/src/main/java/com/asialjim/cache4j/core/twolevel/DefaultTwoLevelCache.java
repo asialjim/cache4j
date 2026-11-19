@@ -88,7 +88,8 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         this.nanoClock = builder.nanoClock;
         this.milliClock = builder.milliClock;
 
-        LOG.debug(namespace, "装配", () -> "门面构建完成，strategy=" + localSpec.strategy()
+        LOG.debug(CacheLogger.Subject.TWO_LEVEL, "装配", () -> "namespace=" + namespace
+                + "，strategy=" + localSpec.strategy()
                 + "，maxSize=" + localSpec.maxSize()
                 + "，localTtl=" + localSpec.ttl()
                 + "，centralTtl=" + centralSpec.ttl()
@@ -143,7 +144,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                 value = loader.load(key);
             } catch (RuntimeException e) {
                 count(CacheCounters.Counter.LOAD_FAILURE);
-                LOG.warnThrottled(namespace, "回源", () -> "loader 执行失败，异常原样抛出，key="
+                LOG.warnThrottled(CacheLogger.Subject.TWO_LEVEL, "回源", () -> "loader 执行失败，异常原样抛出，key="
                         + cacheKey.masked() + "，原因=" + e.getClass().getSimpleName() + ":" + e.getMessage());
                 mine.completeExceptionally(e);
                 throw e;
@@ -213,7 +214,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             if (!centralSpec.failOpen()) {
                 throw e;
             }
-            LOG.warnThrottled(namespace, "失效", () -> "中央失效失败，降级清理本地，key="
+            LOG.warnThrottled(CacheLogger.Subject.TWO_LEVEL, "失效", () -> "中央失效失败，降级清理本地，key="
                     + cacheKey.masked() + "，原因=" + e.getMessage());
         } finally {
             local.evict(cacheKey);
@@ -230,7 +231,8 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             if (!centralSpec.failOpen()) {
                 throw e;
             }
-            LOG.warnThrottled(namespace, "清空", () -> "中央清空失败，降级清理本地，原因=" + e.getMessage());
+            LOG.warnThrottled(CacheLogger.Subject.TWO_LEVEL, "清空", () -> "中央清空失败，降级清理本地，"
+                    + "namespace=" + namespace + "，原因=" + e.getMessage());
         } finally {
             local.clear();
             count(CacheCounters.Counter.CLEAR);
@@ -284,7 +286,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
 
     @Override
     public void close() {
-        LOG.debug(namespace, "关闭", "关闭门面，取消进行中的回源");
+        LOG.debug(CacheLogger.Subject.TWO_LEVEL, "关闭", "namespace=" + namespace + "，关闭门面，取消进行中的回源");
         inflight.forEach((key, future) ->
                 future.completeExceptionally(new CacheException(CacheResCode.UNKNOWN, "缓存已关闭")));
         inflight.clear();
@@ -362,7 +364,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             if (!centralSpec.failOpen()) {
                 throw e;
             }
-            LOG.warnThrottled(namespace, "读", () -> "中央读取失败，按未命中降级，key="
+            LOG.warnThrottled(CacheLogger.Subject.TWO_LEVEL, "读", () -> "中央读取失败，按未命中降级，key="
                     + cacheKey.masked() + "，原因=" + e.getClass().getSimpleName() + ":" + e.getMessage());
             return null;
         }
@@ -394,7 +396,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         LocalEntry<V> current = local.entry(cacheKey);
         if (current != null && current.revision() > entry.revision()) {
             count(CacheCounters.Counter.BACKFILL_DISCARDED);
-            LOG.debug(cacheKey.namespace(), "回填", () -> "本地已有更新版本，丢弃本次回填，key="
+            LOG.debug(CacheLogger.Subject.TWO_LEVEL, "回填", () -> "本地已有更新版本，丢弃本次回填，key="
                     + cacheKey.masked() + "，读到的版本=" + entry.revision()
                     + "，本地版本=" + current.revision());
             return;
@@ -424,7 +426,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         boolean accepted = local.accepts(cacheKey);
         local.put(cacheKey, entry, chosen);          // 是否真的写入由本地实现决定（DYNAMIC 会拒绝冷 key）
         if (!accepted) {
-            LOG.debug(cacheKey.namespace(), process, () -> "冷 key 不落本地（DYNAMIC），key="
+            LOG.debug(CacheLogger.Subject.TWO_LEVEL, process, () -> "冷 key 不落本地（DYNAMIC），key="
                     + cacheKey.masked() + "，strategy=" + localSpec.strategy());
         }
     }
@@ -519,15 +521,17 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             int invalidated = reconcile(version);
             nextCheckAtNanos = now + jittered(version);
             count(CacheCounters.Counter.VERSION_SYNC);
-            LOG.debug(namespace, "对账", () -> "对账完成，清除失效副本 " + invalidated + " 条");
+            LOG.debug(CacheLogger.Subject.TWO_LEVEL, "对账", () -> "namespace=" + namespace
+                    + "，对账完成，清除失效副本 " + invalidated + " 条");
         } catch (RuntimeException e) {
             nextCheckAtNanos = now + version.retryBackoff().toNanos();
             count(CacheCounters.Counter.VERSION_SYNC_ERROR);
             if (!centralSpec.failOpen()) {
                 throw e;
             }
-            LOG.warnThrottled(namespace, "对账", () -> "版本对账失败，按退避推迟，退避="
-                    + version.retryBackoff() + "，原因=" + e.getMessage());
+            LOG.warnThrottled(CacheLogger.Subject.TWO_LEVEL, "对账", () -> "版本对账失败，按退避推迟，"
+                    + "namespace=" + namespace + "，退避=" + version.retryBackoff()
+                    + "，原因=" + e.getMessage());
         } finally {
             reconciling.set(false);
         }

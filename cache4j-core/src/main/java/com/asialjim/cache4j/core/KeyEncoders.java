@@ -100,7 +100,7 @@ public final class KeyEncoders {
             if (key instanceof String s) {
                 return s;
             }
-            LOG.error(CacheLogger.GLOBAL_SUBJECT, "key编码", "identity 编码器只接受 String，实际为 " + typeName(key));
+            LOG.error(CacheLogger.Subject.KEY_ENCODE, "编码", "identity 编码器只接受 String，实际为 " + typeName(key));
             throw new CacheException(CacheResCode.KEY_ENCODE_FAILED,
                     "identity 编码器只接受 String，实际为 " + typeName(key));
         };
@@ -251,7 +251,7 @@ public final class KeyEncoders {
                 }
                 return "m" + pairs.size() + '{' + builder + '}';
             }
-            LOG.error(CacheLogger.GLOBAL_SUBJECT, "key编码", "不支持的 key 类型：" + typeName(value)
+            LOG.error(CacheLogger.Subject.KEY_ENCODE, "编码", "不支持的 key 类型：" + typeName(value)
                     + "，请实现 KeyWritable 或提供自定义 KeyEncoder");
             throw new CacheException(CacheResCode.KEY_ENCODE_FAILED,
                     "不支持的 key 类型：" + typeName(value) + "，请实现 KeyWritable 或提供自定义 KeyEncoder");

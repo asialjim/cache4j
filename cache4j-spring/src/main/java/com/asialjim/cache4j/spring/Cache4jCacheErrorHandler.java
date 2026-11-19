@@ -57,10 +57,10 @@ public final class Cache4jCacheErrorHandler implements CacheErrorHandler {
         if (!failOpen) {
             throw exception;
         }
-        String cacheName = cache == null ? CacheLogger.GLOBAL_SUBJECT : cache.getName();
-        LOG.warnThrottled(cacheName, "降级", () -> "操作=" + operation
-                + "，按 failOpen 降级，原因=" + exception.getClass().getSimpleName()
-                + ":" + exception.getMessage());
+        String namespace = cache == null ? "-" : cache.getName();
+        LOG.warnThrottled(CacheLogger.Subject.SPRING_BRIDGE, "降级", () -> "namespace=" + namespace
+                + "，操作=" + operation + "，按 failOpen 降级，原因="
+                + exception.getClass().getSimpleName() + ":" + exception.getMessage());
     }
 
     private static boolean isDataOrProgramError(RuntimeException exception) {

@@ -52,7 +52,7 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
     public HotKeyReport reportAndStatus(String namespace, CacheKey key, long delta) {
         LocalCacheSpec.GlobalSpec globalSpec = globalSpecs.apply(namespace);
         if (globalSpec == null || globalSpec.window() == null || globalSpec.window().isZero()) {
-            LOG.warnThrottled(CacheLogger.GLOBAL_SUBJECT, "热key", () -> "namespace 未配置 dynamic.global，"
+            LOG.warnThrottled(CacheLogger.Subject.HOT_KEY, "热key", () -> "namespace 未配置 dynamic.global，"
                     + "全局热 key 判定被跳过：namespace=" + namespace);
             return HotKeyReport.unknown();
         }

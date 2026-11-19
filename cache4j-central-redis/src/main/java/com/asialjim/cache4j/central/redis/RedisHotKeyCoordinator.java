@@ -39,7 +39,7 @@ public final class RedisHotKeyCoordinator implements HotKeyCoordinator {
         LocalCacheSpec.GlobalSpec globalSpec = globalSpecs == null ? null : globalSpecs.apply(namespace);
         if (globalSpec == null) {
             // 不猜阈值：该 namespace 没配 dynamic.global
-            LOG.warnThrottled(CacheLogger.GLOBAL_SUBJECT, "热key", () -> "namespace 未配置 dynamic.global，"
+            LOG.warnThrottled(CacheLogger.Subject.HOT_KEY, "热key", () -> "namespace 未配置 dynamic.global，"
                     + "全局热 key 判定被跳过：namespace=" + namespace);
             return HotKeyReport.unknown();
         }

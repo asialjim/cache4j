@@ -19,7 +19,9 @@ import java.util.function.Supplier;
  *
  * <h2>约定</h2>
  * <ul>
- *   <li><b>主题</b>：缓存相关日志用 namespace；全局/装配类用 {@code cache4j}；</li>
+ *   <li><b>主题</b>：<strong>组件名</strong>（见 {@link Subject}），告诉运维"跑到哪个组件了"；
+ *       具体缓存放在详情里（{@code namespace=...} 或 {@code key=namespace#hash}）——不要用
+ *       namespace 当主题；</li>
  *   <li><b>子过程</b>：使用固定词表（装配 / 读 / 写 / 失效 / 清空 / 对账 / 回填 / 单飞 /
  *       热key / 空值缓存 / 编解码 / key编码 / 降级 / 关闭），避免同一处出现两种写法；</li>
  *   <li><b>具体信息</b>：不打印原始 key（可能含手机号、证件号），一律用 {@code CacheKey#masked()}；</li>
@@ -50,9 +52,34 @@ public final class CacheLogger {
     private static final long DEFAULT_THROTTLE_NANOS = 30_000_000_000L;
 
     /**
-     * 全局主题：与具体缓存无关的日志（装配、关闭等）。
+     * 主题常量：<strong>主题是组件名</strong>，告诉运维当前运行到哪个组件；
+     * 具体缓存由详情里的 {@code namespace=...} 或 {@code key=ns#hash} 给出。
      */
-    public static final String GLOBAL_SUBJECT = "cache4j";
+    public static final class Subject {
+        /** 编排门面（`DefaultTwoLevelCache`）。 */
+        public static final String TWO_LEVEL = "二级缓存";
+        /** 本地存储实现（HashMap / Caffeine）。 */
+        public static final String LOCAL = "本地缓存";
+        /** DYNAMIC 装饰器（热点门控、上报、冷却）。 */
+        public static final String DYNAMIC_LOCAL = "动态本地缓存";
+        /** 缓存装配与生命周期（`TwoLevelCacheManager` / Spring 配置）。 */
+        public static final String ASSEMBLY = "缓存装配";
+        /** Redis 语义层（`RedisCentralCache`）。 */
+        public static final String CENTRAL = "中央缓存";
+        /** Redis 适配层（`SpringRedisValueStore`）。 */
+        public static final String REDIS_STORE = "Redis存储";
+        /** 热 key 协调器。 */
+        public static final String HOT_KEY = "热key协调";
+        /** key 编码。 */
+        public static final String KEY_ENCODE = "缓存key";
+        /** Spring Cache 桥接与错误处理。 */
+        public static final String SPRING_BRIDGE = "Spring缓存桥接";
+        /** 日志组件自检。 */
+        public static final String LOG = "日志";
+
+        private Subject() {
+        }
+    }
 
     /**
      * 自检只做一次：绑定缺失或全部级别被关闭时提示一次，而不是让日志静默消失。
@@ -80,7 +107,7 @@ public final class CacheLogger {
                 || logger.isInfoEnabled() || logger.isDebugEnabled()) {
             return;
         }
-        System.err.println(format(GLOBAL_SUBJECT, "日志",
+        System.err.println(format(Subject.LOG, "自检",
                 "未检测到可用的 SLF4J 绑定（或全部级别被关闭），cache4j 日志将被丢弃；"
                         + "请加入 slf4j-simple / logback-classic / log4j-slf4j2-impl 之一，"
                         + "并确认日志级别不高于 INFO"));

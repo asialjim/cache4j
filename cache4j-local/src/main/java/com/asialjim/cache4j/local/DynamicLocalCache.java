@@ -144,7 +144,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         boolean cooling = isCooling(key, now);
         if (cooling && freq >= dynamic.localHotThreshold()) {
             // 冷却期：频次够了也不许升热（抑制"降热→立刻又升热"的抖动）
-            LOG.debug(spec.namespace(), "热key", () -> "冷却期内拒绝升热，key=" + key.masked()
+            LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "冷却期内拒绝升热，key=" + key.masked()
                     + "，估计频次=" + freq + "，剩余冷却=" + cooldownRemainingMillis(key, now) + "ms");
         }
         if (!cooling && freq >= dynamic.localHotThreshold()) {
@@ -152,7 +152,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             promote(key, freq, now);
             counters.increment(CacheCounters.Counter.PROMOTION);
             counters.increment(CacheCounters.Counter.LOCAL_PROMOTION);
-            LOG.debug(spec.namespace(), "热key", () -> "升热，来源=本地阈值，key=" + key.masked()
+            LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "升热，来源=本地阈值，key=" + key.masked()
                     + "，估计频次=" + freq + "，热点集合大小=" + hotKeys.size());
             return true;
         }
@@ -208,7 +208,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             nextSyncAtNanos = now + jitteredSyncInterval();
             counters.increment(CacheCounters.Counter.HOT_SYNC);
             final Map<CacheKey, Long> flushed = reported;
-            LOG.debug(spec.namespace(), "热key", () -> "上报完成，分区=" + partitionOf(key)
+            LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "namespace=" + spec.namespace() + "，上报完成，分区=" + partitionOf(key)
                     + "，上报 key 数=" + flushed.size());
         } catch (RuntimeException e) {
             // 只回填真正上报过的增量（被倾斜截断的那部分已单独回填）
@@ -221,8 +221,8 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
                     : spec.version().retryBackoff().toNanos();
             nextSyncAtNanos = now + backoff;
             counters.increment(CacheCounters.Counter.HOT_SYNC_ERROR);
-            LOG.warnThrottled(spec.namespace(), "热key", () -> "热 key 上报失败，整批回填并退避，"
-                    + "退避=" + backoff + "ms 级，原因=" + e.getMessage());
+            LOG.warnThrottled(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "热 key 上报失败，整批回填并退避，"
+                    + "namespace=" + spec.namespace() + "，退避=" + backoff + "ms 级，原因=" + e.getMessage());
         } finally {
             syncing.set(false);
         }
@@ -372,7 +372,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         delegate.evict(key);
         counters.increment(CacheCounters.Counter.DEMOTION);
         counters.increment(CacheCounters.Counter.GLOBAL_DEMOTION);
-        LOG.debug(spec.namespace(), "热key", () -> "降热，来源=中央 COOLING，key=" + key.masked()
+        LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "降热，来源=中央 COOLING，key=" + key.masked()
                 + "，进入冷却=" + dynamic.cooldown() + "，热点集合大小=" + hotKeys.size());
     }
 
@@ -389,7 +389,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
                         promote(key, report.windowCount(), now);
                         counters.increment(CacheCounters.Counter.PROMOTION);
                         counters.increment(CacheCounters.Counter.GLOBAL_PROMOTION);
-                        LOG.debug(spec.namespace(), "热key", () -> "升热，来源=中央 HOT，key="
+                        LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "升热，来源=中央 HOT，key="
                                 + key.masked() + "，集群窗口频次=" + report.windowCount()
                                 + "，热点集合大小=" + hotKeys.size());
                     }
