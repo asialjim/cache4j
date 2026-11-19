@@ -2,6 +2,7 @@ package com.asialjim.cache4j.spring;
 
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
+import com.asialjim.cache4j.core.log.CacheLogger;
 import org.springframework.cache.Cache;
 import org.springframework.cache.interceptor.CacheErrorHandler;
 
@@ -18,7 +19,7 @@ import org.springframework.cache.interceptor.CacheErrorHandler;
  */
 public final class Cache4jCacheErrorHandler implements CacheErrorHandler {
 
-    private static final System.Logger LOG = System.getLogger(Cache4jCacheErrorHandler.class.getName());
+    private static final CacheLogger LOG = CacheLogger.get(Cache4jCacheErrorHandler.class);
 
     private final boolean failOpen;
 
@@ -56,10 +57,10 @@ public final class Cache4jCacheErrorHandler implements CacheErrorHandler {
         if (!failOpen) {
             throw exception;
         }
-        String cacheName = cache == null ? "-" : cache.getName();
-        LOG.log(System.Logger.Level.WARNING,
-                () -> "缓存操作失败，按 failOpen 降级：op=" + operation + ", cache=" + cacheName
-                        + ", error=" + exception.getClass().getSimpleName() + ": " + exception.getMessage());
+        String cacheName = cache == null ? CacheLogger.GLOBAL_SUBJECT : cache.getName();
+        LOG.warnThrottled(cacheName, "降级", () -> "操作=" + operation
+                + "，按 failOpen 降级，原因=" + exception.getClass().getSimpleName()
+                + ":" + exception.getMessage());
     }
 
     private static boolean isDataOrProgramError(RuntimeException exception) {

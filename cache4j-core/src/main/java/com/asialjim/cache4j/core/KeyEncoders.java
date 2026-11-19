@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.core;
 
+import com.asialjim.cache4j.core.log.CacheLogger;
+
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -69,6 +71,8 @@ public final class KeyEncoders {
      */
     private static final int MAX_KEY_BYTES = 512;
 
+    private static final CacheLogger LOG = CacheLogger.get(KeyEncoders.class);
+
     private static final String HASH_PREFIX = "H43:";
     private static final String SEGMENT_HASH_PREFIX = "#43:";
 
@@ -96,6 +100,7 @@ public final class KeyEncoders {
             if (key instanceof String s) {
                 return s;
             }
+            LOG.error(CacheLogger.GLOBAL_SUBJECT, "key编码", "identity 编码器只接受 String，实际为 " + typeName(key));
             throw new CacheException(CacheResCode.KEY_ENCODE_FAILED,
                     "identity 编码器只接受 String，实际为 " + typeName(key));
         };
@@ -246,6 +251,8 @@ public final class KeyEncoders {
                 }
                 return "m" + pairs.size() + '{' + builder + '}';
             }
+            LOG.error(CacheLogger.GLOBAL_SUBJECT, "key编码", "不支持的 key 类型：" + typeName(value)
+                    + "，请实现 KeyWritable 或提供自定义 KeyEncoder");
             throw new CacheException(CacheResCode.KEY_ENCODE_FAILED,
                     "不支持的 key 类型：" + typeName(value) + "，请实现 KeyWritable 或提供自定义 KeyEncoder");
         }

@@ -11,6 +11,7 @@ import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
+import com.asialjim.cache4j.core.log.CacheLogger;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -54,6 +55,8 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     private final HotKeyCoordinator coordinator;
     private final FrequencySketch sketch;
     private final LongSupplier nanoClock;
+    private static final CacheLogger LOG = CacheLogger.get(DynamicLocalCache.class);
+
     private final CacheCounters counters = new CacheCounters();
 
     private final ConcurrentHashMap<CacheKey, HotEntry> hotKeys = new ConcurrentHashMap<>();
@@ -191,6 +194,9 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             applyCentralStatus(reports);
             nextSyncAtNanos = now + jitteredSyncInterval();
             counters.increment(CacheCounters.Counter.HOT_SYNC);
+            final Map<CacheKey, Long> flushed = reported;
+            LOG.debug(spec.namespace(), "热key", () -> "上报完成，分区=" + partitionOf(key)
+                    + "，上报 key 数=" + flushed.size());
         } catch (RuntimeException e) {
             // 只回填真正上报过的增量（被倾斜截断的那部分已单独回填）
             if (reported != null) {
@@ -202,6 +208,8 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
                     : spec.version().retryBackoff().toNanos();
             nextSyncAtNanos = now + backoff;
             counters.increment(CacheCounters.Counter.HOT_SYNC_ERROR);
+            LOG.warnThrottled(spec.namespace(), "热key", () -> "热 key 上报失败，整批回填并退避，"
+                    + "退避=" + backoff + "ms 级，原因=" + e.getMessage());
         } finally {
             syncing.set(false);
         }
@@ -243,6 +251,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         if (!hotKeys.containsKey(key)) {
             // 冷 key 不落本地：写不计频次，也就不可能因为它"热"。需要 read-your-write 请用 STATIC。
             counters.increment(CacheCounters.Counter.DYNAMIC_PUT_DISCARDED);
+            LOG.debug(spec.namespace(), "写", () -> "冷 key 不落本地（DYNAMIC），key=" + key.masked());
             return;
         }
         Duration effective = min(ttl, dynamic.hotTtl());
@@ -329,6 +338,8 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         hotByPartition.get(partitionOf(key)).add(key);
         lru.offer(key);
         removeCandidate(key);
+        LOG.debug(spec.namespace(), "热key", () -> "升热，key=" + key.masked()
+                + "，估计频次=" + freq + "，热点集合大小=" + hotKeys.size());
     }
 
     /**
@@ -349,6 +360,8 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         delegate.evict(key);
         counters.increment(CacheCounters.Counter.DEMOTION);
         counters.increment(CacheCounters.Counter.GLOBAL_DEMOTION);
+        LOG.debug(spec.namespace(), "热key", () -> "降热（中央判定 COOLING），key=" + key.masked()
+                + "，冷却至 " + dynamic.cooldown());
     }
 
     private void applyCentralStatus(Map<CacheKey, HotKeyReport> reports) {

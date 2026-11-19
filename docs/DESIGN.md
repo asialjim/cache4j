@@ -1181,19 +1181,47 @@ TwoLevelCache<String, User> cache = TwoLevelCache.<String, User>builder("user:de
 
 ### 7.2 日志
 
-| 事件 | 级别 | 频率 |
-|---|---|---|
-| 中央读/写失败 | WARN | 按缓存名限流（如 30s 一次），避免 Redis 抖动刷爆日志 |
-| 版本同步失败 | WARN | 限流；包含 `namespace`、退避时长 |
-| 版本失效（副本被新版本覆盖） | DEBUG | 每次校验发现变化时 |
-| 热 key 同步失败 | WARN | 限流；包含 `namespace`、丢弃的增量数 |
-| 编解码失败 | ERROR | 每次都记，带 key 的哈希（不打印原值） |
-| key 编码失败 | ERROR | 每次都记，带 key 类型 |
-| 热升/热降 | DEBUG | 每次；区分本地升热 / 中央升热 / 中央降热 |
-| 配置错误 | ERROR（启动失败） | 一次 |
-| 缓存命中 | 不打日志 | — |
+**门面**：`org.slf4j`（`cache4j-core` 唯一的第三方依赖，只引 `slf4j-api`；实现由使用方提供，
+Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格式固定**：
 
-key 可能包含手机号、证件号等敏感信息；日志中只打印 `CacheKey.logical()` 的哈希或脱敏形式，默认不打印完整 key。
+```text
+[主题]-子过程-具体信息
+```
+
+- **主题**：缓存相关日志用 `namespace`；全局/装配/关闭类日志用 `cache4j`；
+- **子过程**：固定词表 —— 装配 / 读 / 写 / 失效 / 清空 / 对账 / 回填 / 回源 / 热key /
+  空值缓存 / 编解码 / key编码 / 降级 / 关闭；
+- **具体信息**：不打印原始 key，一律 `CacheKey#masked()`（`namespace#hash`）。
+
+示例：
+
+```text
+[cache4j]-装配-缓存装配完成，strategy=STATIC，localTtl=PT1M，centralTtl=PT10M，coordinator=none
+[user:detail]-对账-对账完成，清除失效副本 1 条
+[user:detail]-读-中央读取失败，按未命中降级，key=user:detail#38e3649f，原因=CacheException:central down
+[product:hot]-热key-升热，key=product:hot#1befe33d，估计频次=5，热点集合大小=1
+[cache4j]-key编码-不支持的 key 类型：java.lang.Object，请实现 KeyWritable 或提供自定义 KeyEncoder
+```
+
+| 事件 | 级别 | 频率 / 说明 |
+|---|---|---|
+| 编解码失败、key 编码失败、配置非法 | **ERROR** | 每次都记；数据/编程错误永不降级，配置错误随启动失败 |
+| 中央读 / 写 / 失效 / 清空失败 | **WARN** | 按 `(主题, 子过程)` 限流 30s；含 key 哈希与原因 |
+| 版本对账失败 | **WARN** | 限流；含退避时长与原因 |
+| 热 key 上报失败 | **WARN** | 限流；含退避与"整批回填"事实 |
+| loader 执行失败 | **WARN** | 限流；异常仍原样抛给业务 |
+| namespace 缺 `dynamic.global` | **WARN** | 限流；说明全局热 key 判定被跳过（不猜阈值） |
+| 缓存装配、缓存关闭、provider 关闭 | **INFO** | 每个缓存一行 + 一行汇总 |
+| 对账轮次结果（清除条数） | **DEBUG** | 每轮一次 |
+| 升热 / 降热 | **DEBUG** | 每次；含来源（本地阈值 / 中央 HOT / 中央 COOLING）与冷却时长 |
+| 冷 key 写被丢弃（`DYNAMIC`） | **DEBUG** | 每次；提示"写不计频次" |
+| 回填被丢弃（版本更旧） | **DEBUG** | 每次；含读到的版本与本地版本 |
+| 热 key 上报批次 | **DEBUG** | 每次；含分区号与上报 key 数 |
+| 缓存命中 / 未命中 | **不打日志** | 热路径，靠 `CacheStats` 统计 |
+
+参数化日志统一用 `Supplier` 延迟拼接：关闭对应级别时不产生字符串构造开销。
+
+key 可能包含手机号、证件号等敏感信息；日志中只打印 `CacheKey#masked()`，默认不打印完整 key。
 
 ### 7.3 健康检查
 

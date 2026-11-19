@@ -12,7 +12,7 @@
 
 核心模块不依赖 Spring、Solon 或任何运行时框架；框架适配放在独立的 `cache4j-spring`、`cache4j-solon` 模块中。
 
-> 当前状态：**P1 + P2 语义层已落地**——`cache4j-core`（契约 + `TwoLevelCache` 编排）、`cache4j-local`（`NONE`/`STATIC`/`DYNAMIC` + 分段 LRU）、`cache4j-central`（内存参考实现 + 热 key 协调）、`cache4j-central-redis`（`RedisValueStore<V>` 下行 SPI + `RedisCentralCache<V>` 语义层 + `RedisHotKeyCoordinator`，**不碰字节**）、`cache4j-spring-redis`（`SpringRedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer）、`cache4j-local-caffeine`（Caffeine 存储实现，与 HashMap 跑同一套契约测试）。`cache4j-spring`（Spring Cache 桥接，不依赖 Boot）与 `cache4j-spring-redis-test`（真实 Redis 集成测试）。144 个用例全绿（Redis 不可达时相关用例自动跳过）。Spring Boot 自动装配、`cache4j-solon`、`cache4j-starter` 尚未开始。完整设计见：
+> 当前状态：**P1 + P2 语义层已落地**——`cache4j-core`（契约 + `TwoLevelCache` 编排）、`cache4j-local`（`NONE`/`STATIC`/`DYNAMIC` + 分段 LRU）、`cache4j-central`（内存参考实现 + 热 key 协调）、`cache4j-central-redis`（`RedisValueStore<V>` 下行 SPI + `RedisCentralCache<V>` 语义层 + `RedisHotKeyCoordinator`，**不碰字节**）、`cache4j-spring-redis`（`SpringRedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer）、`cache4j-local-caffeine`（Caffeine 存储实现，与 HashMap 跑同一套契约测试）。`cache4j-spring`（Spring Cache 桥接，不依赖 Boot）与 `cache4j-spring-redis-test`（真实 Redis 集成测试）。144 个用例全绿（Redis 不可达时相关用例自动跳过）。日志走 **SLF4J**，格式固定 `[主题]-子过程-具体信息`（见 DESIGN §7.2）。Spring Boot 自动装配、`cache4j-solon`、`cache4j-starter` 尚未开始。完整设计见：
 >
 > - [总体设计](docs/DESIGN.md)
 > - [本地缓存与三种策略](docs/LOCAL.md)
@@ -24,7 +24,7 @@
 | 模块 | 职责 | 主要依赖 |
 |---|---|---|
 | `cache4j` | 父工程（`pom` 聚合 + 依赖版本管理） | — |
-| `cache4j-core` | 内核：`Cache`、`Lookup`、`CacheKey`、`LocalEntry`、`KeyEncoder`、`CacheLoader`、本地/中央缓存接口与 Spec、`TwoLevelCache` **接口** + `DefaultTwoLevelCache` 默认编排、统计、错误码 | `standard4j` |
+| `cache4j-core` | 内核：`Cache`、`Lookup`、`CacheKey`、`LocalEntry`、`KeyEncoder`、`CacheLoader`、本地/中央缓存接口与 Spec、`TwoLevelCache` **接口** + `DefaultTwoLevelCache` 默认编排、统计、错误码、`CacheLogger` | `standard4j`、`slf4j-api` |
 | `cache4j-local` | 本地缓存实现：`NONE`/`STATIC`/`DYNAMIC` 策略、默认 HashMap 实现（分段 LRU + TTL）、`LocalCacheProvider` | `cache4j-core` |
 | `cache4j-local-caffeine` | 基于 Caffeine 的本地存储实现 | `cache4j-local`、Caffeine |
 | `cache4j-central` | 中央缓存 **SPI**：`CentralCache` 契约、`CentralCacheSpec`、`CentralCacheProvider`、`HotKeyCoordinator` 内存实现，以及仅供测试/单机的内存参考实现 | `cache4j-core` |

@@ -21,6 +21,11 @@
             <artifactId>standard4j</artifactId>
         </dependency>
         <dependency>
+            <!-- 日志门面：核心唯一的第三方依赖；实现由使用方提供（Spring Boot 默认 Logback） -->
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>

@@ -10,6 +10,7 @@ import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.log.CacheLogger;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.redis.RedisConnectionFailureException;
@@ -48,6 +49,8 @@ import java.util.function.LongSupplier;
  * @author Asial Jim
  */
 public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
+
+    private static final CacheLogger LOG = CacheLogger.get(SpringRedisValueStore.class);
 
     private static final byte[] EMPTY = new byte[0];
 
@@ -100,7 +103,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
         if (envelope.negative()) {
             return new VersionedLookup<>(revision, Lookup.negative());
         }
-        return new VersionedLookup<>(revision, Lookup.hit(decode(envelope.payload())));
+        return new VersionedLookup<>(revision, Lookup.hit(decode(envelope.payload(), key)));
     }
 
     @Override
@@ -340,10 +343,13 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
         }
     }
 
-    private V decode(byte[] payload) {
+    private V decode(byte[] payload, CacheKey key) {
         try {
             return serializer.deserialize(payload);
         } catch (RuntimeException e) {
+            // 数据损坏必须可见：ERROR 级别，且永远不降级
+            LOG.error(key.namespace(), "编解码", "反序列化失败，key=" + key.masked()
+                    + "，serializer=" + serializer.getClass().getSimpleName(), e);
             throw new CacheException(CacheResCode.CODEC_DECODE_FAILED, "反序列化失败", e);
         }
     }
@@ -352,12 +358,17 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
         try {
             byte[] payload = serializer.serialize(value);
             if (payload == null) {
+                LOG.error(CacheLogger.GLOBAL_SUBJECT, "编解码", "serializer 返回 null，value 类型="
+                        + (value == null ? "null" : value.getClass().getName()));
                 throw new CacheException(CacheResCode.CODEC_ENCODE_FAILED, "serializer 返回 null");
             }
             return payload;
         } catch (CacheException e) {
             throw e;
         } catch (RuntimeException e) {
+            LOG.error(CacheLogger.GLOBAL_SUBJECT, "编解码", "序列化失败，value 类型="
+                    + (value == null ? "null" : value.getClass().getName())
+                    + "，serializer=" + serializer.getClass().getSimpleName(), e);
             throw new CacheException(CacheResCode.CODEC_ENCODE_FAILED, "序列化失败", e);
         }
     }

@@ -5,6 +5,7 @@ import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.log.CacheLogger;
 import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
 
 import java.util.Collection;
@@ -27,6 +28,8 @@ import java.util.Set;
  */
 public final class TwoLevelCacheManager implements AutoCloseable {
 
+    private static final CacheLogger LOG = CacheLogger.get(TwoLevelCacheManager.class);
+
     private final Map<String, TwoLevelCache<Object, Object>> caches;
     private final CentralCacheProvider centralProvider;
     private final boolean ownsCentralProvider;
@@ -48,10 +51,12 @@ public final class TwoLevelCacheManager implements AutoCloseable {
     public static TwoLevelCacheManager create(Cache4jSpringOptions options) {
         Map<String, TwoLevelCache<Object, Object>> built = new LinkedHashMap<>();
         if (!options.enabled()) {
+            LOG.info(CacheLogger.GLOBAL_SUBJECT, "装配", "cache4j 已禁用（cache4j.enabled=false），不创建任何缓存");
             return new TwoLevelCacheManager(built, options.centralProvider(), false);
         }
         List<CacheDefinition> definitions = options.definitions();
         if (definitions.isEmpty()) {
+            LOG.error(CacheLogger.GLOBAL_SUBJECT, "装配", "至少需要一条缓存定义");
             throw new IllegalStateException("至少需要一条缓存定义");
         }
         // 同一个中央 provider 的热 key 协调器被所有 DYNAMIC 缓存共享
@@ -60,6 +65,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
         for (CacheDefinition definition : definitions) {
             String namespace = definition.namespace();
             if (built.containsKey(namespace)) {
+                LOG.error(CacheLogger.GLOBAL_SUBJECT, "装配", "重复的缓存名：" + namespace);
                 throw new IllegalStateException("重复的缓存名：" + namespace);
             }
             LocalCacheSpec localSpec = definition.local();
@@ -76,7 +82,13 @@ public final class TwoLevelCacheManager implements AutoCloseable {
                     .statsEnabled(options.statsEnabled())
                     .build();
             built.put(namespace, cache);
+            LOG.info(namespace, "装配", "缓存装配完成，strategy=" + localSpec.strategy()
+                    + "，localTtl=" + localSpec.ttl()
+                    + "，centralTtl=" + definition.central().ttl()
+                    + "，coordinator=" + (coordinator == null ? "none" : coordinator.getClass().getSimpleName()));
         }
+        LOG.info(CacheLogger.GLOBAL_SUBJECT, "装配", "共装配 " + built.size() + " 个缓存："
+                + String.join(", ", built.keySet()));
         return new TwoLevelCacheManager(built, options.centralProvider(),
                 options.ownsCentralProvider());
     }
@@ -105,6 +117,8 @@ public final class TwoLevelCacheManager implements AutoCloseable {
 
     @Override
     public void close() {
+        LOG.info(CacheLogger.GLOBAL_SUBJECT, "关闭", "关闭 " + caches.size() + " 个缓存"
+                + (ownsCentralProvider ? "，并关闭中央 provider" : ""));
         caches.values().forEach(cache -> {
             try {
                 cache.close();

@@ -3,7 +3,9 @@ package com.asialjim.cache4j.central;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.central.HotKeyReport;
+import com.asialjim.cache4j.core.log.CacheLogger;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
+import com.asialjim.cache4j.core.log.CacheLogger;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 
 import java.util.HashMap;
@@ -30,6 +32,8 @@ import java.util.function.LongSupplier;
  */
 public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
 
+    private static final CacheLogger LOG = CacheLogger.get(InMemoryHotKeyCoordinator.class);
+
     private final Function<String, LocalCacheSpec.GlobalSpec> globalSpecs;
     private final LongSupplier milliClock;
     private final ConcurrentHashMap<String, ConcurrentHashMap<CacheKey, Window>> state = new ConcurrentHashMap<>();
@@ -48,6 +52,8 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
     public HotKeyReport reportAndStatus(String namespace, CacheKey key, long delta) {
         LocalCacheSpec.GlobalSpec globalSpec = globalSpecs.apply(namespace);
         if (globalSpec == null || globalSpec.window() == null || globalSpec.window().isZero()) {
+            LOG.warnThrottled(CacheLogger.GLOBAL_SUBJECT, "热key", () -> "namespace 未配置 dynamic.global，"
+                    + "全局热 key 判定被跳过：namespace=" + namespace);
             return HotKeyReport.unknown();
         }
         long windowMillis = globalSpec.window().toMillis();

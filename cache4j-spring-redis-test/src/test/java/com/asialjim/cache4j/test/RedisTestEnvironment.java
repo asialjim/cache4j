@@ -63,7 +63,7 @@ public final class RedisTestEnvironment {
     }
 
     /**
-     * 建一个 Lettuce 连接工厂（每个测试自建自毁，互不影响）。
+     * 建一个 Lettuce 连接工厂（每个测试自建自毁，互不影响anz）
      *
      * @return 连接工厂
      */
@@ -91,9 +91,9 @@ public final class RedisTestEnvironment {
         RedisSerializer<Object> serializer = (RedisSerializer) new StringRedisSerializer();
         SpringRedisValueStore<Object> store = new SpringRedisValueStore<>(
                 factory, new RedisKeyFormatter(GLOBAL_PREFIX, true), serializer)
-                .globalSpecs(namespace -> globalSpecs.get(namespace));
+                .globalSpecs(globalSpecs::get);
         HotKeyCoordinator coordinator = new com.asialjim.cache4j.central.redis.RedisHotKeyCoordinator(
-                store, namespace -> globalSpecs.get(namespace));
+                store, globalSpecs::get);
         return new RedisCentralCacheProvider(store, coordinator);
     }
 
