@@ -295,7 +295,39 @@ public class CacheSerializerConfig {
 }
 ```
 
-### 2.7 生命周期与禁用### 2.7 生命周期与禁用
+### 2.7 不依赖 Spring Boot
+
+`cache4j-spring` 只用 **Spring Framework**（`spring-context` 提供 `org.springframework.cache` 抽象），
+<strong>不依赖 spring-boot / spring-boot-autoconfigure</strong>，也没有自动装配注册文件：
+
+| 想要什么 | 怎么做 |
+|---|---|
+| 只要二级缓存对象 | `@Import(Cache4jSpringConfiguration.class)`，注入 `TwoLevelCacheManager` |
+| 要用 `@Cacheable` | `@Import(Cache4jCachingConfiguration.class)`（它已带上前者，并注册名为 `cacheManager` 的 Bean + `@EnableCaching`） |
+| 自己已有 `CacheManager` | **不要 import 上面两个类**，直接 `new SpringCacheManagerAdapter(...)` 自行装配（纯 Spring 没有 `@ConditionalOnMissingBean`，重复定义会冲突） |
+
+配置对象是纯 Java 的 `Cache4jSpringOptions`（builder），**不做 YAML 绑定** —— 属性绑定是 Boot 的职责，
+留给后续 `cache4j-starter`。
+
+> `@Cacheable(key = "#id")` 这类按参数名取值的 SpEL 需要编译时 `-parameters`；本工程父 pom 已开启。
+
+### 2.8 生命周期与禁用### 2.7 不依赖 Spring Boot
+
+`cache4j-spring` 只用 **Spring Framework**（`spring-context` 提供 `org.springframework.cache` 抽象），
+<strong>不依赖 spring-boot / spring-boot-autoconfigure</strong>，也没有自动装配注册文件：
+
+| 想要什么 | 怎么做 |
+|---|---|
+| 只要二级缓存对象 | `@Import(Cache4jSpringConfiguration.class)`，注入 `TwoLevelCacheManager` |
+| 要用 `@Cacheable` | `@Import(Cache4jCachingConfiguration.class)`（它已带上前者，并注册名为 `cacheManager` 的 Bean + `@EnableCaching`） |
+| 自己已有 `CacheManager` | **不要 import 上面两个类**，直接 `new SpringCacheManagerAdapter(...)` 自行装配（纯 Spring 没有 `@ConditionalOnMissingBean`，重复定义会冲突） |
+
+配置对象是纯 Java 的 `Cache4jSpringOptions`（builder），**不做 YAML 绑定** —— 属性绑定是 Boot 的职责，
+留给后续 `cache4j-starter`。
+
+> `@Cacheable(key = "#id")` 这类按参数名取值的 SpEL 需要编译时 `-parameters`；本工程父 pom 已开启。
+
+### 2.8 生命周期与禁用
 
 - `cache4j.enabled=false` 关闭全部自动装配；
 - 业务已定义 `CacheManager` 时，适配器默认让位；可用 `cache4j.spring.primary=true` 强制注册 `@Primary`；

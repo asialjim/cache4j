@@ -12,7 +12,7 @@
 
 核心模块不依赖 Spring、Solon 或任何运行时框架；框架适配放在独立的 `cache4j-spring`、`cache4j-solon` 模块中。
 
-> 当前状态：**P1 + P2 语义层已落地**——`cache4j-core`（契约 + `TwoLevelCache` 编排）、`cache4j-local`（`NONE`/`STATIC`/`DYNAMIC` + 分段 LRU）、`cache4j-central`（内存参考实现 + 热 key 协调）、`cache4j-central-redis`（`RedisValueStore<V>` 下行 SPI + `RedisCentralCache<V>` 语义层 + `RedisHotKeyCoordinator`，**不碰字节**）、`cache4j-spring-redis`（`SpringRedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer）、`cache4j-local-caffeine`（Caffeine 存储实现，与 HashMap 跑同一套契约测试）。124 个用例（含 11 个需要真实 Redis 的集成用例，本机无 Redis 时自动跳过）；Redis 语义层用内存 `InMemoryValueStore` 全程可测。Spring Boot 自动装配与 Solon 适配尚未开始。完整设计见：
+> 当前状态：**P1 + P2 语义层已落地**——`cache4j-core`（契约 + `TwoLevelCache` 编排）、`cache4j-local`（`NONE`/`STATIC`/`DYNAMIC` + 分段 LRU）、`cache4j-central`（内存参考实现 + 热 key 协调）、`cache4j-central-redis`（`RedisValueStore<V>` 下行 SPI + `RedisCentralCache<V>` 语义层 + `RedisHotKeyCoordinator`，**不碰字节**）、`cache4j-spring-redis`（`SpringRedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer）、`cache4j-local-caffeine`（Caffeine 存储实现，与 HashMap 跑同一套契约测试）。`cache4j-spring`（Spring Cache 桥接，不依赖 Boot）与 `cache4j-spring-redis-test`（真实 Redis 集成测试）。144 个用例全绿（Redis 不可达时相关用例自动跳过）。Spring Boot 自动装配、`cache4j-solon`、`cache4j-starter` 尚未开始。完整设计见：
 >
 > - [总体设计](docs/DESIGN.md)
 > - [本地缓存与三种策略](docs/LOCAL.md)
@@ -29,9 +29,10 @@
 | `cache4j-local-caffeine` | 基于 Caffeine 的本地存储实现 | `cache4j-local`、Caffeine |
 | `cache4j-central` | 中央缓存 **SPI**：`CentralCache` 契约、`CentralCacheSpec`、`CentralCacheProvider`、`HotKeyCoordinator` 内存实现，以及仅供测试/单机的内存参考实现 | `cache4j-core` |
 | `cache4j-central-redis` | Redis **语义层 + 泛型下行 SPI**：`RedisValueStore<V>`、`RedisCentralCache<V>`（版本/负缓存/TTL 抖动/对账/热 key 语义）；**不碰字节**，key 布局/envelope/Lua/序列化都归适配层 | `cache4j-central` |
-| `cache4j-spring` | Spring Boot 自动装配 + Spring Cache 桥接（不含 Redis 连接） | `cache4j-core`、`cache4j-local`、`cache4j-central`、Spring |
+| `cache4j-spring` | **Spring Framework** 集成：Spring Cache 桥接 + Bean 装配（**不依赖 Boot**、不接 Redis） | `cache4j-core`、`cache4j-local`、`cache4j-central`、`spring-context` |
 | `cache4j-spring-redis` | 接入 Spring Data Redis：用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`，key 布局 / envelope / Lua / **serializer** 都在这里；底层客户端由用户选择 | `cache4j-spring`、`cache4j-central-redis`、Spring Data Redis |
 | `cache4j-solon` | Solon 插件 + `CacheService`（含 tags）桥接 | `cache4j-core`、`cache4j-local`、`cache4j-central`、`solon-data` |
+| `cache4j-spring-redis-test` | 集成测试模块：真实 Redis 下验证 Spring + 二级缓存全链路（只含测试） | 上面若干模块 + Lettuce |
 | `cache4j-starter` | **聚合/默认装配**：只拉依赖 + 按配置装配默认实现，**不含编排逻辑** | 上面若干模块 |
 
 依赖方向固定为从上到下，`cache4j-core` 不反向依赖任何实现模块，也不引用 Spring / Solon / Caffeine / Redis 客户端。`cache4j-local` 与 `cache4j-central` 是**同级**实现模块，互不依赖；`cache4j-local-*` 依赖 `cache4j-local`，`cache4j-central-*` 依赖 `cache4j-central`。

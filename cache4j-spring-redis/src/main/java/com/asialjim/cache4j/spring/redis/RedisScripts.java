@@ -37,7 +37,12 @@ final class RedisScripts {
      * }</pre>
      */
     static final byte[] WRITE_WITH_REVISION = script("""
-            local cur = tonumber(redis.call('HGET', KEYS[1], ARGV[1]) or '0')
+            -- field 的格式是 "<revision>|<expireAt>"，只取竖线前那段
+            local raw = redis.call('HGET', KEYS[1], ARGV[1])
+            local cur = 0
+            if raw then
+              cur = tonumber(string.match(raw, '^(%-?%d+)') or '0')
+            end
             local now = tonumber(ARGV[4])
             local newRev = now
             if cur + 1 > newRev then
@@ -66,10 +71,11 @@ final class RedisScripts {
             if exists == 1 then
               return nil
             end
-            if redis.call('HGET', KEYS[1], ARGV[1]) then
+            local raw = redis.call('HGET', KEYS[1], ARGV[1])
+            if raw then
               return nil
             end
-            local cur = tonumber(redis.call('HGET', KEYS[1], ARGV[1]) or '0')
+            local cur = 0
             local now = tonumber(ARGV[4])
             local newRev = now
             if cur + 1 > newRev then

@@ -112,9 +112,9 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 
     @Override
     public long revision(CacheKey key) {
-        byte[] raw = withConnection(connection -> connection.hashCommands()
-                .hGet(keys.revision(key.namespace()), keys.revisionField(key)));
-        return decodeRevision(raw);
+        // 复用批量逻辑：会按 expireAt 判定失效，并顺手清掉死 field
+        Long revision = revisions(List.of(key)).get(key);
+        return revision == null ? 0L : revision;
     }
 
     @Override

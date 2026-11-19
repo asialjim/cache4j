@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.asialjim</groupId>
+        <artifactId>cache4j</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>cache4j-spring</artifactId>
+    <packaging>jar</packaging>
+    <name>cache4j-spring</name>
+    <description>Spring Framework 集成：Spring Cache 桥接 + Bean 装配（不依赖 Spring Boot、不接 Redis）</description>
+
+    <properties>
+        <spring-framework.version>7.0.9</spring-framework.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.asialjim</groupId>
+            <artifactId>cache4j-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.asialjim</groupId>
+            <artifactId>cache4j-local</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.asialjim</groupId>
+            <artifactId>cache4j-central</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+          ~ 只要 Spring Framework（spring-context 含 org.springframework.cache 抽象）：
+          ~ 不依赖 spring-boot / spring-boot-autoconfigure，也不依赖任何 Redis 客户端。
+          -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+            <version>${spring-framework.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
