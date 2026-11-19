@@ -741,6 +741,10 @@ void reconcile(String namespace) {
 }
 ```
 
+- **分区索引在写入时就维护**：`DefaultTwoLevelCache` 持有 `List<Set<CacheKey>> localPartitions`
+  （下标 = 分区号）。写入本地成功 / 回填成功时登记，失效与 `clear` 时摘除，所以对账时直接
+  `get(partition)` 取候选，**不必每次访问都遍历 `local.keys()` 重算每个 key 的分区**；
+  存储层自行过期/淘汰造成的"幽灵条目"会在对账比对阶段（`local.entry(key) == null`）顺手剔除；
 - **取版本范围由本地规模决定，两条规则**：
   1. **本地条目 ≤ `reconcileBatchSize`** → **直接全量对账**（一次 `HMGET` 就装得下，没必要分片）；
   2. **本地条目 > `reconcileBatchSize`** → 按 key 的 hash 取模分区：先用

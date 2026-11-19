@@ -69,6 +69,15 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     private final ConcurrentHashMap<CacheKey, CompletableFuture<Lookup<V>>> inflight = new ConcurrentHashMap<>();
 
     /**
+     * 本地副本的<strong>分区索引</strong>：下标 = 分区号，元素 = 该分区内的本地 key。
+     *
+     * <p>写入本地时就登记，所以对账时直接 {@code get(partition)} 取，不必遍历
+     * {@code local.keys()} 重新计算每个 key 的分区。存储层自己的过期/淘汰造成的"幽灵条目"
+     * 会在对账比对阶段顺手剔除（见 {@code reconcile}）。</p>
+     */
+    private final List<Set<CacheKey>> localPartitions;
+
+    /**
      * 命名空间级对账信号量：下一次对账时间点（纳秒）；0 表示尚未初始化。
      */
     private volatile long nextCheckAtNanos;
@@ -88,6 +97,13 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         this.counters = builder.statsEnabled ? new CacheCounters() : null;
         this.nanoClock = builder.nanoClock;
         this.milliClock = builder.milliClock;
+
+        int partitions = localSpec.version() == null ? 1 : localSpec.version().reconcilePartitions();
+        List<Set<CacheKey>> buckets = new ArrayList<>(partitions);
+        for (int i = 0; i < partitions; i++) {
+            buckets.add(ConcurrentHashMap.newKeySet());
+        }
+        this.localPartitions = buckets;
 
         LOG.debug(CacheLogger.Subject.TWO_LEVEL, "装配", () -> "namespace=" + namespace
                 + "，strategy=" + localSpec.strategy()
@@ -218,7 +234,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             LOG.warnThrottled(CacheLogger.Subject.TWO_LEVEL, "失效", () -> "中央失效失败，降级清理本地，key="
                     + cacheKey.masked() + "，原因=" + e.getMessage());
         } finally {
-            local.evict(cacheKey);
+            evictLocal(cacheKey);
             count(CacheCounters.Counter.EVICT);
         }
     }
@@ -236,6 +252,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                     + "namespace=" + namespace + "，原因=" + e.getMessage());
         } finally {
             local.clear();
+            localPartitions.forEach(Set::clear);
             count(CacheCounters.Counter.CLEAR);
         }
     }
@@ -283,6 +300,16 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                 counters.centralErrorCount(),
                 counters.codecErrorCount(),
                 local.available() ? localStats.estimatedSize() : -1L);
+    }
+
+    /**
+     * 失效本地副本并同步分区索引。
+     *
+     * @param cacheKey key
+     */
+    private void evictLocal(CacheKey cacheKey) {
+        local.evict(cacheKey);
+        localPartitions.get(HashPartitions.of(cacheKey, localPartitions.size())).remove(cacheKey);
     }
 
     @Override
@@ -361,11 +388,11 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             if (centralSpec.nullCachingEnabled()) {
                 backfill(cacheKey, LocalEntry.negative(centralLookup.revision()), promoted);
             } else {
-                local.evict(cacheKey);
+                evictLocal(cacheKey);
             }
             return new ReadResult<>(Lookup.negative(), Source.CENTRAL);
         }
-        local.evict(cacheKey);
+        evictLocal(cacheKey);
         return new ReadResult<>(Lookup.miss(), Source.NONE);
     }
 
@@ -478,6 +505,9 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
 
         boolean accepted = local.accepts(cacheKey);
         local.put(cacheKey, entry, chosen);          // 是否真的写入由本地实现决定（DYNAMIC 会拒绝冷 key）
+        if (accepted) {
+            localPartitions.get(HashPartitions.of(cacheKey, localPartitions.size())).add(cacheKey);
+        }
         String subject = CacheLogger.Subject.localOf(localSpec.strategy());
 
         if (accepted) {
@@ -557,7 +587,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                 throw e;
             }
         } finally {
-            local.evict(cacheKey);
+            evictLocal(cacheKey);
             count(CacheCounters.Counter.EVICT);
         }
     }
@@ -622,22 +652,28 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
      * @return 对账结果
      */
     private ReconcileOutcome reconcile(LocalCacheSpec.VersionSpec version, CacheKey accessedKey) {
-        Set<CacheKey> keys = local.keys();
-        if (keys.isEmpty()) {
+        int batchSize = version.reconcileBatchSize();
+        // 本地副本总数直接来自索引（O(分区数)），不用遍历 local.keys()
+        int localSize = 0;
+        for (Set<CacheKey> bucket : localPartitions) {
+            localSize += bucket.size();
+        }
+        if (localSize == 0) {
             return new ReconcileOutcome(0, true, 0, 1, 0);
         }
-        int batchSize = version.reconcileBatchSize();
-        int localSize = keys.size();
-        // 本地装得下一批 → 全量；超出批大小 → 按同模 key 分区，一次只覆盖 1/N。
+
+        // 本地装得下一批 → 全量；超出批大小 → 只取与访问 key 同模的分区
         boolean wholeScope = localSize <= batchSize;
         int partitions = wholeScope ? 1 : version.reconcilePartitions();
         int partition = wholeScope ? 0 : HashPartitions.of(accessedKey, partitions);
 
         List<CacheKey> selected = new ArrayList<>(Math.min(localSize, batchSize));
-        for (CacheKey key : keys) {
-            if (wholeScope || HashPartitions.of(key, partitions) == partition) {
-                selected.add(key);
+        if (wholeScope) {
+            for (Set<CacheKey> bucket : localPartitions) {
+                selected.addAll(bucket);
             }
+        } else {
+            selected.addAll(localPartitions.get(partition));
         }
         if (selected.isEmpty()) {
             return new ReconcileOutcome(0, wholeScope, partition, partitions, 0);
@@ -652,14 +688,19 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                 Long revision = latest.get(cacheKey);
                 if (revision == null) {
                     // 中央已不再持有（删除 / 清空 / 数据过期）
-                    local.evict(cacheKey);
+                    evictLocal(cacheKey);
                     count(CacheCounters.Counter.VERSION_INVALIDATION);
                     invalidated++;
                     continue;
                 }
                 LocalEntry<V> entry = local.entry(cacheKey);
-                if (entry != null && entry.revision() != revision) {
-                    local.evict(cacheKey);
+                if (entry == null) {
+                    // 存储层已自行过期/淘汰，索引滞后：顺手剔除幽灵条目
+                    evictLocal(cacheKey);
+                    continue;
+                }
+                if (entry.revision() != revision) {
+                    evictLocal(cacheKey);
                     count(CacheCounters.Counter.VERSION_INVALIDATION);
                     invalidated++;
                 }

@@ -76,8 +76,8 @@ class ReconcileFetchScopeTest {
     @DisplayName("本地条目远超一批时才分片：一次对账只有 1 批，载荷约为 1/分区数")
     void partitionsReducePayload() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        // 批大小 10 + 上限 16 分区 → ceil(条目数/10) 向上取 2 的幂，封顶 16
-        TwoLevelCache<String, String> cache = cache(store, 10, 16);
+        // 批大小 10 + 16 分区；maxSize 放大到 200 避免容量淘汰干扰载荷断言
+        TwoLevelCache<String, String> cache = cache(store, 10, 16, 200, Duration.ofMinutes(1));
 
         for (int i = 0; i < 100; i++) {
             cache.put("k" + i, "v" + i);
@@ -177,6 +177,39 @@ class ReconcileFetchScopeTest {
         assertEquals(1, store.readCalls(), "本地未命中 → 再读一次（版本 + 值）");
     }
 
+    @Test
+    @DisplayName("存储层自行过期的条目：下一轮对账把索引里的幽灵条目剔除，之后不再产生 I/O")
+    void ghostEntriesArePrunedByNextReconcile() {
+        InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
+        // 本地 TTL 1s；maxSize 足够大，排除容量淘汰的干扰
+        TwoLevelCache<String, String> cache = cache(store, 1_000, 16, 200, Duration.ofSeconds(1));
+
+        cache.put("a", "va");
+        cache.put("b", "vb");
+        assertEquals(2, cache.local().keys().size());
+
+        cache.lookup("a");                          // 设检查点
+        clock.advance(Duration.ofMillis(200));
+
+        // 让本地副本自然过期（索引里暂时还留着这两个 key）
+        clock.advance(Duration.ofSeconds(2));
+        assertEquals(0, cache.local().keys().size(), "本地副本应已过期");
+
+        store.resetCounters();
+        cache.lookup("a");                          // 第一次对账：顺手剔除幽灵条目
+        assertEquals(1, store.revisionsCalls(), "仍会发一次取版本（此时还带着幽灵条目）");
+        assertEquals(2, store.revisionsKeys(),
+                "幽灵条目会被查一次版本，随即从索引剔除；只查版本、不读数据值");
+
+        // 再等一个检查点：幽灵已被剔除，索引里只剩刚才回填的 a
+        clock.advance(Duration.ofMillis(200));
+        store.resetCounters();
+        cache.lookup("a");
+        assertEquals(1, store.revisionsCalls());
+        assertEquals(1, store.revisionsKeys(),
+                "幽灵条目已从索引剔除；这次只对账回填的 a");
+    }
+
     // ------------------------------------------------------------------ 辅助
 
     @SuppressWarnings("unchecked")
@@ -186,7 +219,12 @@ class ReconcileFetchScopeTest {
 
     private TwoLevelCache<String, String> cache(InMemoryValueStore<Object> store, int batchSize,
                                                 int partitions) {
-        LocalCacheSpec localSpec = LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1),
+        return cache(store, batchSize, partitions, 100, Duration.ofMinutes(1));
+    }
+
+    private TwoLevelCache<String, String> cache(InMemoryValueStore<Object> store, int batchSize,
+                                                int partitions, int maxSize, Duration localTtl) {
+        LocalCacheSpec localSpec = LocalCacheSpec.staticCache(NS, maxSize, localTtl,
                 new LocalCacheSpec.VersionSpec(
                         Duration.ofMillis(100), 0D, Duration.ofMillis(50), batchSize, partitions));
         LocalCache<String> local = LocalCaches.create(localSpec, null, clock::nanos);
