@@ -10,11 +10,13 @@ import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Expiry;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Ticker;
 
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
 /**
@@ -39,6 +41,12 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
     private final LocalCacheSpec spec;
     private final com.github.benmanes.caffeine.cache.Cache<CacheKey, TimedEntry<V>> cache;
     private final CacheCounters counters = new CacheCounters();
+
+    /**
+     * 条目消失（过期 / 容量淘汰 / 显式失效）时的通知，默认空实现。
+     */
+    private volatile Consumer<CacheKey> removalListener = key -> {
+    };
 
     /**
      * @param spec      配置
@@ -69,6 +77,14 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
                         return currentDuration;
                     }
                 })
+                .removalListener((CacheKey key, TimedEntry<V> value, RemovalCause cause) -> {
+                    // 覆盖写（REPLACED）时条目仍在，不能通知；整批清空（clear）由调用方整体处理
+                    if (key != null && cause != RemovalCause.REPLACED) {
+                        removalListener.accept(key);
+                    }
+                })
+                // 默认 executor 会把回调派到线程池，条目消失要立刻反映到调用方的分区表 → 就地同步执行
+                .executor(Runnable::run)
                 .recordStats()
                 .build();
     }
@@ -144,6 +160,12 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
     @Override
     public void maintain() {
         cache.cleanUp();
+    }
+
+    @Override
+    public void onEntryRemoved(Consumer<CacheKey> listener) {
+        this.removalListener = listener == null ? key -> {
+        } : listener;
     }
 
     @Override

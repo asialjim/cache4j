@@ -300,6 +300,12 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     }
 
     @Override
+    public void onEntryRemoved(java.util.function.Consumer<CacheKey> listener) {
+        // 只把"条目消失"透给编排层同步分区表；热点/预选状态属于访问频次，条目过期不影响热度判断
+        delegate.onEntryRemoved(listener);
+    }
+
+    @Override
     public void maintain() {
         delegate.maintain();
         long now = nanoClock.getAsLong();

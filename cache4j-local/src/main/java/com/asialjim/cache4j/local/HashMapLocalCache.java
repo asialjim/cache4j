@@ -16,6 +16,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
 /**
@@ -39,6 +42,12 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
     private final int perSegmentCapacity;
     private final LongSupplier nanoClock;
     private final CacheCounters counters = new CacheCounters();
+
+    /**
+     * 条目消失（过期 / 容量淘汰 / 显式失效）时的通知，默认空实现。
+     */
+    private volatile Consumer<CacheKey> removalListener = key -> {
+    };
 
     /**
      * @param spec      配置（策略为 {@code STATIC} 或 {@code DYNAMIC}）
@@ -74,6 +83,7 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
     public Lookup<LocalEntry<V>> lookup(CacheKey key) {
         Segment<V> segment = segmentOf(key);
         long now = nanoClock.getAsLong();
+        boolean expired = false;
         segment.lock.lock();
         try {
             TimedEntry<V> entry = segment.map.get(key);
@@ -84,12 +94,16 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
             if (entry.expired(now)) {
                 segment.map.remove(key);
                 counters.increment(CacheCounters.Counter.STORE_MISS);
+                expired = true;
                 return Lookup.miss();
             }
             counters.increment(CacheCounters.Counter.STORE_HIT);
             return Lookup.hit(entry.entry);
         } finally {
             segment.lock.unlock();
+            if (expired) {
+                fireRemoved(key);
+            }
         }
     }
 
@@ -103,20 +117,15 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
         long now = nanoClock.getAsLong();
         long expireAt = ttl == null ? Long.MAX_VALUE : now + ttl.toNanos();
         Segment<V> segment = segmentOf(key);
+        List<CacheKey> evicted = List.of();
         segment.lock.lock();
         try {
             segment.map.put(key, new TimedEntry<>(value, expireAt));
-            while (segment.map.size() > perSegmentCapacity) {
-                var iterator = segment.map.entrySet().iterator();
-                if (!iterator.hasNext()) {
-                    break;
-                }
-                iterator.next();
-                iterator.remove();
-            }
+            evicted = trimSegment(segment);
             counters.increment(CacheCounters.Counter.PUT);
         } finally {
             segment.lock.unlock();
+            fireRemoved(evicted);
         }
     }
 
@@ -125,6 +134,7 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
         long now = nanoClock.getAsLong();
         long expireAt = ttl == null ? Long.MAX_VALUE : now + ttl.toNanos();
         Segment<V> segment = segmentOf(key);
+        List<CacheKey> evicted = List.of();
         segment.lock.lock();
         try {
             TimedEntry<V> existing = segment.map.get(key);
@@ -132,18 +142,12 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
                 return false;
             }
             segment.map.put(key, new TimedEntry<>(value, expireAt));
-            while (segment.map.size() > perSegmentCapacity) {
-                var iterator = segment.map.entrySet().iterator();
-                if (!iterator.hasNext()) {
-                    break;
-                }
-                iterator.next();
-                iterator.remove();
-            }
+            evicted = trimSegment(segment);
             counters.increment(CacheCounters.Counter.PUT);
             return true;
         } finally {
             segment.lock.unlock();
+            fireRemoved(evicted);
         }
     }
 
@@ -155,6 +159,7 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
             segment.map.remove(key);
         } finally {
             segment.lock.unlock();
+            fireRemoved(key);
         }
     }
 
@@ -199,12 +204,60 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
     public void maintain() {
         long now = nanoClock.getAsLong();
         for (Segment<V> segment : segments) {
+            List<CacheKey> removed = new ArrayList<>();
             segment.lock.lock();
             try {
-                segment.map.entrySet().removeIf(entry -> entry.getValue().expired(now));
+                var iterator = segment.map.entrySet().iterator();
+                while (iterator.hasNext()) {
+                    var current = iterator.next();
+                    if (current.getValue().expired(now)) {
+                        removed.add(current.getKey());
+                        iterator.remove();
+                    }
+                }
             } finally {
                 segment.lock.unlock();
             }
+            fireRemoved(removed);
+        }
+    }
+
+    @Override
+    public void onEntryRemoved(Consumer<CacheKey> listener) {
+        this.removalListener = listener == null ? key -> {
+        } : listener;
+    }
+
+    /**
+     * 段内超出容量时淘汰最旧条目。
+     *
+     * @param segment 段（调用方必须已持锁）
+     * @return 被淘汰的 key
+     */
+    private List<CacheKey> trimSegment(Segment<V> segment) {
+        List<CacheKey> evicted = List.of();
+        while (segment.map.size() > perSegmentCapacity) {
+            var iterator = segment.map.entrySet().iterator();
+            if (!iterator.hasNext()) {
+                break;
+            }
+            CacheKey eldest = iterator.next().getKey();
+            iterator.remove();
+            if (evicted.isEmpty()) {
+                evicted = new ArrayList<>(1);
+            }
+            evicted.add(eldest);
+        }
+        return evicted;
+    }
+
+    private void fireRemoved(CacheKey key) {
+        removalListener.accept(key);
+    }
+
+    private void fireRemoved(List<CacheKey> keys) {
+        for (CacheKey key : keys) {
+            removalListener.accept(key);
         }
     }
 

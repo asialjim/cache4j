@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -208,6 +209,29 @@ class ReconcileFetchScopeTest {
         assertEquals(1, store.revisionsCalls());
         assertEquals(1, store.revisionsKeys(),
                 "幽灵条目已从索引剔除；这次只对账回填的 a");
+    }
+
+    @Test
+    @DisplayName("本地条目过期后两张表立即清理：下一次对账不再带上这个 key")
+    void expiredEntryIsForgottenImmediately() {
+        InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
+        TwoLevelCache<String, String> cache = cache(store, 1_000, 16, 200, Duration.ofSeconds(1));
+
+        cache.put("a", "va");
+        cache.put("b", "vb");
+        cache.lookup("a");                          // 设检查点
+        clock.advance(Duration.ofSeconds(2));       // 两个副本都过期
+
+        // 访问本地触发惰性过期 → 存储层回调 → 分区号与分区索引同步摘除
+        assertNull(cache.local().entry(new CacheKey(NS, "s1:a")));
+        assertNull(cache.local().entry(new CacheKey(NS, "s1:b")));
+
+        clock.advance(Duration.ofMillis(200));
+        store.resetCounters();
+        cache.lookup("a");
+
+        assertEquals(0, store.revisionsCalls(),
+                "两张表已清空 → 对账时本地无副本，不该再为过期条目发任何取版本请求");
     }
 
     // ------------------------------------------------------------------ 辅助

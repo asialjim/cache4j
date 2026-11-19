@@ -747,8 +747,12 @@ void reconcile(String namespace) {
   （分区号 → 该分区内确实持有副本的 key，空桶惰性创建）记录副本归属，对账时直接
   `get(partition)` 取候选，**不必每次访问都遍历 `local.keys()` 重算分区**；
   分区数由 `partitions` 字段显式持有（= `version.reconcilePartitions`）；
+- **两张表与本地条目同生共死**：`LocalCache.onEntryRemoved` 在条目 TTL 过期 / 容量淘汰 /
+  显式失效时回调，编排层据此立即摘掉该 key 的分区号与分区索引，不让过期条目残留到下一次对账；
+  覆盖写（条目仍在）与 `clear()`（调用方整体清理）不回调；哈希表实现惰性触发，但发现即回调；
+  Caffeine 实现显式用 `.executor(Runnable::run)` 让回调在调用线程同步执行；
 - 本地拒绝写入（DYNAMIC 冷 key）时该 key 的分区号一并摘除，避免无界增长；
-  存储层自行过期/淘汰造成的"幽灵条目"会在对账比对阶段（`local.entry(key) == null`）顺手剔除；
+  兜底：对账比对阶段若发现 `local.entry(key) == null`（存储层尚未回调），同样摘除；
 - **取版本范围由本地规模决定，两条规则**：
   1. **本地条目 ≤ `reconcileBatchSize`** → **直接全量对账**（一次 `HMGET` 就装得下，没必要分片）；
   2. **本地条目 > `reconcileBatchSize`** → 按 key 的 hash 取模分区：先用

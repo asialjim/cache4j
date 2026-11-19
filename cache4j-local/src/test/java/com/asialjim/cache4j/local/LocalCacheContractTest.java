@@ -9,6 +9,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -174,6 +176,48 @@ public abstract class LocalCacheContractTest {
     void acceptsAnyKeyForStatic() {
         LocalCache<String> cache = newCache(100);
         assertTrue(cache.accepts(key("a")), implementation());
+    }
+
+    @Test
+    @DisplayName("显式失效会通知条目消失")
+    void explicitEvictNotifiesRemoval() {
+        LocalCache<String> cache = newCache(100);
+        List<CacheKey> removed = new CopyOnWriteArrayList<>();
+        cache.onEntryRemoved(removed::add);
+
+        cache.put(key("a"), LocalEntry.hit("va", 1L), Duration.ofMinutes(1));
+        cache.evict(key("a"));
+
+        assertEquals(1, removed.size(), implementation());
+        assertEquals(key("a"), removed.get(0), implementation());
+    }
+
+    @Test
+    @DisplayName("TTL 过期会通知条目消失（惰性触发也算）")
+    void expiredEntryNotifiesRemoval() {
+        LocalCache<String> cache = newCache(100);
+        List<CacheKey> removed = new CopyOnWriteArrayList<>();
+        cache.onEntryRemoved(removed::add);
+
+        cache.put(key("a"), LocalEntry.hit("va", 1L), Duration.ofSeconds(1));
+        clock.advance(Duration.ofSeconds(2));
+        cache.entry(key("a"));                       // 惰性过期在这里被发现
+
+        assertEquals(1, removed.size(), implementation());
+        assertEquals(key("a"), removed.get(0), implementation());
+    }
+
+    @Test
+    @DisplayName("覆盖写不算条目消失，不通知")
+    void overwriteDoesNotNotifyRemoval() {
+        LocalCache<String> cache = newCache(100);
+        List<CacheKey> removed = new CopyOnWriteArrayList<>();
+        cache.onEntryRemoved(removed::add);
+
+        cache.put(key("a"), LocalEntry.hit("v1", 1L), Duration.ofMinutes(1));
+        cache.put(key("a"), LocalEntry.hit("v2", 2L), Duration.ofMinutes(1));
+
+        assertTrue(removed.isEmpty(), implementation() + "：覆盖写不应触发条目消失通知");
     }
 
     @Test

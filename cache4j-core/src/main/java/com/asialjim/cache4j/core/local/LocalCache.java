@@ -6,6 +6,7 @@ import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * 本地缓存 SPI。
@@ -100,6 +101,21 @@ public interface LocalCache<V> extends Cache<CacheKey, LocalEntry<V>> {
      */
     default boolean accepts(CacheKey key) {
         return available();
+    }
+
+    /**
+     * 注册「本地条目已消失」的监听器。
+     *
+     * <p>触发场景：<strong>TTL 过期</strong>、<strong>容量淘汰</strong>、<strong>显式失效</strong>
+     * （{@link #evict}）。<strong>不</strong>为「覆盖写」和「整批清空」（{@link #clear}）触发——
+     * 前者条目仍在，后者由调用方整体清理。</p>
+     *
+     * <p>编排层用它同步"key 的分区号 / 分区索引"两张表，避免过期条目在下一次对账前一直残留。
+     * 实现可以惰性触发（例如哈希表实现在读时才发现过期），但<strong>一旦发现就必须回调</strong>。</p>
+     *
+     * @param listener 监听器，接收已消失的 key；重复注册以最后一次为准
+     */
+    default void onEntryRemoved(Consumer<CacheKey> listener) {
     }
 
     /**

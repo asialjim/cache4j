@@ -109,6 +109,8 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         this.milliClock = builder.milliClock;
 
         this.partitions = localSpec.version() == null ? 1 : localSpec.version().reconcilePartitions();
+        // 本地条目过期 / 淘汰 / 失效时立即清掉分区号与分区索引，不等下一次对账才发现
+        local.onEntryRemoved(this::forgetLocalPartition);
 
         LOG.debug(CacheLogger.Subject.TWO_LEVEL, "装配", () -> "namespace=" + namespace
                 + "，strategy=" + localSpec.strategy()
@@ -261,7 +263,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                     + "namespace=" + namespace + "，原因=" + e.getMessage());
         } finally {
             local.clear();
-            keyPartitions.clear();
+            keyPartitions.clear();          // 整批清空由这里统一处理，存储层不逐条回调
             localPartitions.clear();
             count(CacheCounters.Counter.CLEAR);
         }
@@ -334,7 +336,18 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
      * @param cacheKey key
      */
     private void evictLocal(CacheKey cacheKey) {
-        local.evict(cacheKey);
+        local.evict(cacheKey);        // 存储层会回调 forgetLocalPartition；这里再兜一次，幂等
+        forgetLocalPartition(cacheKey);
+    }
+
+    /**
+     * 忘掉某个 key 的分区信息（分区号 + 分区索引两处）。
+     *
+     * <p>本地条目消失时由存储层回调触发；对账发现幽灵条目时也直接调用。</p>
+     *
+     * @param cacheKey key
+     */
+    private void forgetLocalPartition(CacheKey cacheKey) {
         Integer partition = keyPartitions.remove(cacheKey);
         if (partition != null) {
             Set<CacheKey> bucket = localPartitions.get(partition);
@@ -734,8 +747,9 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                 }
                 LocalEntry<V> entry = local.entry(cacheKey);
                 if (entry == null) {
-                    // 存储层已自行过期/淘汰，索引滞后：顺手剔除幽灵条目
-                    evictLocal(cacheKey);
+                    // 兜底：存储层尚未回调（如惰性过期未被访问）时，这里顺手剔除幽灵条目
+                    local.evict(cacheKey);
+                    forgetLocalPartition(cacheKey);
                     continue;
                 }
                 if (entry.revision() != revision) {

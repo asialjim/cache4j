@@ -25,10 +25,18 @@ public interface LocalCache<V> extends Cache<CacheKey, LocalEntry<V>> {
     }
 
     /**
-     * 当前持有的全部 key（≤ maxSize）。对账需要它：一次 HMGET 只取本地关心的 field。
+     * 当前持有的全部 key（≤ maxSize）。诊断/兜底用。
      * 返回快照即可，不要求强一致。
      */
     Set<CacheKey> keys();
+
+    /**
+     * 注册“本地条目已消失”的监听器：TTL 过期、容量淘汰、显式失效都要回调；
+     * 覆盖写（条目仍在）与 clear()（调用方整体清理）不回调。
+     * 实现可以惰性触发（例如哈希表在读时才发现过期），但一旦发现必须回调。
+     * 编排层用它同步“key 的分区号 / 分区索引”两张表，避免过期条目残留到下一次对账。
+     */
+    default void onEntryRemoved(Consumer<CacheKey> listener) {}
 
     /**
      * 记录一次访问（按逻辑 key，与版本无关）。
