@@ -143,7 +143,9 @@ final class RedisScripts {
               low = -1
             elseif total < tonumber(ARGV[5]) then
               if low < 0 then low = tonumber(ARGV[3]) end
-              if tonumber(ARGV[3]) - low >= tonumber(ARGV[6]) then
+              -- 连续 demoteWindows 个窗口低于冷阈值即降热；
+              -- low 所在的那个窗口本身算第 1 个，因此要 +1（与内存协调器、CENTRAL §5.7 一致）
+              if (tonumber(ARGV[3]) - low + 1) >= tonumber(ARGV[6]) then
                 status = 'COOLING'
               end
             else

@@ -136,11 +136,19 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             return true;
         }
 
-        if (!isCooling(key, now) && freq >= dynamic.localHotThreshold()) {
+        boolean cooling = isCooling(key, now);
+        if (cooling && freq >= dynamic.localHotThreshold()) {
+            // 冷却期：频次够了也不许升热（抑制"降热→立刻又升热"的抖动）
+            LOG.debug(spec.namespace(), "热key", () -> "冷却期内拒绝升热，key=" + key.masked()
+                    + "，估计频次=" + freq + "，剩余冷却=" + cooldownRemainingMillis(key, now) + "ms");
+        }
+        if (!cooling && freq >= dynamic.localHotThreshold()) {
             addDelta(key);
             promote(key, freq, now);
             counters.increment(CacheCounters.Counter.PROMOTION);
             counters.increment(CacheCounters.Counter.LOCAL_PROMOTION);
+            LOG.debug(spec.namespace(), "热key", () -> "升热，来源=本地阈值，key=" + key.masked()
+                    + "，估计频次=" + freq + "，热点集合大小=" + hotKeys.size());
             return true;
         }
 
@@ -338,8 +346,6 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         hotByPartition.get(partitionOf(key)).add(key);
         lru.offer(key);
         removeCandidate(key);
-        LOG.debug(spec.namespace(), "热key", () -> "升热，key=" + key.masked()
-                + "，估计频次=" + freq + "，热点集合大小=" + hotKeys.size());
     }
 
     /**
@@ -360,8 +366,8 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         delegate.evict(key);
         counters.increment(CacheCounters.Counter.DEMOTION);
         counters.increment(CacheCounters.Counter.GLOBAL_DEMOTION);
-        LOG.debug(spec.namespace(), "热key", () -> "降热（中央判定 COOLING），key=" + key.masked()
-                + "，冷却至 " + dynamic.cooldown());
+        LOG.debug(spec.namespace(), "热key", () -> "降热，来源=中央 COOLING，key=" + key.masked()
+                + "，进入冷却=" + dynamic.cooldown() + "，热点集合大小=" + hotKeys.size());
     }
 
     private void applyCentralStatus(Map<CacheKey, HotKeyReport> reports) {
@@ -377,6 +383,9 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
                         promote(key, report.windowCount(), now);
                         counters.increment(CacheCounters.Counter.PROMOTION);
                         counters.increment(CacheCounters.Counter.GLOBAL_PROMOTION);
+                        LOG.debug(spec.namespace(), "热key", () -> "升热，来源=中央 HOT，key="
+                                + key.masked() + "，集群窗口频次=" + report.windowCount()
+                                + "，热点集合大小=" + hotKeys.size());
                     }
                 }
                 case COOLING -> {
@@ -489,6 +498,16 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     }
 
     // ------------------------------------------------------------------ 冷却
+
+    /**
+     * @param key key
+     * @param now 当前纳秒
+     * @return 剩余冷却毫秒数；不在冷却期返回 0
+     */
+    private long cooldownRemainingMillis(CacheKey key, long now) {
+        Long until = cooldownUntilNanos.get(key);
+        return until == null ? 0L : Math.max(0L, (until - now) / 1_000_000L);
+    }
 
     private boolean isCooling(CacheKey key, long now) {
         Long until = cooldownUntilNanos.get(key);

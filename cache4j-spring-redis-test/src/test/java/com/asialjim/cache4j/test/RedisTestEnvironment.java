@@ -14,6 +14,7 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -95,6 +96,43 @@ public final class RedisTestEnvironment {
         HotKeyCoordinator coordinator = new com.asialjim.cache4j.central.redis.RedisHotKeyCoordinator(
                 store, globalSpecs::get);
         return new RedisCentralCacheProvider(store, coordinator);
+    }
+
+    /**
+     * 热 key 测试用的中央阈值：窗口 1s、升热 6、冷阈 4、一个窗口低活动即降热。
+     *
+     * @return 中央阈值
+     */
+    public static LocalCacheSpec.GlobalSpec hotGlobalSpec() {
+        return new LocalCacheSpec.GlobalSpec(
+                Duration.ofSeconds(1),   // window
+                6L,                      // hotThreshold
+                4L,                      // coolThreshold
+                1,                       // demoteWindows
+                100,                     // staleWindows（本用例不走"长时间无上报"路径）
+                1);                      // clientEstimate
+    }
+
+    /**
+     * 热 key 测试用的 DYNAMIC 参数：本地阈值 3、同步 200ms、冷却 2s（≥ demoteWindows × window）。
+     *
+     * @return 热度参数
+     */
+    public static LocalCacheSpec.DynamicSpec hotDynamicSpec() {
+        return new LocalCacheSpec.DynamicSpec(
+                3,                        // localHotThreshold
+                Duration.ofSeconds(1),    // window
+                100,                      // maxHotKeys
+                Duration.ofSeconds(60),   // hotTtl
+                Duration.ofMillis(200),   // syncInterval
+                Duration.ofSeconds(2),    // cooldown
+                LocalCacheSpec.Coordination.GLOBAL,
+                hotGlobalSpec(),
+                4_096,                    // sketchWidth
+                4,                        // sketchDepth
+                16,                       // hotReportPartitions
+                64,                       // hotReportBatchMax
+                100);                     // candidateCapacity
     }
 
     /**

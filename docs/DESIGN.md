@@ -1199,7 +1199,9 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，**格
 [cache4j]-装配-缓存装配完成，strategy=STATIC，localTtl=PT1M，centralTtl=PT10M，coordinator=none
 [user:detail]-对账-对账完成，清除失效副本 1 条
 [user:detail]-读-中央读取失败，按未命中降级，key=user:detail#38e3649f，原因=CacheException:central down
-[product:hot]-热key-升热，key=product:hot#1befe33d，估计频次=5，热点集合大小=1
+[product:hot]-热key-升热，来源=本地阈值，key=product:hot#1befe33d，估计频次=5，热点集合大小=1
+[product:hot]-热key-降热，来源=中央 COOLING，key=product:hot#1befe33d，进入冷却=PT30S，热点集合大小=0
+[product:hot]-热key-冷却期内拒绝升热，key=product:hot#1befe33d，估计频次=11，剩余冷却=1991ms
 [cache4j]-key编码-不支持的 key 类型：java.lang.Object，请实现 KeyWritable 或提供自定义 KeyEncoder
 ```
 

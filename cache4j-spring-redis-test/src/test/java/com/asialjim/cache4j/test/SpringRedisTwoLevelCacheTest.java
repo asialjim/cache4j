@@ -78,7 +78,7 @@ class SpringRedisTwoLevelCacheTest {
     @AfterEach
     void tearDown() {
         if (context != null) {
-            clearNamespaces();
+            //clearNamespaces();
             context.close();
         }
         if (raw != null) {
