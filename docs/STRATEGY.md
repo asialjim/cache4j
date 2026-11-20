@@ -208,11 +208,55 @@ com.acme.cache.OrderCacheDecls
 
 1. **必须读取全部同名资源再合并**：用 `ClassLoader.getResources(...)` 遍历所有 URL，
    不要用 `getResource(...)`（只返回第一个，多 jar 场景会静默漏掉一半声明）；
-2. **类加载器可注入**：默认 `Thread.currentThread().getContextClassLoader()`，容器/native image
-   场景允许显式传入，否则容易在插件类加载器下找不到类；
+2. **类加载器可注入**：默认 `Thread.currentThread().getContextClassLoader()`，容器 / 插件类加载器
+   场景允许显式传入，否则容易找不到类；
 3. **零文件兜底**：额外支持显式传入枚举类 —— `options.declEnums(UserCacheDecls.class, ...)`，
-   供 GraalVM native image、单元测试、以及不愿维护 resources 文件的使用方使用。
+   供单元测试与不愿维护 resources 文件的使用方使用。
    三条来源（文件 / 注解扫描 / 显式传入）汇入同一个注册表，同一枚举重复出现只注册一次。
+
+### 4.2.3 关于 GraalVM / native image 的准确表述
+
+**先说清一件事：本方案并<u>不</u>免反射。** `Class.forName` 与 `getEnumConstants()` 都是反射，
+native image 的封闭世界假设（closed-world）要求构建期就能确定可达性，否则目标类会被裁掉、
+运行时报 `ClassNotFoundException`。所以本方案与"包扫描"的差别**不在有没有反射**，而在下面两点：
+
+| 限制 | 包扫描 | 本方案（静态类名清单） |
+|---|---|---|
+| 运行期遍历 classpath（列 jar、推 `.class` 文件名、枚举包） | **不可行**——native image 产物是单个可执行文件，没有 classpath 目录可扫 | 不做遍历 |
+| 反射可达性 | 需要，且**目标不可预知**（扫到谁才知道） | 需要，但**目标是一份静态清单，可逐条精确注册** |
+
+因此准确的卖点是：**反射面可枚举、可静态注册；运行期零 classpath 遍历。**
+
+native image 下按三档处理，由易到难：
+
+| 档 | 做法 | 反射 | native image 成本 |
+|---|---|---|---|
+| **1. 声明文件**（默认） | `META-INF/services/...CacheDecl` 一行一个枚举 | `Class.forName` + `getEnumConstants` | 需要 hints，但清单是静态的，**可由库自动生成** |
+| **2. 显式传入**（兜底） | `options.declEnums(UserCacheDecls.class)` | 同上 | 同上 |
+| **3. 生成的注册代码**（真零反射） | 由编译期/AOT 生成 `Cache4jDecls.register(registry)`，内部直接 `UserCacheDecls.values()` | **无** | **零配置** |
+
+第 1、2 档的 hints 库自己出（用户不必手写 `reflect-config.json`）：
+
+```java
+// cache4j-spring：Spring 6 AOT 会自动调用 RuntimeHintsRegistrar
+public final class Cache4jRuntimeHints implements RuntimeHintsRegistrar {
+    @Override
+    public void registerHints(RuntimeHints hints, ClassLoader loader) {
+        for (String className : CacheStrategyLoader.declaredClassNames(loader)) {
+            hints.reflection().registerType(TypeReference.of(className));   // 只需枚举类可达
+        }
+    }
+}
+```
+
+纯 Java（无 Spring）用户拿到的是机械可生成的模板：清单里几个类就几个条目。
+
+第 3 档才是字面意义的"对 native image 友好"：`values()` 是编译期静态引用，`register(...)` 由入口
+显式调用，全链路无反射、无 hints、无 resources 文件。代价是多一个生成步骤（APT 或 AOT 入口代码）。
+
+> **必须实测**：`getEnumConstants()` 在 native image 下的最小注册项（是否仅需类可达、是否还需要
+> 常量数组标注）随 GraalVM 版本变化，文档不写死结论——测试计划里列了 native image 冒烟用例，
+> 以实测结果回填本节的配置模板。
 
 ### 4.3 翻译与校验
 
@@ -580,6 +624,7 @@ public record StrategyUpdate(
 | 中央损坏 | 字段解析失败 ⇒ 继续用旧策略 + 计数 + 告警 |
 | 临时策略 | `ttlOfChange` 到期后自动回到声明值 |
 | `clear` 保护 | `clear(namespace)` 后 `__strategy:` 仍在 |
+| **native image 冒烟** | 三档各一个最小程序，`native-image` 构建后能加载声明并装配缓存（回填实测的 hints 模板） |
 
 ## 11. 八、分期实施
 
@@ -604,3 +649,4 @@ public record StrategyUpdate(
 | S6 | 是否允许热更中央 TTL | 允许 / 禁止 | **允许但标注"只影响后续写入"**；连接类参数禁止 |
 | S7 | 临时策略（`ttlOfChange`）是否要做 | 做 / 不做 | 做（大促场景刚需，实现成本低：访问驱动检查即可发现过期） |
 | S8 | `CacheDefinition` 是否从 `cache4j-spring` 下沉到 `core.strategy` | 下沉 / 保留双份 | **下沉**，Spring 侧保留同名兼容别名 |
+| S9 | 是否提供「真零反射」的生成式入口（APT / AOT 生成 `register(...)`） | 提供 / 不提供 | 先不提供（P1–P3 用文件清单 + 库自带 hints），等有明确 native image 需求再加 |
