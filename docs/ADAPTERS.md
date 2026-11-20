@@ -442,6 +442,31 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 | `RedisConnectionFactory` | 客户端由你选（Lettuce / Jedis），`cache4j-spring-redis` 不锁定客户端 |
 | 值序列化器（可选） | 不提供则用库的默认（JSON，缺 jackson 时退回 JDK）；定义 `cache4jSerializer` 覆盖 |
 
+#### 端到端最简形态
+
+业务只做三件事：
+
+```java
+@Configuration(proxyBeanMethods = false)
+@Import(Cache4jAutoScanConfiguration.class)          // ① 激活（自动装配全部组件）
+@ComponentScan(                                       // ② 让声明枚举被扫进来
+        basePackages = "com.acme",
+        useDefaultFilters = false,
+        includeFilters = @ComponentScan.Filter(
+                type = FilterType.ANNOTATION, classes = CacheNamespace.class))
+public class Cache4jConfig {
+
+    @Bean
+    CentralCacheProvider centralCacheProvider(RedisConnectionFactory factory) {   // ③ 中央实现
+        return new SpringRedisCentralCacheProvider(
+                factory, RedisKeyFormatter.defaults(), serializer);
+    }
+}
+```
+
+不需要任何 `cache4j.*` 配置：枚举被翻译成缓存定义，`@Cacheable` 直接可用。
+（`DeclarationEndToEndTest` 跑的就是这条链路。）
+
 #### 声明枚举的两种发现方式
 
 **① 交给 Spring 的组件扫描（推荐，不用配包名）**
