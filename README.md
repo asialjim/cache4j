@@ -31,16 +31,21 @@
 ### 2. 不需要额外的热点探测中间件
 
 热点探测天然需要"把同一个 key 的所有增量汇总到一处"。常见做法是把这件事交给一个独立中间件
-（Worker 集群 + 注册中心）。本库选择复用中央缓存本身：
+（Worker 集群 + 注册中心）。本库选择复用**中央缓存抽象**本身：
 
-| 需求 | 中央缓存已经提供的能力 |
-|---|---|
-| 同一 key 的增量汇总到一处 | 按 key 分片（单实例天然汇聚，集群按 slot） |
-| 多节点的时间窗口对齐 | 服务端 `TIME`（Lua 内 `redis.call('TIME')`） |
-| 窗口累加与判定的原子性 | Lua 脚本 |
-| 窗口过期清理 | 每片 key 的 TTL |
+| 热 key 协调需要的能力 | 契约要求 | Redis 适配层的实现 |
+|---|---|---|
+| 同一 key 的增量汇总到一处 | 按 key 路由（不做跨节点聚合） | 单实例天然汇聚；集群按 slot |
+| 多节点时间窗口对齐 | 由中央提供统一的"当前时间" | Lua 内 `redis.call('TIME')` |
+| 原子地"累加 + 读回" | 支持原子的批量累加与批量读 | Lua 脚本 |
+| 窗口过期清理 | 支持按 key 设置过期 | 每片 key 的 TTL |
 
-于是"热 key 协调"退化成"缓存读写"，不需要部署、不需要注册发现、不需要长连接。
+**本库与 Redis 没有绑定关系**：`cache4j-central` 只定义 `CentralCache` / `CentralCacheProvider` /
+`HotKeyCoordinator` 抽象，Redis 只是我们**默认提供的一个适配层**（`cache4j-central-redis` +
+`cache4j-spring-redis`）。换成 Memcached、自研 KV、甚至一个带 `INCR` 语义的数据库都可以，
+只要满足上表四项能力；也可以等我们适配。
+
+于是"热 key 协调"退化成"中央缓存读写"，不需要部署 Worker、不需要注册发现、不需要长连接。
 
 ### 3. 没有后台线程
 
@@ -125,11 +130,13 @@ cache.put(skuId, newSku);
 | **数据变更后本地旧值** | **框架与缓存无通信**，感知不到更新；必须业务手动 `remove`/`smartSet`，且 `remove` 只对"手工添加"的 key 可靠 | **key 级版本对账**：写入即让所有节点本地副本在 `checkInterval` 内失效，业务无需任何动作 |
 | 策略怎么切换 | 改代码（加/删 `isHotKey` 调用） | 改声明或仓库配置（`NONE`/`STATIC`/`DYNAMIC`），**业务代码不动，可运行时切** |
 | 热点识别规则 | dashboard 里配 `interval/threshold/duration`，key 要匹配"精确/前缀通配"规则 | 按 namespace 声明策略，无 key 前缀约定 |
-| 要部署什么 | Worker 集群 + etcd + SDK | 一个 jar（复用已有的 Redis） |
+| 要部署什么 | Worker 集群 + etcd + SDK | 一个 jar；中央存储复用你已有的那套（Redis 只是默认适配） |
 
 > 一句话：**JD HotKey 提供的是"热点探测能力"，怎么用由你决定；cache4j 提供的是"已经用好了的缓存"。**
 
 核心模块不依赖 Spring、Solon 或任何运行时框架；框架适配放在独立的 `cache4j-spring`、`cache4j-solon` 模块中。
+同样地，**核心也不依赖 Redis**：中央缓存是抽象（`CentralCache` / `CentralCacheProvider`），
+Redis 只是我们默认提供的适配层之一，换成其他中央存储只需实现同一套契约。
 
 > 当前状态：**P1 + P2 语义层已落地**——`cache4j-core`（契约 + `TwoLevelCache` 编排）、`cache4j-local`（`NONE`/`STATIC`/`DYNAMIC` + 分段 LRU）、`cache4j-central`（内存参考实现 + 热 key 协调）、`cache4j-central-redis`（`RedisValueStore<V>` 下行 SPI + `RedisCentralCache<V>` 语义层 + `RedisHotKeyCoordinator`，**不碰字节**）、`cache4j-spring-redis`（`SpringRedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer）、`cache4j-local-caffeine`（Caffeine 存储实现，与 HashMap 跑同一套契约测试）。`cache4j-spring`（Spring Cache 桥接，不依赖 Boot）与 `cache4j-spring-redis-test`（真实 Redis 集成测试）。175 个用例全绿（Redis 不可达时相关用例自动跳过）。日志走 **SLF4J**，格式固定 `[主题]-子过程-具体信息`（见 DESIGN §7.2）。Spring Boot 自动装配、`cache4j-solon`、`cache4j-starter` 尚未开始。完整设计见：
 >
@@ -139,6 +146,9 @@ cache.put(skuId, newSku);
 > - [Spring / Solon 适配](docs/ADAPTERS.md)
 
 ## 模块
+
+模块名里带 `redis` 的只是**默认适配层**，不是内核的一部分：`cache4j-core` / `cache4j-central` 都不认识 Redis，
+换一个中央存储只需要提供新的 `CentralCacheProvider`（以及需要跨节点热 key 协调时的 `HotKeyCoordinator`）。
 
 | 模块 | 职责 | 主要依赖 |
 |---|---|---|
@@ -156,7 +166,7 @@ cache.put(skuId, newSku);
 
 依赖方向固定为从上到下，`cache4j-core` 不反向依赖任何实现模块，也不引用 Spring / Solon / Caffeine / Redis 客户端。`cache4j-local` 与 `cache4j-central` 是**同级**实现模块，互不依赖；`cache4j-local-*` 依赖 `cache4j-local`，`cache4j-central-*` 依赖 `cache4j-central`。
 
-Redis 方向的三层边界：
+以 Redis 为例的三层边界（换成其他中央存储时，下面只有第 3 层需要替换）：
 
 | 层 | 模块 | 定义什么 | 不做什么 |
 |---|---|---|---|
@@ -175,7 +185,7 @@ Redis 方向的三层边界：
 LocalCache<User> local = LocalCaches.create(
         LocalCacheSpec.staticCache("user:detail", 10_000, Duration.ofMinutes(5)));
 
-// 中央：Redis 由适配层装配（cache4j-spring-redis 提供 RedisValueStore<V>）
+// 中央：这里用 Redis 适配层举例；换成其他中央缓存只需实现 CentralCacheProvider
 CentralCache<User> central = provider.create(
         CentralCacheSpec.builder("user:detail")
                 .ttl(Duration.ofMinutes(30))
@@ -192,7 +202,8 @@ Lookup<User> result = cache.lookup("42", id -> userRepository.findById(id));
 User user = result.optional().orElse(null);   // 三态：命中 / 已确认不存在 / 未命中
 ```
 
-`DYNAMIC` 需要 `HotKeyCoordinator`：`cache4j-central` 提供内存参考实现（单机/测试），Redis 实现由适配层给出；
+`DYNAMIC` 需要 `HotKeyCoordinator`：`cache4j-central` 提供内存参考实现（单机/测试），
+生产实现随中央缓存适配层一起提供（Redis 适配层已给出）；
 `coordination=GLOBAL` 而缺少协调实现时，启动阶段直接失败（不静默退化成单节点模式）。
 
 ## 构建约定
