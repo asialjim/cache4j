@@ -446,9 +446,9 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
 | `version.reconcilePartitions` | `16` | 对账分区数（2 的幂） |
 | `version.reconcileBatchSize` | `1_000` | 单次 `HMGET` 的 field 数 |
 | `version.retryBackoff` | `200ms`（运行时取 `max(backoff, checkInterval)`） | 对账失败退避 |
-| `dynamic.hotThresholdQps` | `100` | 热升阈值，**按 QPS**（原来叫 `localHotThreshold`，语义是窗口内累计次数） |
-| `dynamic.window` | `10s` | **滑动**统计窗口长度 |
-| `dynamic.hotWindowBuckets` | `10` | 滑动窗口分桶数（每桶 `1s`），越多越精确、内存越高 |
+| `dynamic.window` | **`5s`** | **总**滑动窗口长度 |
+| `dynamic.windowSlices` | **`16`** | 时间片数（每片 `312.5ms`）；循环数组长度 / 上报分区数都是 16 |
+| `dynamic.hotThresholdQps` | **`100`** | 本地升热阈值（QPS）；`globalQps` 用 `GlobalSpec.hotQps=100` |
 | `dynamic.hotTtl` | **不提供**（与本地非空 TTL 共用） | DYNAMIC 热副本没有独立 TTL |
 | `dynamic.hotReportPartitions` | `16` | 热 key 上报分区数 |
 | `dynamic.cooldown` | `30s` | 降热冷却 |
@@ -539,78 +539,140 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
 **阈值按 QPS 语义**（不是"窗口内累计次数"），统计用**滑动窗口**，而非固定窗口累加——
 固定窗口在窗口边界会出现"跨边界两次计数被算成一次突增"和"边界前后重复计算"两类抖动。
 
-#### 4.7.1 两层结构（粗筛 + 精判）
+#### 4.7.1 本地结构：窗口分片 + per-key 计数（对齐 jd-hotkey）
 
-| 层 | 结构 | 作用 | 内存 |
-|---|---|---|---|
-| 粗筛 | 共享 Count-Min Sketch（现有 `FrequencySketch`，双桶） | 对**海量一次性 key** 也能估出频次，筛出"值得进候选池"的 key | 固定（几 KB） |
-| 精判 | **每 key 一个 O(1) 的滑动窗口状态** | 只对候选池 + 热点集合（各 ≤ 1000）做精确 QPS 判定 | `(候选 + 热点) × 每 key 状态` |
-
-精判不能省：CMS 是概率结构，用它直接跟阈值比较会出现"热点抖动"（误差在阈值附近来回跳）。
-反过来粗筛也不能省：只靠精判就要为每个访问过的 key 建状态，长尾 key 会撑爆内存。
-
-#### 4.7.2 精判：惰性双桶 + 线性插值（默认，`hotWindowBuckets` 可调）
-
-每个 key 只存三个字段，O(1) 内存、无后台线程、无定时任务：
-
-```java
-long bucketStart;     // 当前桶起点
-int  current;         // 当前桶计数
-int  previous;        // 上一个桶计数
-```
-
-访问时（惰性，只在访问路径上）：
+**总窗口 5s，切 16 片**（每片 312.5ms），循环数组；同一个 key 在**当前片**里 `+1`，
+判定时累加"当前片 + 前 15 片"：
 
 ```text
-elapsedBuckets = (now - bucketStart) / bucketWidth
-if      elapsedBuckets == 0  → current++
-else if elapsedBuckets == 1  → previous = current; current = 1; bucketStart += width
-else                         → previous = 0;       current = 1; bucketStart = now
+slices[16]        // 循环数组，每片一个时间桶
+sliceMillis = window / 16 = 312.5ms
+sum           = Σ slices[最近 16 片]        // = 过去 5s 内的读次数
+localQps      = sum / 5.0
+升热判定       = localQps >= hotThresholdQps.json    // 即 sum >= hotThresholdQps * 5
 ```
 
-估计值（线性插值，误差上界 = 一个桶）：
+三个要点：
+
+1. **片数固定 16**，与"上报分区数"（`hotReportPartitions=16`）是**两个维度**，不要混：
+   片是**时间**维度，分区是 **key** 维度；
+2. **循环数组长度取 2×16**（抄 jd-hotkey）：这样"清理区间"与"统计区间"不重叠，
+   清理只需抹掉"当前索引之后 16 格"；
+3. 窗口边界不做插值——16 片本身就是"精度 1/16 窗口"的滑动窗口近似，比双桶插值（误差一整个窗口）准得多。
+
+#### 4.7.2 为什么不用 Count-Min Sketch 做判定
+
+CMS 与 jd-hotkey 式的 per-key 表，取舍方向相反：
+
+| 维度 | CMS（共享草图） | per-key 窗口表 |
+|---|---|---|
+| 内存 | **固定**，与 key 数无关 | 与 key 数成正比 |
+| 精度 | **只会高估**（`true ≤ est ≤ true + εN`，碰撞越多越离谱） | 精确 |
+| 误判方向 | 冷 key 被算成热 → **误升热** | 只会少算 |
+| 计数上限 | 8 位饱和 **255**；QPS=100/5s 就是 500 次 → **早爆表** | `int`/`long`，无饱和 |
+| 能否精确降级 | 不能（删不掉单个 key 的计数） | 能 |
+
+jd-hotkey 作者的一句话正好是判据：**"少算没事（热 key 频率高），多算不行（冷 key 被干成热就错了）"**。
+CMS 的误判恰好全在"多算"那一侧，而且 8 位饱和让它连"粗筛阈值"都撑不住
+（`255 次 / 5s ≈ 51 QPS` 就封顶）。
+
+**结论**：`FrequencySketch` 不作为判定依据。本地改为 per-key 计数表：
 
 ```text
-ratio     = (now - bucketStart) / bucketWidth          // 0..1
-estimated = previous * (1 - ratio) + current           // 相当于"过去 1 个窗口内的访问次数"
-qps       = estimated / windowSeconds
-升热判定   = qps >= hotThresholdQps
+Map<CacheKey, int[]>  或  Map<CacheKey, long>
+- 只对"进入统计范围"的 key 建状态
+- 容量上限 = candidateCapacity（默认 1000），满了之后新 key 只计数不进表（或按淘汰策略）
+- 窗口旋转时：把最老的一片清零（循环数组），无需遍历全部 key
 ```
 
-- 默认 `window = 10s`、`hotWindowBuckets = 10`（每桶 1s）→ 误差 ≤ 1s，内存每 key 约 16B；
-- 想更精确就调大分桶数（`hotWindowBuckets`），内存线性增长但仍是常数级；
-- 想更省就让 CMS 承担更多判定，精判只做确认。
+> 保留 `FrequencySketch` 作为**可选的极长尾兜底**（默认关闭）；打开时它只用于"决定谁进统计表"，
+> 永不参与 QPS 判定。
 
-#### 4.7.3 为什么不用另外两种常见方案
+#### 4.7.3 口径：localQps 与 globalQps 是两个量，不可互换
 
-| 方案 | 问题 |
-|---|---|
-| 固定窗口累加（现状） | 边界抖动：窗口末尾一小段时间 + 新窗口开头的一小段时间，会被判成"两倍"或"零"，热升热降来回跳 |
-| 纯 EWMA（指数衰减） | 内存同样 O(1)，但"阈值"语义变成"衰减后的加权和"，与 QPS 的换算不直观（`freq = qps × halfLife / ln2`），运维看不懂 |
-| 每 key 环形数组（k 桶精确） | 最精确，但每 key 一个数组对象（对象头 + k 个 int），2000 个 key × 10 桶的分配与 GC 压力明显高于三字段版本；精度收益在 QPS 判定这种场景里不值 |
+| | **localQps** | **globalQps** |
+|---|---|---|
+| 范围 | **本进程**对该 key 的读速率 | **所有节点**对该 key 的读速率之和 |
+| 分子 | 本地窗口 16 片之和 | 各节点上报增量之和 |
+| 分母 | 同一个总窗口（5s） | 同一个总窗口（5s） |
+| 阈值 | `hotThresholdQps`（本地） | `GlobalSpec.hotQps`（全局） |
+| 用途 | **本地就地升热**（零额外往返） | 跨节点确认/补偿、驱动降热 |
 
-#### 4.7.4 热降：对称的 QPS 判定 + 持续性要求
+**单调性（这是"本地独立阈值"成立的理由）**：
+
+```text
+globalQps = Σ localQps_i  ≥  localQps_j          （任意节点 j）
+```
+
+本地达到阈值 ⇒ 至少一个节点已经这么热 ⇒ 全局只会更热。**所以本地判定永远不会是"误报"，最多是"提前"**。
+因此不需要让本地阈值去"折算"全局阈值（不需要 `localHotQps = globalHotQps / clientEstimate`）；
+`clientEstimate` 只用于**候选预选**（提前把可能成为全局热点的 key 放进候选池，见 §4.7.5）。
+
+#### 4.7.4 中央只回传"状态"，不回传"数值"
+
+**硬约束：中央 → 本地只传状态（`HOT` / `ACTIVE` / `COOLING` / `UNKNOWN`），不传计数或 QPS。**
+
+原因：中央的计数是"所有节点增量之和"。一旦把它回传并落地到本地：
+
+- 本地下次上报时可能把"中央的累计值"当成"自己的增量"再报一次 → **重复放大**；
+- 或者本地用中央的数值覆盖自己的估计 → 本地判定被污染，`localQps` 不再代表本进程；
+- 两个口径就此串味，之后再也分不清"到底是本进程热还是全局热"。
+
+对应地，上报方向也只传**自上次上报以来的增量**（`delta`），不传累计值。
+`HotKeyReport` 因此裁掉 `total` 字段，只保留 `status`（与排障用的窗口时间戳）。
+
+#### 4.7.5 热降：对称的 QPS 判定 + 持续性要求
 
 ```text
 降热判定 = qps < coolThresholdQps 且 连续 N 个检查点都成立（N = demoteWindows）
 ```
 
 - 单点低于阈值就降热会抖（一两秒没流量就被踢出本地），必须要求**持续**低于；
-- 中央侧（`GLOBAL`）同样按 QPS 统计窗口内的访问，阈值 `hotThresholdQps` / `coolThresholdQps`
-  都由仓库按 namespace 配；
+- 中央侧（`GLOBAL`）同样按 16 片求和得 `globalQps`，阈值 `hotQps` / `coolQps` 由仓库按 namespace 配；
+- **降热只认中央返回的 `COOLING`**（本地 `localQps` 掉下来不足以降热）：本地只看到本进程，
+  某个节点不访问了不代表全局不热；反过来升热允许本地单独决定（§4.7.3 的单调性）；
 - `cooldown`（冷却期）保留：降热后一段时间内即使又达标也不许升热，抑制抖动。
 
-#### 4.7.5 连带的参数与实现变更
+#### 4.7.6 参数与实现变更
 
 | 项 | 变化 |
 |---|---|
-| `DynamicSpec.localHotThreshold`（int，窗口累计次数） | 改名 **`hotThresholdQps`**（int，QPS 语义） |
-| `DynamicSpec.window` | 语义变为"滑动窗口长度"，取值不变（10s） |
-| 新增 `DynamicSpec.hotWindowBuckets` | 默认 10 |
-| `DynamicSpec.hotTtl` | **删除**（见 §4.6） |
-| `GlobalSpec.hotThreshold` / `coolThreshold`（long） | 语义改为 QPS，阈值量级从"窗口计数"降到"每秒"，默认值需重算 |
-| `FrequencySketch` | 保留作为粗筛；新增 per-key 滑动窗口状态（并入 `hotKeys` / `candidateByPartition` 的值里） |
-| 指标 | 控制层新增 `hotQps` 估计值（诊断用），便于运维对照阈值调参 |
+| `DynamicSpec.localHotThreshold`（int，窗口累计次数） | 改名 **`hotThresholdQps`**（int，QPS 语义，默认 **100**） |
+| `DynamicSpec.window` | 语义明确为"**总**滑动窗口"，默认 **5s**（原 10s） |
+| 新增 `DynamicSpec.windowSlices` | 时间片数，默认 **16**（每片 `window/16`）；循环数组长度 `2 × windowSlices` |
+| ~~`DynamicSpec.hotWindowBuckets`~~ | **删除**（与 16 片重叠，且原设计与双桶插值自相矛盾） |
+| `DynamicSpec.hotTtl` | **删除**（DYNAMIC = STATIC + 准入，见 §4.6） |
+| `GlobalSpec.hotThreshold` / `coolThreshold` | 语义改 QPS（`hotQps` / `coolQps`），默认 **100 / 25**；直接与 `globalQps` 比较 |
+| `FrequencySketch` | **不再参与判定**；作为可选的长尾兜底（默认关闭），只决定"谁进统计表" |
+| `HotKeyReport.total` | **删除**：中央只回传状态（§4.7.4） |
+| 指标 | 控制层新增 `localQps` / `globalQps`(仅中央侧可见) 估计值，便于对照阈值调参 |
+
+#### 4.7.7 中央侧的存储布局（Redis）：按「分区 × 片」组织
+
+一次 hotkey 对账**只处理一个 key 分区**（`hotReportPartitions = 16`），
+因此中央的 key 也按分区拆开，避免一次 Lua 里扫整个 namespace：
+
+```text
+hot:<namespace>:<partition>:<sliceId>   HASH
+    field = encodedKey          # 仅该分区内的候选/热点 key
+    value = 该片内的读次数
+```
+
+- `partition = hash(key) & 15`，`sliceId = redisTime / sliceMillis`；
+- **key 数量 = 16 分区 × 16 片 = 256 / namespace**（与候选 key 数无关）；
+- 每片 key 的 **TTL = 窗口长度 + 一片** → 老片自动过期，**无需任何清理逻辑**；
+- **一次往返完成"上报 + 查询"**：
+
+```text
+Lua(reportAndStatusAll):
+  1. 对 delta 里的每个 key：HINCRBY hot:<ns>:<P>:<curSlice> <key> <delta>
+  2. 对"该分区的 key 集合"：for i in [cur-15, cur] → HMGET hot:<ns>:<P>:<i> <keys...>
+  3. 每 key 求和 → globalQps → 比较 hotQps/coolQps → 返回**状态**（不回传计数）
+```
+
+- **禁止**在同一次 Lua 里查其他分区或整个 namespace（这正是分区拆分要避免的读放大）；
+- 时间基准用 **Redis 服务端 `TIME`**（Lua 内 `redis.call('TIME')`）：所有节点写入同一个
+  `sliceId`，窗口边界天然对齐；内存实现用注入时钟（测试可控）。
 
 > **连带文档**：以上参数改名与语义变更同时要回写到 `LOCAL.md`（热 key 判定一节）、
 > `DESIGN.md`（决策表）与 `CentralCacheSpec`/`GlobalSpec` 的默认值；本设计只负责把"仓库里能配什么"定清楚。
@@ -986,7 +1048,11 @@ GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热
 | S18 | `version.jitter` 的语义 | 比例（±N%）/ 绝对时长 | **绝对时长**（默认 `100ms`），不同 `checkInterval` 下抖动幅度一致；代价是 `VersionSpec` 组件类型变更 |
 | S19 | DYNAMIC 是否保留独立热 TTL | 保留 / 取消 | **取消**：DYNAMIC = STATIC + 准入判定，判定通过后本地配置与 STATIC 完全一致 |
 | S20 | 热升/热降阈值的语义 | 窗口内累计次数 / **QPS** | **QPS**（`hotThresholdQps`），运维可直接对照监控里的 QPS |
-| S21 | 统计方式 | 固定窗口 / 滑动窗口 / EWMA | **滑动窗口**：CMS 粗筛 + 每 key 惰性双桶线性插值（`hotWindowBuckets` 可调，默认 10），误差 ≤ 1 桶且无后台线程 |
+| S21 | 统计方式 | 固定窗口 / 滑动窗口 / EWMA / CMS | **16 片滑动窗口**（总窗口 5s，每片 312.5ms，数组长度 2×16，抄 jd-hotkey）；**CMS 不参与判定**（8 位饱和 + 只会高估，与"冷 key 不能变热"冲突） |
+| S28 | localQps 与 globalQps 的关系 | 折算出统一口径 / 两个独立量 | **两个独立量**：`globalQps ≥ localQps`（单调性）⇒ 本地判热不会误报，只会提前；本地阈值不折算全局阈值，`clientEstimate` 只用于候选预选 |
+| S29 | 中央是否回传计数/QPS | 回传 / 只回传状态 | **只回传状态**（HOT/ACTIVE/COOLING/UNKNOWN）：回传数值会让本地下次上报把累计值当增量重复放大，两个口径串味；`HotKeyReport.total` 删除 |
+| S30 | 中央聚合格局 | 每(key,片)一 key / 每片一 HASH / 每 namespace 一 HASH / **每(分区,片)一 HASH** | **每(分区,片)一 HASH**：`hot:<ns>:<partition>:<sliceId>`，一次对账只碰一个分区；key 数 256/namespace 且与候选数无关；TTL 自动过期零清理；**禁止**在一次 Lua 里扫全 namespace |
+| S31 | 中央窗口时间基准 | 各节点本机墙钟 / Redis 服务端 TIME | **Redis `TIME`**（Lua 内 `redis.call('TIME')`）：所有节点写同一 `sliceId`，窗口天然对齐 |
 | S23 | 未声明 namespace 被业务使用 | 报错 / 自动创建 / 静默返回 null | **告警 + 自动创建**：告警说明"没走声明接口"，创建用数据源策略（有记录）或内建默认；启动期无法穷举，强校验只会把拼写错误变成启动失败 |
 | S24 | 数据源有、代码没声明的孤儿配置 | 预装配 / 不预装配 | **不装配**：预装配集合 = 声明集合（文件 + 扫描），数据源不参与"装什么"；启动不调用 `loadAll()` |
 | S25 | 数据源里单条记录损坏 | fail-fast / 跳过 | **跳过 + 标记 `broken`**，不自动修复：一条坏配置不该挡住整站 |
