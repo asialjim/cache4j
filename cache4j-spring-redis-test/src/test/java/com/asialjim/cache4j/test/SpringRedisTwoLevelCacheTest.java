@@ -8,6 +8,7 @@ import com.asialjim.cache4j.spring.Cache4jCachingConfiguration;
 import com.asialjim.cache4j.spring.Cache4jSpringOptions;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
+import com.asialjim.cache4j.spring.redis.RedisKeyFormatter;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.StatefulRedisConnection;
 import org.junit.jupiter.api.AfterEach;
@@ -107,9 +108,9 @@ class SpringRedisTwoLevelCacheTest {
         assertEquals(1L, cache.stats().missCount(), "首次应是 miss");
         assertEquals(0L, cache.stats().sourceLoadCount());
 
-        String revisionKey = NS + ":__rev";
+        String revisionKey = "_c4j:{" + NS + "}:__rev";
         assertTrue(raw.sync().exists(revisionKey) > 0L, "版本表应落 Redis");
-        String dataKey = NS + ":s2:42";
+        String dataKey = "_c4j:{" + NS + "}:s2:42";
         String envelope = raw.sync().get(dataKey);
         assertNotNull(envelope, "数据 key 应落 Redis");
         assertTrue(envelope.length() > 4, "值应带 envelope 头");
@@ -124,7 +125,7 @@ class SpringRedisTwoLevelCacheTest {
         CacheManager cacheManager = context.getBean("cacheManager", CacheManager.class);
         cacheManager.getCache(NS).evict("42");
 
-        String dataKey = NS + ":s2:42";
+        String dataKey = "_c4j:{" + NS + "}:s2:42";
         assertEquals(0L, raw.sync().exists(dataKey), "evict 应删除中央数据");
         assertEquals("user-42", service.find("42"));
         assertEquals(2, USER_LOADS.get(), "evict 后应重新回源");
@@ -208,7 +209,9 @@ class SpringRedisTwoLevelCacheTest {
             return;
         }
         for (String namespace : new String[]{NS, NS_NONE}) {
-            String pattern = namespace + ":*";
+            String pattern = RedisKeyFormatter.defaults().hashTag()
+                    ? "_c4j:{" + namespace + "}:*"
+                    : "_c4j:" + namespace + ":*";
             var keys = raw.sync().keys(pattern);
             if (keys != null && !keys.isEmpty()) {
                 raw.sync().del(keys.toArray(new String[0]));

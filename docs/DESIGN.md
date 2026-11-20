@@ -315,8 +315,8 @@ public record LocalEntry<V>(V value, long revision, EntryKind kind) {
 ```text
 本地：CacheKey("user:detail", "s2:42") → LocalEntry(value=…, revision=1795049239456)
 中央：CacheKey("user:detail", "s2:42")
-      → 数据：user:detail:s2:42                     (SET … PX)
-      → 版本：user:detail:__rev  HASH  s2:42 → 1795049239456
+      → 数据：_c4j:{user:detail}:s2:42                     (SET … PX)
+      → 版本：_c4j:{user:detail}:__rev  HASH  s2:42 → 1795049239456
 ```
 
 另一个 key 变了版本，与本条无关；`clear` 删整张 `__rev` HASH，于是所有本地副本都因"版本不存在 ≠ 本地 revision"而重新回中央。
@@ -1057,8 +1057,8 @@ access(key):
 中央按 namespace 维护窗口计数：
 
 ```text
-ns:__hot:w:<windowId>   ZSET   key -> count
-ns:__hot:meta           HASH   key -> {active, hot, lowSince}
+_c4j:{ns}:__hot:w:<windowId>   ZSET   key -> count
+_c4j:{ns}:__hot:meta           HASH   key -> {active, hot, lowSince}
 ```
 
 | 状态 | 条件 | 本地动作 |

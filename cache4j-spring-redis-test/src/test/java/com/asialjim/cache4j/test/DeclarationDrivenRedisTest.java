@@ -214,7 +214,7 @@ class DeclarationDrivenRedisTest {
     }
 
     private static byte[] pattern(String namespace) {
-        return (namespace + ":*").getBytes(StandardCharsets.UTF_8);
+        return ("_c4j:{" + namespace + "}:*").getBytes(StandardCharsets.UTF_8);
     }
 
     private static void resetCounters() {

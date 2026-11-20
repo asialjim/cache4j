@@ -193,40 +193,39 @@ Redis 的 `GET` 对"没有 key"返回 nil、对"空串"返回 `""`，两者天�
 ### 3.1 组成
 
 ```text
-<namespace>:<encodedKey>
+_c4j:{<namespace>}:<encodedKey>
 ```
 
-**存储 key 总是以 namespace 开头**：没有部署前缀、没有 `{hash tag}`、没有长度前缀。
-
-- `globalPrefix`：部署级前缀，默认 `cache4j`；多环境/多租户可设为 `prod:cache4j`；
-- `namespacePart`：
-  - 默认（`hashTag=true`）：`{<namespace>}`，例如 `{user:detail}`；
-  - 关闭 hash tag（`hashTag=false`）：`<namespace 的 UTF-8 字节长度>:<namespace>`，例如 `11:user:detail`；
+- **`_c4j`**：cache4j 的简写，标识"这条 key 由本库写入"。运维在 redis-cli 里一眼能分清缓存数据
+  与业务自己的 key；
+- **`{<namespace>}`**：Redis Cluster 的 hash tag。同一个 namespace 的数据、版本表、热 key 窗口因此
+  落在**同一个 slot**——跨 key 的 Lua（读版本 + 读数据、写数据 + 写版本、删除数据 + 删版本）
+  在集群模式下才能执行。去掉它，这些 Lua 会直接报 `CROSSSLOT`；
 - `encodedKey`：`KeyEncoder` 的输出（见 DESIGN §4.3）。
 
 示例：
 
 | 配置 | 逻辑 key | Redis key |
 |---|---|---|
-| 默认（唯一形态） | `user:detail` + `s2:42` | `user:detail:s2:42` |
-| `hashTag=false` | `user:detail` + `s2:42` | `cache4j:11:user:detail:s2:42` |
+| 默认（`hashTag=true`） | `user:detail` + `s2:42` | `_c4j:{user:detail}:s2:42` |
+| `hashTag=false`（**仅单机/哨兵**） | `user:detail` + `s2:42` | `_c4j:user:detail:s2:42` |
 | 多环境共存 | 用不同 Redis DB / 实例隔离，key 本身不加前缀 |
 
 ### 3.2 保留 key
 
 | 用途 | Redis key | 类型 |
 |---|---|---|
-| key 版本表 | `<prefix>:<namespacePart>:__rev` | hash（field = `encodedKey`，value = `<revision>|<expireAtMillis>`） |
-| 热 key 当前窗口 | `<prefix>:<namespacePart>:__hot:w:<windowId>` | zset |
-| 热 key 元信息 | `<prefix>:<namespacePart>:__hot:meta` | hash |
+| key 版本表 | `_c4j:{<namespace>}:__rev` | hash（field = `encodedKey`，value = `<revision>|<expireAtMillis>`） |
+| 热 key 当前窗口 | `_c4j:{<namespace>}:__hot:w:<windowId>` | zset |
+| 热 key 元信息 | `_c4j:{<namespace>}:__hot:meta` | hash |
 
 保留 key 统一使用 `__` 前缀，避免与 `KeyEncoder` 的输出冲突（`__rev` / `__hot:` 不可能由规范编码产生）。
 
 版本表与数据 key 在同一个 hash tag 下，才能一次往返取回：
 
 ```text
-HMGET user:detail:__rev  s2:42
-GET   user:detail:s2:42
+HMGET _c4j:{user:detail}:__rev  s2:42
+GET   _c4j:{user:detail}:s2:42
 # 同一 hash tag，可用 pipeline 或一个 Lua 合成一次网络往返
 ```
 

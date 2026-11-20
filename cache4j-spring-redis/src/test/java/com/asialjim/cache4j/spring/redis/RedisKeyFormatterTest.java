@@ -7,13 +7,14 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * key 布局测试（纯逻辑，不需要 Redis）。
  *
- * <p>核心规则：<strong>所有存储 key 都以用户自定义的 namespace 开头</strong>，
- * 没有部署前缀、没有 {@code {hash tag}}、没有长度前缀。</p>
+ * <p>规则：{@code _c4j:{namespace}:<key>}。{@code _c4j} 标识"由 cache4j 写入"，
+ * {@code {namespace}} 是 cluster 的 hash tag，保证同 namespace 落同一 slot。</p>
  *
  * @author Asial Jim
  */
@@ -26,40 +27,47 @@ class RedisKeyFormatterTest {
     }
 
     @Test
-    @DisplayName("数据 key 就是 namespace:编码，一个字节都不多")
-    void dataKeyStartsWithNamespace() {
-        assertEquals("user:detail:s2:42", text(RedisKeyFormatter.defaults().data(key)));
+    @DisplayName("默认布局：_c4j:{namespace}:<key>")
+    void defaultLayout() {
+        RedisKeyFormatter keys = RedisKeyFormatter.defaults();
+        assertEquals("_c4j:{user:detail}:s2:42", text(keys.data(key)));
+        assertEquals("_c4j:{user:detail}:__rev", text(keys.revision("user:detail")));
+        assertEquals("_c4j:{user:detail}:__hot:w:17", text(keys.hotWindow("user:detail", 17L)));
+        assertEquals("_c4j:{user:detail}:__hot:meta", text(keys.hotMeta("user:detail")));
+        assertEquals("_c4j:{user:detail}:", text(keys.namespacePrefix("user:detail")));
+        assertTrue(keys.hashTag());
     }
 
     @Test
-    @DisplayName("版本表 / 热窗口 / 热元信息 / 清理前缀都以 namespace 开头")
-    void allKeysStartWithNamespace() {
+    @DisplayName("所有 key 都以 _c4j 开头：一眼看出是 cache4j 写的")
+    void allKeysCarryCache4jPrefix() {
         RedisKeyFormatter keys = RedisKeyFormatter.defaults();
-        String namespace = "user:detail";
-
-        assertEquals("user:detail:__rev", text(keys.revision(namespace)));
-        assertEquals("user:detail:__hot:w:17", text(keys.hotWindow(namespace, 17L)));
-        assertEquals("user:detail:__hot:meta", text(keys.hotMeta(namespace)));
-        assertEquals("user:detail:", text(keys.namespacePrefix(namespace)));
-
         for (byte[] raw : new byte[][]{
-                keys.data(key), keys.revision(namespace), keys.hotWindow(namespace, 17L),
-                keys.hotMeta(namespace), keys.namespacePrefix(namespace)}) {
-            assertTrue(text(raw).startsWith(namespace), () -> text(raw) + " 应以 " + namespace + " 开头");
+                keys.data(key), keys.revision("user:detail"), keys.hotWindow("user:detail", 1L),
+                keys.hotMeta("user:detail"), keys.namespacePrefix("user:detail")}) {
+            assertTrue(text(raw).startsWith(RedisKeyFormatter.DEFAULT_PREFIX),
+                    () -> text(raw) + " 应以 _c4j 开头");
         }
     }
 
     @Test
-    @DisplayName("没有任何形式的全局前缀 / hash tag / 长度前缀")
-    void noPrefixNoHashTagNoLengthPrefix() {
+    @DisplayName("hash tag 让同 namespace 的所有 key 结构一致（cluster 同 slot 的前提）")
+    void hashTagGroupsByNamespace() {
         RedisKeyFormatter keys = RedisKeyFormatter.defaults();
-        String data = text(keys.data(key));
+        String head = "_c4j:{user:detail}:";
+        assertEquals(head + "s2:42", text(keys.data(key)));
+        assertEquals(head + "__rev", text(keys.revision("user:detail")));
+        assertTrue(text(keys.data(key)).startsWith(head));
+        assertTrue(text(keys.revision("user:detail")).startsWith(head));
+    }
 
-        assertEquals('u', data.charAt(0), "第一个字符就是 namespace 的首字符");
-        assertEquals(-1, data.indexOf('{'), "不能用 {hash tag}");
-        assertEquals(-1, data.indexOf('}'), "不能用 {hash tag}");
-        // 长度前缀形如 "11:user:detail"：namespace 之前不该出现任何 ":"
-        assertEquals(0, data.indexOf("user:detail"), "namespace 必须从第 0 位开始");
+    @Test
+    @DisplayName("关掉 hash tag 后是 _c4j:namespace:key（集群下跨 key Lua 会 CROSSSLOT）")
+    void hashTagCanBeDisabled() {
+        RedisKeyFormatter keys = new RedisKeyFormatter("_c4j", false);
+        assertEquals("_c4j:user:detail:s2:42", text(keys.data(key)));
+        assertEquals("_c4j:user:detail:__rev", text(keys.revision("user:detail")));
+        assertFalse(keys.hashTag());
     }
 
     @Test

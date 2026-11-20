@@ -184,7 +184,7 @@ class FileStrategyRepositoryTest {
         // 触发一次缓存写穿 + 回填
         repository.find("decl:none");
 
-        var keys = keys("_c4j:stg:*");
+        var keys = keys("_c4j:{_stg_}:*");
         assertFalse(keys.isEmpty(), "门面自己的二级缓存在 Redis 上应有数据，实际 key=" + keys);
     }
 
@@ -206,11 +206,11 @@ class FileStrategyRepositoryTest {
         }
 
         // 三条策略都写到了中央（Redis），key 布局 cache4j:{<namespace>}:*
-        assertFalse(keys("decl:static:*").isEmpty(), "STATIC 应写入中央");
-        assertFalse(keys("decl:none:*").isEmpty(), "NONE 应写入中央");
-        assertFalse(keys("decl:dynamic:*").isEmpty(), "DYNAMIC 冷 key 也应写入中央");
+        assertFalse(keys("_c4j:{decl:static}:*").isEmpty(), "STATIC 应写入中央");
+        assertFalse(keys("_c4j:{decl:none}:*").isEmpty(), "NONE 应写入中央");
+        assertFalse(keys("_c4j:{decl:dynamic}:*").isEmpty(), "DYNAMIC 冷 key 也应写入中央");
         // 版本表同样在
-        assertFalse(keys("decl:static:__rev").isEmpty(), "版本表应落 Redis");
+        assertFalse(keys("_c4j:{decl:static}:__rev").isEmpty(), "版本表应落 Redis");
     }
 
     // ------------------------------------------------------------------ 装配辅助
@@ -264,7 +264,7 @@ class FileStrategyRepositoryTest {
             throw new IllegalStateException("清理策略文件失败：" + dataSource.file(), e);
         }
         try (RedisConnection connection = connectionFactory.getConnection()) {
-            for (String pattern : new String[]{"_c4j:stg:*", "decl:*"}) {
+            for (String pattern : new String[]{"_c4j:{_stg_}:*", "_c4j:{decl:*"}) {
                 Set<byte[]> found = connection.keyCommands().keys(bytes(pattern));
                 if (found != null && !found.isEmpty()) {
                     connection.keyCommands().del(found.toArray(new byte[0][]));
