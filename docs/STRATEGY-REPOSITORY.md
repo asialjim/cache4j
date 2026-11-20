@@ -1020,7 +1020,7 @@ return next
 | R8 | 是否提供开箱数据源 | **不提供**，谁接谁实现；`cache4j-spring-redis` 不为策略新增任何能力 |
 | R9 | 写穿还是 clear | **写穿为主 + clear 兜底**：写穿（无条件 put）能堵住"旧值回填"窗口；写穿失败退化为 evict（让全网回源），两者都失败才 `APPLIED_STALE`。序列化走适配层的 `RedisSerializer<StoredPolicy>`，不想引 JSON 库可用 `PolicyCodec` |
 | R10 | 仓库门面放哪个模块 | 新模块 `cache4j-strategy` / **并入 `cache4j-core`** | **并入 core**：门面只依赖 core 自己的接口（`LocalCache` / `CentralCache` / `TwoLevelCache`），pom 里加 local/central 只是测试需要；少一个模块，且"策略仓库"本身就是核心能力而非适配层 |
-| R11 | 门面的测试放哪 | core / **local** | **`cache4j-local` 的测试目录**：core 的测试不能依赖 local/central（`local` 依赖 `core`，反向 test 依赖成环）。代价是 `mvn -pl cache4j-core test` 跑不到它，整体 `mvn test` 覆盖不变 |
+| R11 | 门面的测试放哪 | core / local / **spring-redis-test** | **`cache4j-spring-redis-test`**：core 的测试不能依赖 local/central（反向依赖成环）；放 `cache4j-local` 虽然能跑，但语义不搭（那是本地缓存实现模块）。`cache4j-spring-redis-test` 本来就是"只含测试"的集成测试模块、依赖齐全，且本测试不依赖 Redis，任何环境都无条件执行 |
 
 ### 剩余问题（Q1–Q8）的结论
 
