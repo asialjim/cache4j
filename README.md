@@ -134,7 +134,8 @@ cache.put(skuId, newSku);
 
 > 一句话：**JD HotKey 提供的是"热点探测能力"，怎么用由你决定；cache4j 提供的是"已经用好了的缓存"。**
 
-核心模块不依赖 Spring、Solon 或任何运行时框架；框架适配放在独立的 `cache4j-spring`、`cache4j-solon` 模块中。
+核心模块不依赖 Spring、Solon 或任何运行时框架；框架适配放在独立的 `cache4j-spring` 模块中
+（`cache4j-solon` 为计划中，暂不实现）。
 同样地，**核心也不依赖 Redis**：中央缓存是抽象（`CentralCache` / `CentralCacheProvider`），
 Redis 只是我们默认提供的适配层之一，换成其他中央存储只需实现同一套契约。
 
@@ -147,6 +148,7 @@ Redis 只是我们默认提供的适配层之一，换成其他中央存储只�
 
 ## 模块
 
+下表中标"计划中"的模块当前**尚未创建**（父 `pom` 的 `<modules>` 里没有它）；
 模块名里带 `redis` 的只是**默认适配层**，不是内核的一部分：`cache4j-core` / `cache4j-central` 都不认识 Redis，
 换一个中央存储只需要提供新的 `CentralCacheProvider`（以及需要跨节点热 key 协调时的 `HotKeyCoordinator`）。
 
@@ -160,9 +162,9 @@ Redis 只是我们默认提供的适配层之一，换成其他中央存储只�
 | `cache4j-central-redis` | Redis **语义层 + 泛型下行 SPI**：`RedisValueStore<V>`、`RedisCentralCache<V>`（版本/负缓存/TTL 抖动/对账/热 key 语义）；**不碰字节**，key 布局/envelope/Lua/序列化都归适配层 | `cache4j-central` |
 | `cache4j-spring` | **Spring Framework** 集成：Spring Cache 桥接 + Bean 装配（**不依赖 Boot**、不接 Redis） | `cache4j-core`、`cache4j-local`、`cache4j-central`、`spring-context` |
 | `cache4j-spring-redis` | 接入 Spring Data Redis：用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`，key 布局 / envelope / Lua / **serializer** 都在这里；底层客户端由用户选择 | `cache4j-spring`、`cache4j-central-redis`、Spring Data Redis |
-| `cache4j-solon` | Solon 插件 + `CacheService`（含 tags）桥接 | `cache4j-core`、`cache4j-local`、`cache4j-central`、`solon-data` |
+| `cache4j-solon` | **（计划中，暂不实现）** Solon 插件 + `CacheService`（含 tags）桥接 | `cache4j-core`、`cache4j-local`、`cache4j-central`、`solon-data` |
 | `cache4j-spring-redis-test` | 集成测试模块：真实 Redis 下验证 Spring + 二级缓存全链路（只含测试） | 上面若干模块 + Lettuce |
-| `cache4j-starter` | **聚合/默认装配**：只拉依赖 + 按配置装配默认实现，**不含编排逻辑** | 上面若干模块 |
+| `cache4j-starter` | **（计划中）聚合/默认装配**：只拉依赖 + 按配置装配默认实现，**不含编排逻辑** | 上面若干模块 |
 
 依赖方向固定为从上到下，`cache4j-core` 不反向依赖任何实现模块，也不引用 Spring / Solon / Caffeine / Redis 客户端。`cache4j-local` 与 `cache4j-central` 是**同级**实现模块，互不依赖；`cache4j-local-*` 依赖 `cache4j-local`，`cache4j-central-*` 依赖 `cache4j-central`。
 
