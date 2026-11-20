@@ -8,7 +8,7 @@ import java.lang.reflect.Method;
 /**
  * 基于 cache4j 规范编码的 Spring {@link KeyGenerator}。
  *
- * <p>返回的 key 是字符串，形如 {@code a2[s1:a,i1:1]}：确定性、可复现、跨进程稳定、
+ * <p>返回的 key 是字符串，形如 {@code a:1}：确定性、可复现、跨进程稳定、
  * 与 {@code @Cacheable(key = ...)} 手写的 SpEL 产出类型不同 —— 因此<strong>同一个缓存名不要混用</strong>
  * 两种风格（要么都用本生成器，要么都手写 key）。</p>
  *
@@ -45,6 +45,6 @@ public final class Cache4jKeyGenerator implements KeyGenerator {
      * 默认编码器持有者（避免构造期重复创建）。
      */
     private static final class KeyEncodersHolder {
-        private static final KeyEncoder DEFAULT = com.asialjim.cache4j.core.KeyEncoders.canonical();
+        private static final KeyEncoder DEFAULT = com.asialjim.cache4j.core.KeyEncoders.plain();
     }
 }

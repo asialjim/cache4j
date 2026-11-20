@@ -146,7 +146,7 @@ public final class Cache4jSpringOptions {
     public static final class Builder {
 
         private boolean enabled = true;
-        private KeyEncoder keyEncoder = KeyEncoders.canonical();
+        private KeyEncoder keyEncoder = KeyEncoders.plain();
         private LocalCacheProvider localProvider = HashMapLocalCacheProvider.INSTANCE;
         private CentralCacheProvider centralProvider;
         private boolean ownershipOfCentralProvider = true;

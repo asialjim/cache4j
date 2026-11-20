@@ -45,9 +45,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 最后一个用例 {@link #leaveSamplesForInspection()} 会写入三条样本并留在库里，方便直接观察：</p>
  *
  * <pre>
- * redis-cli --scan --pattern 'cache4j:{decl:*'
- * redis-cli hgetall 'cache4j:{decl:static}:__rev'      # 版本表（field=key，value=rev|expireAt）
- * redis-cli get    'cache4j:{decl:static}:s4:keep'     # 数据（s4 = 编码后的 key，keep 是 4 字符）
+ * redis-cli --scan --pattern '_c4j:{decl:*'
+ * redis-cli hgetall '_c4j:{decl:static}:__rev'         # 版本表（field=key，value=rev|expireAt）
+ * redis-cli get    '_c4j:{decl:static}:keep'           # 数据（key 原样，无类型标签）
  * </pre>
  *
  * @author Asial Jim

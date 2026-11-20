@@ -884,7 +884,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     public static final class Builder<K, V> {
 
         private final String namespace;
-        private KeyEncoder keyEncoder = com.asialjim.cache4j.core.KeyEncoders.canonical();
+        private KeyEncoder keyEncoder = com.asialjim.cache4j.core.KeyEncoders.plain();
         private LocalCache<V> local;
         private CentralCache<V> central;
         private HotKeyCoordinator hotKeyCoordinator;

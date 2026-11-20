@@ -167,7 +167,7 @@ class ReconcileFetchScopeTest {
         cache.lookup("a");                       // 设检查点
         // 让 c 在本地缺席但在中央存在：模拟"本地没这条副本"
         cache.central().putAndGetRevision(
-                new CacheKey(NS, "s1:c"), "vc", Duration.ofMinutes(10));
+                new CacheKey(NS, "c"), "vc", Duration.ofMinutes(10));
         clock.advance(Duration.ofMillis(200));
         store.resetCounters();
 
@@ -223,8 +223,8 @@ class ReconcileFetchScopeTest {
         clock.advance(Duration.ofSeconds(2));       // 两个副本都过期
 
         // 访问本地触发惰性过期 → 存储层回调 → 分区号与分区索引同步摘除
-        assertNull(cache.local().entry(new CacheKey(NS, "s1:a")));
-        assertNull(cache.local().entry(new CacheKey(NS, "s1:b")));
+        assertNull(cache.local().entry(new CacheKey(NS, "a")));
+        assertNull(cache.local().entry(new CacheKey(NS, "b")));
 
         clock.advance(Duration.ofMillis(200));
         store.resetCounters();
@@ -275,7 +275,7 @@ class ReconcileFetchScopeTest {
         for (int i = 0; i < 64; i++) {
             String candidate = "k" + i;
             int partition = HashPartitions.of(
-                    new CacheKey(NS, "s" + candidate.length() + ":" + candidate), partitions);
+                    new CacheKey(NS, candidate), partitions);
             if (first == null) {
                 first = candidate;
                 firstPartition = partition;
@@ -296,7 +296,7 @@ class ReconcileFetchScopeTest {
      */
     private long expectedPartitionPayload(TwoLevelCache<String, String> cache, String visitor,
                                           int partitions) {
-        int wanted = HashPartitions.of(new CacheKey(NS, "s" + visitor.length() + ":" + visitor),
+        int wanted = HashPartitions.of(new CacheKey(NS, visitor),
                 partitions);
         return cache.local().keys().stream()
                 .filter(key -> HashPartitions.of(key, partitions) == wanted)

@@ -189,7 +189,7 @@ public final class Cache4jKeyGenerator implements KeyGenerator {
 ```
 
 - 推荐显式配置 `Cache4jKeyGenerator`，让未写 `key` 的注解也产出稳定、可读的字符串 key；
-- 如果同时使用"不写 key"和"写 key"两种风格，key 形态可能不同（例如 `a1[s2:42]` vs `s2:42`），**同一个缓存名不要混用**；
+- 如果同时使用"不写 key"和"写 key"两种风格，key 形态可能不同（例如 `a1[42]` vs `42`），**同一个缓存名不要混用**；
 - `SimpleKey` 必须展开成参数数组，禁止调用 `SimpleKey.toString()`；
 - 业务自定义 `KeyGenerator` 优先，适配器只提供兜底。
 

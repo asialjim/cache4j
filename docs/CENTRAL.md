@@ -159,7 +159,7 @@ public record HotKeyReport(
 **当前约定：值就是 serializer 的输出，一个字节都不加工。**
 
 ```text
-SET user:detail:s2:42  <serializer 输出>
+SET _c4j:{user:detail}:42  <serializer 输出>
 ```
 
 不做 envelope（不加 magic / version / flags 头）。理由：
@@ -207,8 +207,8 @@ _c4j:{<namespace>}:<encodedKey>
 
 | 配置 | 逻辑 key | Redis key |
 |---|---|---|
-| 默认（`hashTag=true`） | `user:detail` + `s2:42` | `_c4j:{user:detail}:s2:42` |
-| `hashTag=false`（**仅单机/哨兵**） | `user:detail` + `s2:42` | `_c4j:user:detail:s2:42` |
+| 默认（`hashTag=true`） | `user:detail` + `42` | `_c4j:{user:detail}:42` |
+| `hashTag=false`（**仅单机/哨兵**） | `user:detail` + `42` | `_c4j:user:detail:42` |
 | 多环境共存 | 用不同 Redis DB / 实例隔离，key 本身不加前缀 |
 
 ### 3.2 保留 key
@@ -224,8 +224,8 @@ _c4j:{<namespace>}:<encodedKey>
 版本表与数据 key 在同一个 hash tag 下，才能一次往返取回：
 
 ```text
-HMGET _c4j:{user:detail}:__rev  s2:42
-GET   _c4j:{user:detail}:s2:42
+HMGET _c4j:{user:detail}:__rev  42
+GET   _c4j:{user:detail}:42
 # 同一 hash tag，可用 pipeline 或一个 Lua 合成一次网络往返
 ```
 

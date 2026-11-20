@@ -89,6 +89,40 @@ public final class KeyEncoders {
     }
 
     /**
+     * 原生风格编码器：{@code key} 直接就是可读值，<strong>不加类型标签、不加长度前缀</strong>。
+     *
+     * <p>这是默认编码器。产出的 key 与 Spring Data Redis 原生写法一致：</p>
+     *
+     * <pre>
+     * String "keep"      → keep
+     * Integer 42         → 42
+     * 多参数 (a, 1)      → a:1
+     * </pre>
+     *
+     * <p>于是 Redis 里的 key 是可分层查看的：</p>
+     *
+     * <pre>
+     * _c4j:{user:detail}:42
+     * _c4j:{user:detail}:_jim
+     * </pre>
+     *
+     * <p><strong>代价</strong>（与 Spring 原生一致，属于使用约束）：</p>
+     * <ul>
+     *   <li>不加类型标签 ⇒ {@code "42"}(String) 与 {@code 42}(Integer) 编码结果相同。同一个缓存里
+     *       不要混用同值的不同类型 key；</li>
+     *   <li>不加长度前缀 ⇒ 多参数拼接在"参数本身含 {@code :}"时可能歧义
+     *       （{@code (a, b:c)} 与 {@code (a:b, c)} 都是 {@code a:b:c}）。key 里避免出现 {@code :} 即可。</li>
+     * </ul>
+     *
+     * <p>需要严格单射时改用 {@link #canonical()}。</p>
+     *
+     * @return 编码器
+     */
+    public static KeyEncoder plain() {
+        return PlainEncoder.INSTANCE;
+    }
+
+    /**
      * 原样编码器：只接受 {@link String}，其余类型报错。
      *
      * <p>用于"key 已经是字符串"的适配场景（例如 Solon 的 {@code CacheService}）。</p>
@@ -124,6 +158,52 @@ public final class KeyEncoders {
     private static void require(boolean condition, String message) {
         if (!condition) {
             throw new CacheException(CacheResCode.KEY_ENCODE_FAILED, message);
+        }
+    }
+
+    /**
+     * 原生风格编码器实现：值原样、参数用 {@code :} 连接。
+     */
+    private enum PlainEncoder implements KeyEncoder {
+
+        INSTANCE;
+
+        @Override
+        public String encode(Object key) {
+            StringBuilder builder = new StringBuilder();
+            append(key, builder);
+            return builder.toString();
+        }
+
+        private static void append(Object value, StringBuilder builder) {
+            if (value == null) {
+                builder.append("null");
+                return;
+            }
+            if (value instanceof CharSequence text) {
+                builder.append(text);
+                return;
+            }
+            if (value instanceof Object[] array) {
+                appendAll(java.util.Arrays.asList(array), builder);
+                return;
+            }
+            if (value instanceof Iterable<?> iterable) {
+                appendAll(iterable, builder);
+                return;
+            }
+            builder.append(value);
+        }
+
+        private static void appendAll(Iterable<?> values, StringBuilder builder) {
+            boolean first = true;
+            for (Object each : values) {
+                if (!first) {
+                    builder.append(':');
+                }
+                append(each, builder);
+                first = false;
+            }
         }
     }
 

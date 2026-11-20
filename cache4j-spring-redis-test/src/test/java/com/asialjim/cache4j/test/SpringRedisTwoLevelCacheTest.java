@@ -110,7 +110,7 @@ class SpringRedisTwoLevelCacheTest {
 
         String revisionKey = "_c4j:{" + NS + "}:__rev";
         assertTrue(raw.sync().exists(revisionKey) > 0L, "版本表应落 Redis");
-        String dataKey = "_c4j:{" + NS + "}:s2:42";
+        String dataKey = "_c4j:{" + NS + "}:42";
         String envelope = raw.sync().get(dataKey);
         assertNotNull(envelope, "数据 key 应落 Redis");
         assertTrue(envelope.length() > 4, "值应带 envelope 头");
@@ -125,7 +125,7 @@ class SpringRedisTwoLevelCacheTest {
         CacheManager cacheManager = context.getBean("cacheManager", CacheManager.class);
         cacheManager.getCache(NS).evict("42");
 
-        String dataKey = "_c4j:{" + NS + "}:s2:42";
+        String dataKey = "_c4j:{" + NS + "}:42";
         assertEquals(0L, raw.sync().exists(dataKey), "evict 应删除中央数据");
         assertEquals("user-42", service.find("42"));
         assertEquals(2, USER_LOADS.get(), "evict 后应重新回源");
@@ -145,7 +145,7 @@ class SpringRedisTwoLevelCacheTest {
             var otherCentral = otherProvider.<String>create(
                     CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build());
             otherCentral.putAndGetRevision(
-                    new com.asialjim.cache4j.core.CacheKey(NS, "s2:42"), "user-42-v2", null);
+                    new com.asialjim.cache4j.core.CacheKey(NS, "42"), "user-42-v2", null);
             otherProvider.close();
         } finally {
             otherFactory.destroy();

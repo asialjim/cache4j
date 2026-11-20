@@ -313,50 +313,52 @@ public record LocalEntry<V>(V value, long revision, EntryKind kind) {
 **本地副本与中央存储的关系**
 
 ```text
-本地：CacheKey("user:detail", "s2:42") → LocalEntry(value=…, revision=1795049239456)
-中央：CacheKey("user:detail", "s2:42")
-      → 数据：_c4j:{user:detail}:s2:42                     (SET … PX)
-      → 版本：_c4j:{user:detail}:__rev  HASH  s2:42 → 1795049239456
+本地：CacheKey("user:detail", "42") → LocalEntry(value=…, revision=1795049239456)
+中央：CacheKey("user:detail", "42")
+      → 数据：_c4j:{user:detail}:42                        (SET … PX)
+      → 版本：_c4j:{user:detail}:__rev  HASH  42 → 1795049239456
 ```
 
 另一个 key 变了版本，与本条无关；`clear` 删整张 `__rev` HASH，于是所有本地副本都因"版本不存在 ≠ 本地 revision"而重新回中央。
 
 #### 4.3.2 规范编码（`KeyEncoders.canonical()`）
 
-目标：**确定性、单射、长度有界、跨进程稳定、可读**。
+目标：**确定性、跨进程稳定、可读**。
 
-编码单元：
+### 默认：`KeyEncoders.plain()` —— key 就是值本身
 
 ```text
-<type><length>:<payload>
+String "keep"   → keep
+Integer 42      → 42
+多参数 (a, 1)   → a:1
 ```
 
-- `type`：单字符类型标签；
-- `length`：payload 的 UTF-8 字节长度（十进制）；
-- 复合类型的 `<length>` 位置是元素/条目个数，后接 `[...]` 或 `{...}`；
-- 所有分隔符都在自定界 payload 之外，因此不会与内容冲突。
+于是 Redis 里的 key 可以按命名空间分层查看，与 Spring Data Redis 原生写法一致：
+
+```text
+_c4j:{user:detail}:42
+_c4j:{user:detail}:_jim
+```
+
+**代价**（与 Spring 原生一致，属于使用约束）：
+
+- 不加类型标签 ⇒ `"42"`(String) 与 `42`(Integer) 编码结果相同 —— 同一个缓存里不要混用同值的不同类型 key；
+- 不加长度前缀 ⇒ 多参数拼接在参数本身含 `:` 时可能歧义（`(a, b:c)` 与 `(a:b, c)` 都是 `a:b:c`）—— key 里避免出现 `:`。
+
+### 可选：`KeyEncoders.canonical()` —— 严格单射
+
+需要"不同类型绝不撞 key"时显式选用：
+
+```java
+Cache4jSpringOptions.builder().keyEncoder(KeyEncoders.canonical())
+```
+
+编码单元 `<type><length>:<payload>`：`type` 是单字符类型标签，`length` 是 payload 的 UTF-8 字节长度，
+复合类型的 `<length>` 是元素个数、后接 `[...]` / `{...}`。所有分隔符都在自定界 payload 之外，
+不会与内容冲突。
 
 类型表：
 
-| 标签 | 类型 | payload 规则 | 示例 |
-|---|---|---|---|
-| `n` | `null` | 无 | `n;` |
-| `s` | `String` | UTF-8 | `s2:42` |
-| `i` | `Integer` | `toString` | `i2:42` |
-| `l` | `Long` | `toString` | `l2:42` |
-| `h` | `Short` | `toString` | `h2:42` |
-| `y` | `Byte` | `toString` | `y2:42` |
-| `B` | `Boolean` | `1` / `0` | `B1:1` |
-| `C` | `Character` | UTF-8 | `C1:a` |
-| `f` | `Float` | `Float.toString` | `f3:1.5` |
-| `d` | `Double` | `Double.toString` | `d3:1.5` |
-| `D` | `BigDecimal` | `stripTrailingZeros().toPlainString()`，零统一为 `0` | `D1:0` |
-| `u` | `UUID` | 标准 36 位 | `u36:...` |
-| `t` | `Instant` | ISO-8601（UTC） | `t...` |
-| `L` | `LocalDate` | ISO-8601 | `L10:2026-11-19` |
-| `T` | `LocalDateTime` | ISO-8601 | `T...` |
-| `O` | `OffsetDateTime` | ISO-8601 | `O...` |
-| `Z` | `ZonedDateTime` | ISO-8601（含区域） | `Z...` |
 | `e` | `Enum` | `FQCN#name` | `e...` |
 | `x` | `byte[]` | Base64 URL 无填充 | `x4:YWJj` |
 | `p` | `Optional` | `p0;` 或 `p1[<seg>]` | `p1[s1:a]` |
@@ -371,7 +373,8 @@ public record LocalEntry<V>(V value, long revision, EntryKind kind) {
 
 规范化细节：
 
-- **类型进 key**：`42L` → `l2:42`，`"42"` → `s2:42`，两者不相等。
+- **类型进 key**（仅 `canonical()`）：`42L` → `l2:42`，`"42"` → `s2:42`，两者不相等；
+  默认的 `plain()` 不区分类型，这是与 Spring 原生一致的取舍。
 - **String 长度按 UTF-8 字节**，不是 `char` 数；保证 Redis key 的字节长度可控。
 - **BigDecimal**：去尾零、禁止科学计数法；`1.0` 与 `1.00` 编码相同。
 - **Set**：先对每个元素编码，再按字典序排序后拼接，保证与迭代顺序无关。

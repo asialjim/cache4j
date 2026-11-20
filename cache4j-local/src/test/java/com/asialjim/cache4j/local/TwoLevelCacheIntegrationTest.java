@@ -43,7 +43,8 @@ class TwoLevelCacheIntegrationTest {
     private final HashMapLocalCacheTest.MutableClock clock = new HashMapLocalCacheTest.MutableClock();
 
     private CacheKey key(String value) {
-        return new CacheKey(NS, "s" + value.length() + ":" + value);
+        // 默认 KeyEncoders.plain()：key 原样，没有类型标签与长度前缀
+        return new CacheKey(NS, value);
     }
 
     private TwoLevelCache<String, String> build(LocalCacheSpec localSpec, CentralCache<String> central) {

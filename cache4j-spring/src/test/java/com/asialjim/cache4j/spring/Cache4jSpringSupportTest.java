@@ -23,11 +23,11 @@ class Cache4jSpringSupportTest {
     private final KeyGenerator keyGenerator = new Cache4jKeyGenerator();
 
     @Test
-    @DisplayName("key 生成器：多参数编码为规范数组")
+    @DisplayName("key 生成器：多参数用 : 连接，不带类型标签")
     void generateFromParams() throws Exception {
         Method method = Sample.class.getDeclaredMethod("find", String.class, int.class);
         Object key = keyGenerator.generate(new Sample(), method, "a", 1);
-        assertEquals("a2[s1:a,i1:1]", key);
+        assertEquals("a:1", key, "原生风格：参数原样、: 分隔");
     }
 
     @Test
