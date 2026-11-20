@@ -191,7 +191,7 @@ class DynamicHotKeyRedisTest {
             return com.asialjim.cache4j.spring.Cache4jSpringOptions.builder()
                     .localProvider(com.asialjim.cache4j.localcaffeine.CaffeineLocalCacheProvider.INSTANCE)
                     .centralProvider(RedisTestEnvironment.centralProvider(factory, globalSpecs), true)
-                    .cache(com.asialjim.cache4j.spring.CacheDefinition.of(
+                    .cache(com.asialjim.cache4j.core.strategy.CacheDefinition.of(
                             com.asialjim.cache4j.core.local.LocalCacheSpec.dynamicCache(
                                     NS, 1_000, Duration.ofMinutes(1), RedisTestEnvironment.hotDynamicSpec()),
                             com.asialjim.cache4j.core.central.CentralCacheSpec.builder(NS)

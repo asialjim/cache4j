@@ -2,6 +2,7 @@ package com.asialjim.cache4j.spring;
 
 import com.asialjim.cache4j.central.InMemoryCentralCacheProvider;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

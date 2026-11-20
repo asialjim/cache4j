@@ -915,6 +915,8 @@ long brokenPolicyCount();              // 数据源里解析失败的记录数
 | 写穿失败 → clear 兜底 | 中央写穿失败 ⇒ evict 成功 ⇒ `APPLIED` + `strategyRepoClearFallbackCount++`；业务端对账"中央缺字段"清本地 → 下次读回源拿到新值 |
 | 写穿与 clear 都失败 | ⇒ `APPLIED_STALE` + error + `strategyRepoStaleCount++`；再次 `change` 可补偿 |
 | `PolicyCodec` 往返 | 编码→解码等价；编码损坏 ⇒ `CODEC_DECODE_FAILED` 且按 `Unavailable` 处理（不缓存坏值） |
+| 三源汇总 | 程序化定义 / 文件声明 / 扫描 + 显式传入可共存；同 namespace 不同来源 ⇒ 启动失败 |
+| 程序化定义保真 | `.cache(CacheDefinition.of(...))` 的 custom TTL、协调模式不被"声明 + 内建默认"覆盖 |
 | 未声明 namespace（无数据源记录） | `getCache("nobody:declared")` ⇒ 按内建默认创建成功；warn 只打一次；`undeclaredNamespaceCount=1`；视图标 `undeclared` |
 | 未声明 namespace（数据源有记录） | 同上，但**用数据源策略**而非内建默认；仍告警"未经声明" |
 | 孤儿配置 | 数据源有 `x:y`、声明没有、业务没用 ⇒ **不创建实例**（`names()` 里不含它）；`orphanPolicyCount=1`；被业务 `getCache("x:y")` 使用后转为正常（用数据源策略） |

@@ -3,10 +3,12 @@ package com.asialjim.cache4j.spring;
 import com.asialjim.cache4j.core.KeyEncoder;
 import com.asialjim.cache4j.core.KeyEncoders;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
+import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.local.HashMapLocalCacheProvider;
 import com.asialjim.cache4j.local.LocalCacheProvider;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -29,6 +31,9 @@ public final class Cache4jSpringOptions {
     private final boolean ownershipOfCentralProvider;
     private final boolean statsEnabled;
     private final List<CacheDefinition> definitions;
+    private final List<String> declPackages;
+    private final List<Class<?>> declEnums;
+    private final boolean undeclaredEnabled;
 
     private Cache4jSpringOptions(Builder builder) {
         this.enabled = builder.enabled;
@@ -38,6 +43,9 @@ public final class Cache4jSpringOptions {
         this.ownershipOfCentralProvider = builder.ownershipOfCentralProvider;
         this.statsEnabled = builder.statsEnabled;
         this.definitions = List.copyOf(builder.definitions);
+        this.declPackages = List.copyOf(builder.declPackages);
+        this.declEnums = List.copyOf(builder.declEnums);
+        this.undeclaredEnabled = builder.undeclaredEnabled;
     }
 
     /**
@@ -97,6 +105,27 @@ public final class Cache4jSpringOptions {
     }
 
     /**
+     * @return 需要扫描 {@code @CacheNamespace} 枚举的基础包
+     */
+    public List<String> declPackages() {
+        return declPackages;
+    }
+
+    /**
+     * @return 显式传入的声明枚举类
+     */
+    public List<Class<?>> declEnums() {
+        return declEnums;
+    }
+
+    /**
+     * @return 业务用了未声明的 namespace 时，是否按内建默认自动创建（默认 true）
+     */
+    public boolean undeclaredEnabled() {
+        return undeclaredEnabled;
+    }
+
+    /**
      * 构建器。
      *
      * @author Asial Jim
@@ -110,6 +139,9 @@ public final class Cache4jSpringOptions {
         private boolean ownershipOfCentralProvider = true;
         private boolean statsEnabled = true;
         private final List<CacheDefinition> definitions = new ArrayList<>();
+        private final List<String> declPackages = new ArrayList<>();
+        private final List<Class<?>> declEnums = new ArrayList<>();
+        private boolean undeclaredEnabled = true;
 
         /**
          * @param value 是否启用
@@ -179,6 +211,41 @@ public final class Cache4jSpringOptions {
             if (values != null) {
                 values.forEach(this::cache);
             }
+            return this;
+        }
+
+        /**
+         * 扫描这些包下带 {@code @CacheNamespace} 的声明枚举。
+         *
+         * @param values 基础包
+         * @return this
+         */
+        public Builder declPackages(List<String> values) {
+            if (values != null) {
+                this.declPackages.addAll(values);
+            }
+            return this;
+        }
+
+        /**
+         * 追加声明枚举类（不依赖扫描与 resources 文件）。
+         *
+         * @param values 枚举类
+         * @return this
+         */
+        public Builder declEnums(Class<?>... values) {
+            if (values != null) {
+                this.declEnums.addAll(Arrays.asList(values));
+            }
+            return this;
+        }
+
+        /**
+         * @param value 未声明的 namespace 是否按内建默认自动创建（默认 true）
+         * @return this
+         */
+        public Builder undeclaredEnabled(boolean value) {
+            this.undeclaredEnabled = value;
             return this;
         }
 

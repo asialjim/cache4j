@@ -2,6 +2,7 @@ package com.asialjim.cache4j.spring;
 
 import com.asialjim.cache4j.central.InMemoryCentralCacheProvider;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
 import org.junit.jupiter.api.AfterEach;
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -53,12 +55,26 @@ class SpringCacheAdapterTest {
     }
 
     @Test
-    @DisplayName("管理器：缓存名集合与未知缓存")
+    @DisplayName("管理器：声明的缓存名集合")
     void managerExposesNames() {
         assertEquals(java.util.List.of(NS), java.util.List.copyOf(cacheManager.getCacheNames()));
-        assertNull(cacheManager.getCache("not-exists"));
         Optional<TwoLevelCache<Object, Object>> found = manager.cache(NS);
         assertTrue(found.isPresent());
+    }
+
+    @Test
+    @DisplayName("未声明的 namespace：按内建默认自动创建、告警并记录（不报错）")
+    void undeclaredNamespaceIsCreatedOnDemand() {
+        // 启动期无法穷举业务会用哪些缓存名，所以"能跑 + 必须可见"
+        org.springframework.cache.Cache created = cacheManager.getCache("not-exists");
+        assertNotNull(created, "未声明的 namespace 应自动创建");
+        assertTrue(manager.undeclaredNamespaces().contains("not-exists"),
+                "未声明的 namespace 必须被记录（告警与运维视图用）");
+        // 第二次读到的是同一个底层缓存（Spring 包装器每次新建，但底层实例复用）
+        TwoLevelCache<Object, Object> first = manager.cache("not-exists").orElseThrow();
+        TwoLevelCache<Object, Object> second = manager.cache("not-exists").orElseThrow();
+        assertSame(first, second, "未声明的 namespace 只应装配一次");
+        assertNotNull(created);
     }
 
     @Test

@@ -6,7 +6,7 @@ import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
 import com.asialjim.cache4j.localcaffeine.CaffeineLocalCacheProvider;
 import com.asialjim.cache4j.spring.Cache4jCachingConfiguration;
 import com.asialjim.cache4j.spring.Cache4jSpringOptions;
-import com.asialjim.cache4j.spring.CacheDefinition;
+import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.StatefulRedisConnection;
