@@ -260,39 +260,6 @@ public final class Cache4jRuntimeHints implements RuntimeHintsRegistrar {
 
 完整方案（障碍清单、库自带 hints、三档交付方式、使用方需配合的部分、验证与不承诺范围）见 **§12**。
 
-### 4.3 翻译与校验
-
-翻译是一次性的纯函数：`CacheDecl → CacheDefinition`。校验复用现有规则，不新增第二套：
-
-1. `LocalCacheSpec` 紧凑构造器 + `validate()`：`STATIC/DYNAMIC` 必须有 `version`、`maxSize>0`、
-   `ttl>0`、`DYNAMIC` 必须有 `DynamicSpec`；
-2. `LocalCacheSpec.VersionSpec`：批大小正、分区数为 2 的幂；
-3. `CentralCacheSpec`：TTL 为正、`nullTtl` 为零表示不缓存空值；
-4. **跨字段校验**（新增，集中在注册表）：
-   - `DYNAMIC + coordination=GLOBAL` ⇒ 必须存在 `HotKeyCoordinator`（否则启动失败，沿用现有规则）；
-   - `coordination=GLOBAL` 但中央实现不支持协调 ⇒ 失败并提示改 `LOCAL`；
-   - `nullTtl > localTtl` ⇒ 警告（负副本会比正副本活得久，通常不是本意）。
-
-### 4.4 启动流程与 fail-fast
-
-```
-1. 加载声明：按约定读 `META-INF/services`（+ Spring 注解扫描 + 显式传入）→ List<CacheDecl>
-2. 翻译：CacheDecl → CacheDefinition（一次性）
-3. 冲突检测：同一 namespace 出现多条声明 → 启动失败（报出全部冲突来源）
-4. 中央覆盖：读中央策略存储，命中则以中央为准（运维改过的值优先于代码声明）
-5. 校验：逐条 validate，任何一条失败 ⇒ 整个启动失败（不静默跳过）
-6. 注册：写入注册表，epoch = 中央 epoch 或 1
-7. 装配：按注册表构建 Runtime（**懒装配**，见 6.2）并把句柄交给业务
-```
-
-日志（沿用既有格式 `[主题]-子过程-具体信息`）：
-
-```
-[缓存装配]-初始化-user:detail-策略=STATIC，maxSize=10000，localTtl=PT5M，version(check=1s,partitions=16)，epoch=3，来源=中央
-[缓存装配]-初始化-订单快照-策略=NONE，仅中央，epoch=1，来源=声明
-[缓存装配]-初始化-冲突-user:detail-声明来源=USER_DETAIL 与 USER_DETAIL_V2，启动中止
-```
-
 ### 4.2.4 自注册机制：可行形态与可靠性边界
 
 **先说前提：Java 没有"列出某个接口的全部实现类"的原生能力。** 任何"自注册"最终都落在三件事之一：
@@ -360,6 +327,138 @@ final class PendingDecls {
 | P1 | 形态 B（`Cache4j.install(...)`）+ 文件清单（§4.2.1）+ 待定池骨架 |
 | P2 | 形态 C（APT 生成清单，`cache4j-processor` 可选依赖，不加也能手写文件） |
 | P4 | 形态 D（Spring 注解扫描） |
+
+### 4.2.5 从 `Class` 到可用策略：枚举常量到缓存策略的转换链路
+
+不问来源（文件清单 / Spring 扫描 / 显式 install / 静态块），**最终都是拿到一个 `Class`**，
+然后走同一条链路。这一步是本机制的技术核心，定死如下。
+
+#### 4.2.5.1 取枚举常量的三种写法
+
+| 写法 | 结论 |
+|---|---|
+| `type.asSubclass(CacheDecl.class).getEnumConstants()` | ✅ **采用**。`Class` 内建能力，返回全部常量（`CacheDecl[]`，类型安全），**不是反射构造**——读的是 JVM 已建好的常量数组，因此不受"枚举禁止反射实例化"的限制 |
+| `type.getMethod("values").invoke(null)` | ❌ 不采用。需要额外注册方法 hints（native image 更重）、要拆 `InvocationTargetException`、语义绕 |
+| `type.getDeclaredConstructor().newInstance()` | ❌ 不可行。对枚举直接抛 `IllegalArgumentException: Cannot reflectively create enum objects` |
+
+> 同一枚举被多条来源发现时，用 `Class` 去重（`Set<Class<?>>`），**只转换一次**。
+
+#### 4.2.5.2 转换链路（五步，顺序不可换）
+
+```java
+// ① 类型校验：顺序固定，报错才有信息量
+if (!CacheDecl.class.isAssignableFrom(type)) {
+    throw invalid(where + "：" + type.getName() + " 未实现 CacheDecl，实际接口="
+            + Arrays.toString(type.getInterfaces()));
+}
+if (!type.isEnum()) {
+    throw invalid(where + "：" + type.getName() + " 不是枚举，请改用 CacheDeclProvider");
+}
+
+// ② 取全部常量：一次拿全，类型安全
+CacheDecl[] constants = type.asSubclass(CacheDecl.class).getEnumConstants();
+if (constants == null) {                       // 防御：isEnum() 已挡，理论上不可达
+    throw invalid(where + "：" + type.getName() + " 无法读取枚举常量");
+}
+if (constants.length == 0) {                   // 空枚举合法：没有任何声明
+    LOG.debug(Subject.ASSEMBLY, "初始化", where + "：" + type.getName() + " 无任何常量，跳过");
+    return List.of();
+}
+
+// ③ 逐个翻译：纯函数；错误信息必须能定位到具体常量
+List<Candidate> out = new ArrayList<>(constants.length);
+for (CacheDecl decl : constants) {
+    String origin = type.getName() + "#" + ((Enum<?>) decl).name();
+    try {
+        CacheDefinition def = decl.toDefinition();
+        def.local().validate();
+        def.central().validate();
+        out.add(new Candidate(origin, def));
+    } catch (RuntimeException e) {
+        throw invalid(where + "：" + origin + " 翻译失败：" + e.getMessage(), e);
+    }
+}
+
+// ④ 去重 + 冲突检测（跨来源，在 registry 侧统一做）
+//    同一 origin 被两条路径发现 → 幂等跳过
+//    不同 origin 声明同一 namespace → 启动失败，报双方来源
+// ⑤ 注册进 registry → 装配（后续热更走 §6 的 Runtime 替换）
+```
+
+去重 / 冲突的具体规则：
+
+```java
+Map<String, String> seen = new HashMap<>();          // namespace → origin
+for (Candidate candidate : candidates) {
+    String namespace = candidate.definition().namespace();
+    String previous = seen.putIfAbsent(namespace, candidate.origin());
+    if (previous != null && !previous.equals(candidate.origin())) {
+        throw invalid("namespace 冲突：" + namespace + " 同时声明于 " + previous
+                + " 与 " + candidate.origin());
+    }
+    // previous == origin ⇒ 同一条声明被重复发现，跳过
+}
+```
+
+#### 4.2.5.3 六个必须处理的坑
+
+1. **`getEnumConstants()` 对非枚举返回 `null`，不是空数组**；而"枚举没有常量"返回的是长度 0 的数组。
+   两者语义不同：前者是错误，后者是合法的空声明。必须分开处理。
+2. **用 `isEnum()` 判断，不要用"有 static final 常量"推断**。用户可能写"普通类 + 静态常量"（伪枚举），
+   此时 `isEnum()` 为 `false`，必须走 `CacheDeclProvider` 分支。
+3. **标识用 `((Enum<?>) c).name()`，绝不用 `toString()`**。`toString` 可被用户覆写（用于展示）；
+   `ordinal()` 同样禁止用于排序或持久化（常量顺序变化会漂移）。
+4. **`getEnumConstants()` 会触发枚举类初始化**（`static` 块执行）。因此契约要求：
+   **`CacheDecl` 枚举的静态块必须无副作用**（不得在其中注册、读外部配置），
+   否则 §4.2.4 的"注册顺序不确定"问题会从后门回来。
+5. **Spring 扫描默认不加载类**：`ClassPathScanningCandidateComponentProvider` 基于 ASM 读元数据判候选，
+   产出的是 `BeanDefinition` / 类名字符串，必须补一步加载才能取常量：
+   ```java
+   Class<?> type = ClassUtils.forName(beanDefinition.getBeanClassName(), classLoader);
+   ```
+   文件清单同理：文件里是字符串，`Class.forName` 之后才能 `getEnumConstants()`。
+6. **native image 的注册面差异**（虽排到最后，但影响 API 选择）：`getEnumConstants()` 只需
+   **类型可达**；`getMethod("values").invoke(null)` 还需要方法可达。这是选用前者的实质理由之一。
+
+#### 4.2.5.4 转换只发生一次
+
+- `toDefinition()` 只在**注册时**调用一次，结果存进 registry；
+- **不要**在枚举里缓存 `CacheDefinition`（枚举应无状态）；
+- 热更时**不复用**枚举的 definition：热更后的值来自中央/运维 update，与代码声明无关；
+  声明值只在 `reset(namespace)` 时用于"回到初始状态"。
+
+### 4.3 翻译与校验
+
+翻译是一次性的纯函数：`CacheDecl → CacheDefinition`。校验复用现有规则，不新增第二套：
+
+1. `LocalCacheSpec` 紧凑构造器 + `validate()`：`STATIC/DYNAMIC` 必须有 `version`、`maxSize>0`、
+   `ttl>0`、`DYNAMIC` 必须有 `DynamicSpec`；
+2. `LocalCacheSpec.VersionSpec`：批大小正、分区数为 2 的幂；
+3. `CentralCacheSpec`：TTL 为正、`nullTtl` 为零表示不缓存空值；
+4. **跨字段校验**（新增，集中在注册表）：
+   - `DYNAMIC + coordination=GLOBAL` ⇒ 必须存在 `HotKeyCoordinator`（否则启动失败，沿用现有规则）；
+   - `coordination=GLOBAL` 但中央实现不支持协调 ⇒ 失败并提示改 `LOCAL`；
+   - `nullTtl > localTtl` ⇒ 警告（负副本会比正副本活得久，通常不是本意）。
+
+### 4.4 启动流程与 fail-fast
+
+```
+1. 加载声明：按约定读 `META-INF/services`（+ Spring 注解扫描 + 显式传入）→ List<CacheDecl>
+2. 翻译：CacheDecl → CacheDefinition（一次性）
+3. 冲突检测：同一 namespace 出现多条声明 → 启动失败（报出全部冲突来源）
+4. 中央覆盖：读中央策略存储，命中则以中央为准（运维改过的值优先于代码声明）
+5. 校验：逐条 validate，任何一条失败 ⇒ 整个启动失败（不静默跳过）
+6. 注册：写入注册表，epoch = 中央 epoch 或 1
+7. 装配：按注册表构建 Runtime（**懒装配**，见 6.2）并把句柄交给业务
+```
+
+日志（沿用既有格式 `[主题]-子过程-具体信息`）：
+
+```
+[缓存装配]-初始化-user:detail-策略=STATIC，maxSize=10000，localTtl=PT5M，version(check=1s,partitions=16)，epoch=3，来源=中央
+[缓存装配]-初始化-订单快照-策略=NONE，仅中央，epoch=1，来源=声明
+[缓存装配]-初始化-冲突-user:detail-声明来源=USER_DETAIL 与 USER_DETAIL_V2，启动中止
+```
 
 > 主题必须是**组件名**（`缓存装配` / `策略仓库` / `统一中央缓存`），不得用 namespace 当主题；
 > namespace 放在"具体信息"里，如上。
