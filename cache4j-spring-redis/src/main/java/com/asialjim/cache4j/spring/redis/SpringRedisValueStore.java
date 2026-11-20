@@ -425,11 +425,12 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
         if (raw == null || raw.isEmpty()) {
             return HotKeyReport.unknown();
         }
+        // Lua 仍返回 4 元组（status / 合计 / lastActive / lastHot），但合计字段**不再回传**：
+        // 中央计数是"所有节点增量之和"，回灌本地会导致下次上报重复放大（见 HotKeyReport 契约）。
         HotKeyStatus status = parseStatus(raw.get(0));
-        long total = parseLong(text(raw.get(1)));
         long active = parseLong(text(raw.get(2)));
         long hot = parseLong(text(raw.get(3)));
-        return new HotKeyReport(status, total, active, hot);
+        return new HotKeyReport(status, active, hot);
     }
 
     private static HotKeyStatus parseStatus(Object raw) {

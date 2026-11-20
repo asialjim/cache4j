@@ -211,7 +211,7 @@ class SpringRedisValueStoreTest {
         void hotKeyReporting() {
             HotKeyReport hot = store.reportHotKey(NS, key("42"), 120L);
             assertEquals(HotKeyStatus.HOT, hot.status());
-            assertTrue(hot.windowCount() >= 120L);
+            // 只回传状态，不回传计数
 
             HotKeyReport unknown = store.reportHotKey(NS, key("never"), 0L);
             assertEquals(HotKeyStatus.UNKNOWN, unknown.status());

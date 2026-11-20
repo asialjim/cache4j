@@ -70,7 +70,7 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
             long total = window.current + window.previous;
 
             if (delta == 0L && window.lastActiveWindow < 0L && total == 0L) {
-                return new HotKeyReport(HotKeyStatus.UNKNOWN, 0L, -1L, -1L);
+                return HotKeyReport.unknown();
             }
 
             HotKeyStatus status;
@@ -92,7 +92,8 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
                 window.lowSince = -1L;
                 status = HotKeyStatus.ACTIVE;
             }
-            return new HotKeyReport(status, total, window.lastActiveWindow, window.lastHotWindow);
+            // 只回传状态 + 排障时间戳；计数一律不回传（见 HotKeyReport 的契约说明）
+            return new HotKeyReport(status, window.lastActiveWindow, window.lastHotWindow);
         }
     }
 

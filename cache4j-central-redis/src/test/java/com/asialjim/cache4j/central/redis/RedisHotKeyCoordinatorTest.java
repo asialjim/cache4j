@@ -40,7 +40,7 @@ class RedisHotKeyCoordinatorTest {
         RedisHotKeyCoordinator coordinator = coordinator(LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
         HotKeyReport report = coordinator.reportAndStatus(NS, key("a"), 120L);
         assertEquals(HotKeyStatus.HOT, report.status());
-        assertEquals(120L, report.windowCount());
+
     }
 
     @Test

@@ -95,7 +95,7 @@ class DynamicLocalCacheTest {
                 reportCalls.incrementAndGet();
                 Map<CacheKey, HotKeyReport> reports = new HashMap<>();
                 deltas.forEach((key, delta) -> reports.put(key,
-                        new HotKeyReport(statuses.getOrDefault(key, HotKeyStatus.ACTIVE), 0L, 0L, 0L)));
+                        new HotKeyReport(statuses.getOrDefault(key, HotKeyStatus.ACTIVE), 0L, 0L)));
                 return reports;
             }
 

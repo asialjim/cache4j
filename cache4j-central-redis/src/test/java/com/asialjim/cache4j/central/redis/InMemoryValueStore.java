@@ -158,7 +158,7 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
             }
             long total = window.current + window.previous;
             if (delta == 0L && window.lastActiveWindow < 0L && total == 0L) {
-                return new HotKeyReport(HotKeyStatus.UNKNOWN, 0L, -1L, -1L);
+                return HotKeyReport.unknown();
             }
             HotKeyStatus status;
             if (window.lastActiveWindow >= 0L
@@ -179,7 +179,8 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
                 window.lowSince = -1L;
                 status = HotKeyStatus.ACTIVE;
             }
-            return new HotKeyReport(status, total, window.lastActiveWindow, window.lastHotWindow);
+            // 只回传状态 + 排障时间戳，计数不回传
+            return new HotKeyReport(status, window.lastActiveWindow, window.lastHotWindow);
         }
     }
 

@@ -45,8 +45,7 @@ class InMemoryHotKeyCoordinatorTest {
         InMemoryHotKeyCoordinator coordinator = coordinator(
                 LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
         HotKeyReport report = coordinator.reportAndStatus(NS, key("a"), 120L);
-        assertEquals(HotKeyStatus.HOT, report.status());
-        assertEquals(120L, report.windowCount());
+        assertEquals(HotKeyStatus.HOT, report.status(), "只回传状态，不回传计数（见 HotKeyReport 契约）");
     }
 
     @Test

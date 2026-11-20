@@ -444,6 +444,16 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
                 + "，进入冷却=" + dynamic.cooldown() + "，热点集合大小=" + hotKeys.size());
     }
 
+    /**
+     * @param key key
+     * @param now 当前纳秒
+     * @return 该 key 的本地窗口计数（无窗口时为 0）
+     */
+    private long localCount(CacheKey key, long now) {
+        HotWindow window = windows.get(key);
+        return window == null ? 0L : window.total(now);
+    }
+
     private void applyCentralStatus(Map<CacheKey, HotKeyReport> reports) {
         if (reports == null || reports.isEmpty()) {
             return;
@@ -454,11 +464,12 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             switch (status) {
                 case HOT -> {
                     if (!hotKeys.containsKey(key) && !isCooling(key, now)) {
-                        promote(key, report.windowCount(), now);
+                        // 中央只回传状态，本地记录自己的窗口计数（不回灌中央数值）
+                        promote(key, localCount(key, now), now);
                         counters.increment(CacheCounters.Counter.PROMOTION);
                         counters.increment(CacheCounters.Counter.GLOBAL_PROMOTION);
                         LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "升热，来源=中央 HOT，key="
-                                + key.masked() + "，集群窗口频次=" + report.windowCount()
+                                + key.masked() + "，本地窗口计数=" + localCount(key, now)
                                 + "，热点集合大小=" + hotKeys.size());
                     }
                 }
