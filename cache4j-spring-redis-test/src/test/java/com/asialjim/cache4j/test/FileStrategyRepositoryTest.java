@@ -65,13 +65,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li><strong>策略数据源</strong>（{@link FileStrategyDataSource}）：本地文件
  *       {@code db/strategy.dat}（模块目录下），一策略一段可读文本；</li>
  *   <li><strong>门面自缓存</strong>的中央层：{@code CachedCacheStrategyRepository} 自己是 STATIC
- *       二级缓存，namespace {@code cache4j.strategy}，仍走 Redis。</li>
+ *       二级缓存，namespace {@code _c4j:stg}，仍走 Redis。</li>
  * </ol>
  *
  * <p><strong>跑完不删文件、不清 Redis</strong>，方便直接观察：</p>
  * <pre>
  * cat cache4j-spring-redis-test/db/strategy.dat          # 策略记录（key=value 文本）
- * redis-cli --scan --pattern 'cache4j:{cache4j.strategy}:*'   # 门面自缓存
+ * redis-cli --scan --pattern '_c4j:stg:*'                 # 门面自缓存
  * </pre>
  *
  * @author Asial Jim
@@ -178,13 +178,13 @@ class FileStrategyRepositoryTest {
 
     @Test
     @Order(3)
-    @DisplayName("门面自缓存也在 Redis 上留痕（namespace cache4j.strategy）")
+    @DisplayName("门面自缓存也在 Redis 上留痕（namespace _c4j:stg）")
     void selfCacheLeavesTracesInRedis() {
         TwoLevelCacheManager.create(options()).close();
         // 触发一次缓存写穿 + 回填
         repository.find("decl:none");
 
-        var keys = keys("cache4j:{cache4j.strategy}:*");
+        var keys = keys("_c4j:stg:*");
         assertFalse(keys.isEmpty(), "门面自己的二级缓存在 Redis 上应有数据，实际 key=" + keys);
     }
 
@@ -206,11 +206,11 @@ class FileStrategyRepositoryTest {
         }
 
         // 三条策略都写到了中央（Redis），key 布局 cache4j:{<namespace>}:*
-        assertFalse(keys("cache4j:{decl:static}:*").isEmpty(), "STATIC 应写入中央");
-        assertFalse(keys("cache4j:{decl:none}:*").isEmpty(), "NONE 应写入中央");
-        assertFalse(keys("cache4j:{decl:dynamic}:*").isEmpty(), "DYNAMIC 冷 key 也应写入中央");
+        assertFalse(keys("decl:static:*").isEmpty(), "STATIC 应写入中央");
+        assertFalse(keys("decl:none:*").isEmpty(), "NONE 应写入中央");
+        assertFalse(keys("decl:dynamic:*").isEmpty(), "DYNAMIC 冷 key 也应写入中央");
         // 版本表同样在
-        assertFalse(keys("cache4j:{decl:static}:__rev").isEmpty(), "版本表应落 Redis");
+        assertFalse(keys("decl:static:__rev").isEmpty(), "版本表应落 Redis");
     }
 
     // ------------------------------------------------------------------ 装配辅助
@@ -220,7 +220,7 @@ class FileStrategyRepositoryTest {
         StrategySelfCacheOptions self = StrategySelfCacheOptions.defaults();
         LocalCache<StoredPolicy> local = new CaffeineLocalCache<>(self.localSpec(), System::nanoTime);
         CentralCache<StoredPolicy> central = new RedisCentralCache<>(self.centralSpec(),
-                new SpringRedisValueStore<>(connectionFactory, new RedisKeyFormatter("cache4j", true),
+                new SpringRedisValueStore<>(connectionFactory, RedisKeyFormatter.defaults(),
                         new StoredPolicySerializer()));
         return new CachedCacheStrategyRepository(dataSource, self, local, central);
     }
@@ -230,7 +230,7 @@ class FileStrategyRepositoryTest {
         RedisSerializer<Object> values = (RedisSerializer) new StringRedisSerializer();
         return Cache4jSpringOptions.builder()
                 .centralProvider(new SpringRedisCentralCacheProvider(
-                        connectionFactory, new RedisKeyFormatter("cache4j", true), values), true)
+                        connectionFactory, RedisKeyFormatter.defaults(), values), true)
                 .strategyRepository(repository)
                 .declEnums(Decl.class)
                 .build();
@@ -264,7 +264,7 @@ class FileStrategyRepositoryTest {
             throw new IllegalStateException("清理策略文件失败：" + dataSource.file(), e);
         }
         try (RedisConnection connection = connectionFactory.getConnection()) {
-            for (String pattern : new String[]{"cache4j:{cache4j.strategy}:*", "cache4j:{decl:*"}) {
+            for (String pattern : new String[]{"_c4j:stg:*", "decl:*"}) {
                 Set<byte[]> found = connection.keyCommands().keys(bytes(pattern));
                 if (found != null && !found.isEmpty()) {
                     connection.keyCommands().del(found.toArray(new byte[0][]));
@@ -349,7 +349,7 @@ class FileStrategyRepositoryTest {
             @SuppressWarnings({"unchecked", "rawtypes"})
             RedisSerializer<Object> values = (RedisSerializer) new StringRedisSerializer();
             return new SpringRedisCentralCacheProvider(
-                    factory, new RedisKeyFormatter("cache4j", true), values);
+                    factory, RedisKeyFormatter.defaults(), values);
         }
 
         @Bean(destroyMethod = "close")

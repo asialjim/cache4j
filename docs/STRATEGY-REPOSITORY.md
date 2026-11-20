@@ -23,7 +23,7 @@
    但**没有"降级形态的仓库"**——要么完整启用（共享数据源），要么完全不启用。
 4. **不提供 reset**：要回退就再改一次，审计留痕优先于"一键还原"。
 5. **无后台线程、无广播**：仓库自身不建线程也不推送变更；传播由仓库自用缓存的版本对账承担（§2.4.4，≤5s）；
-6. **仓库自举**：仓库门面本身就是缓存体系里的 `cache4j.strategy` 命名空间，`STATIC` 策略，
+6. **仓库自举**：仓库门面本身就是缓存体系里的 `_c4j:stg` 命名空间，`STATIC` 策略，
    禁止 `NONE`/`DYNAMIC`（§2.4.3）；自身缓存参数来自**启动配置**，改需重启（§2.4.6）。
 7. **两层分工**：门面对接缓存体系，**数据源不对接**；开发者只需实现数据源（§4）。
 8. **业务端纯读**：业务 JVM 只 `find`/`all` + 消费变更；`change` 只在独立的管理服务里装配（§7）。
@@ -177,7 +177,7 @@ public sealed interface PolicyLookup {
 
 | 项 | 固定值 | 为什么 |
 |---|---|---|
-| `namespace` | `cache4j.strategy`（常量） | 与业务 namespace 隔离；`clear(namespace)` 不得波及 |
+| `namespace` | `_c4j:stg`（常量） | 与业务 namespace 隔离；`clear(namespace)` 不得波及 |
 | 本地策略 | **`STATIC`（禁止 `NONE` / `DYNAMIC`）** | 见 2.4.3 |
 | `version.checkInterval` | **5s** | **这就是"变更在多节点上生效的最大延迟"**，取代广播 |
 | `maxSize` | 1 000 | 策略条数与 namespace 数同量级 |
@@ -504,7 +504,7 @@ public interface PolicyCodec {
 | | **缓存 key 版本号**（`revision`） | **缓存策略配置版本号**（`configVersion`） |
 |---|---|---|
 | 一句话 | 这个**缓存条目**的新旧 | 这套**策略配置**的新旧 |
-| 归属层 | 缓存体系（本地副本 + `__rev:cache4j.strategy`） | 数据源记录（`StoredPolicy`） |
+| 归属层 | 缓存体系（本地副本 + `__rev:_c4j:stg`） | 数据源记录（`StoredPolicy`） |
 | 谁生成 | 缓存层 Lua：`max(now, cur+1)` | 数据源 `save` 时递增 |
 | 类型/语义 | 中央时钟时间戳，**只比相等/不等** | 单调递增序号（时间戳或自增），**可比大小** |
 | 用途 | 判断本地副本是否落后 → 触发 5s 对账 → 决定是否回源 | **运维乐观锁**（`expectedConfigVersion`）、审计、`StrategyView.configVersion` |
@@ -554,7 +554,7 @@ public interface PolicyCodec {
 启动日志必须打印实际生效值：
 
 ```
-[策略仓库]-启动-自举缓存 namespace=cache4j.strategy，策略=STATIC，maxSize=1000，localTtl=PT30M，
+[策略仓库]-启动-自举缓存 namespace=_c4j:stg，策略=STATIC，maxSize=1000，localTtl=PT30M，
          centralTtl=PT72H，centralNullTtl=PT5M，versionCheck=PT5S
 ```
 
@@ -631,11 +631,11 @@ public interface PolicyCodec {
 两种接法对**中央缓存**的要求相同：**必须是同一套**，否则版本对账不成立（各看各的副本，5s 传播无从谈起）。
 
 ```text
-T1: 业务端 ─┬─► 中央缓存（cache4j.strategy）─► 数据源（Redis/DB）
+T1: 业务端 ─┬─► 中央缓存（_c4j:stg）─► 数据源（Redis/DB）
              └──────────────────────────────────▲
     管理端 ─────────────────────────────────────┘
 
-T2: 业务端 ──► 中央缓存（cache4j.strategy）        ← 必须有
+T2: 业务端 ──► 中央缓存（_c4j:stg）        ← 必须有
              └► 数据源 = HTTP → 管理服务 API ──► 真正数据源
 ```
 
@@ -669,7 +669,7 @@ T2: 业务端 ──► 中央缓存（cache4j.strategy）        ← 必须有
 7. 读策略失败（中央不可达且本地无副本）不回落到声明值，而是 `find` 返回 empty 由装配层兜底；
 8. 仓库不创建线程；
 9. 未启用仓库时仍能装配（声明 + 内建默认）；启用则必须有数据源，没有"降级仓库"形态；
-10. 仓库不持有业务缓存实例，只持有配置（它自己那个 `cache4j.strategy` 缓存除外，那是自举设施）；
+10. 仓库不持有业务缓存实例，只持有配置（它自己那个 `_c4j:stg` 缓存除外，那是自举设施）；
 11. **`declare` 不得覆盖已存在的配置**：仓库里已有该 namespace ⇒ 跳过，不登记、不改动；
 12. **仓库自身策略禁止 `NONE`/`DYNAMIC`**，启动期校验。
 
@@ -937,7 +937,7 @@ long brokenPolicyCount();              // 数据源里解析失败的记录数
 | 模块 | 内容 |
 |---|---|
 | `cache4j-core` | 全部 SPI 与模型：`CacheStrategyRepository`（门面接口）、**`CacheStrategyDataSource`（数据源 SPI）**、`CacheStrategyAdmin`、`NamespacePolicy`、`StoredPolicy`、`StrategyChange`、`ChangeResult`、`StrategyView`、`StrategySelfCacheOptions`、`PolicyLookup`（三态） |
-| `cache4j-core`（`core.strategy` 包） | 与仓库契约同包：`CachedCacheStrategyRepository`（门面实现：用本库的 `TwoLevelCache`（namespace=`cache4j.strategy`、`STATIC`）承载策略读取、写穿与 clear 兜底）、`StrategySelfCacheOptions`、`PolicyCodec` / `TextPolicyCodec`。**不新增模块**——它只用到 core 自己的接口（`LocalCache` / `CentralCache` / `TwoLevelCache`），放这里语义更直（策略仓库是核心能力，不是适配层） |
+| `cache4j-core`（`core.strategy` 包） | 与仓库契约同包：`CachedCacheStrategyRepository`（门面实现：用本库的 `TwoLevelCache`（namespace=`_c4j:stg`、`STATIC`）承载策略读取、写穿与 clear 兜底）、`StrategySelfCacheOptions`、`PolicyCodec` / `TextPolicyCodec`。**不新增模块**——它只用到 core 自己的接口（`LocalCache` / `CentralCache` / `TwoLevelCache`），放这里语义更直（策略仓库是核心能力，不是适配层） |
 | `cache4j-spring-redis` | **不新增**：不开箱数据源（R8），也不加 `writeIfRevision`（业务端纯读、写穿用普通 `put`/`putIfNewer`）。数据源由使用者自己按 §20.2 实现 |
 | `cache4j-spring` | 端点（可选 Actuator）、`@CacheNamespace` 扫描接入 |
 | `cache4j-starter` | 默认装配与开关配置（含"仓库自身策略被配成 NONE/DYNAMIC 即启动失败"的校验） |
@@ -957,10 +957,10 @@ long brokenPolicyCount();              // 数据源里解析失败的记录数
 
 ```text
 # 数据：普通缓存条目，value 是 StoredPolicy 的编码字节
-<cache4j.strategy 前缀>:<encoded(namespace)>  →  PolicyCodec.encode(StoredPolicy)
+<_c4j:stg 前缀>:<encoded(namespace)>  →  PolicyCodec.encode(StoredPolicy)
 
 # 版本表：缓存体系自带
-__rev:cache4j.strategy
+__rev:_c4j:stg
     <encoded(namespace)>  →  <revision>|<expireAtMillis>
 ```
 
@@ -1006,7 +1006,7 @@ return next
 
 硬性要求：
 
-1. **两套前缀不得重叠**：`cache4j.strategy`（缓存）与 `cache4j.policy:`（数据源）互不相干；
+1. **两套前缀不得重叠**：`_c4j:stg`（缓存）与 `cache4j.policy:`（数据源）互不相干；
    `clear(<业务 namespace>)` 两者都不得波及；
 2. **数据源不做缓存**：它只回答"当前权威值是什么"，不要在其中再加 LRU/TTL；
 3. **`configVersion` 单调**：`max(now, cur+1)` 或自增，二者都行，但必须在同一 namespace 上单调；

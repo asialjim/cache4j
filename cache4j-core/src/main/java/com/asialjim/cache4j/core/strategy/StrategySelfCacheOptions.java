@@ -26,7 +26,7 @@ public final class StrategySelfCacheOptions {
     /**
      * 自举缓存的命名空间（与业务 namespace 隔离；{@code clear(ns)} 不得波及）。
      */
-    public static final String SELF_NAMESPACE = "cache4j.strategy";
+    public static final String SELF_NAMESPACE = "_c4j:stg";
 
     /**
      * 本地条目上限默认值（最可能需调的项：namespace 上千时上调）。

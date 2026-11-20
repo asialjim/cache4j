@@ -99,11 +99,12 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
         if (data == null) {
             return new VersionedLookup<>(revision, Lookup.miss());
         }
-        Envelope envelope = Envelope.decode(data);
-        if (envelope.negative()) {
+        // 负副本约定用"空字节数组"表示：GET 返回空串（不是 nil），与"没有 key"天然可区分。
+        // 真值就是 serializer 的输出，一个字节都不加工。
+        if (data.length == 0) {
             return new VersionedLookup<>(revision, Lookup.negative());
         }
-        return new VersionedLookup<>(revision, Lookup.hit(decode(envelope.payload(), key)));
+        return new VersionedLookup<>(revision, Lookup.hit(decode(data, key)));
     }
 
     @Override
@@ -164,23 +165,21 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 
     @Override
     public long write(CacheKey key, V value, Duration ttl) {
-        byte[] raw = Envelope.value(encode(value)).encode();
-        return doWrite(RedisScripts.WRITE_WITH_REVISION, key, raw, ttl);
+        return doWrite(RedisScripts.WRITE_WITH_REVISION, key, encode(value), ttl);
     }
 
     @Override
     public long writeNegative(CacheKey key, Duration ttl) {
-        byte[] raw = Envelope.negativeValue().encode();
-        return doWrite(RedisScripts.WRITE_WITH_REVISION, key, raw, ttl);
+        // 负副本 = 空字节数组（见 read 的约定）
+        return doWrite(RedisScripts.WRITE_WITH_REVISION, key, new byte[0], ttl);
     }
 
     @Override
     public OptionalLong writeIfAbsent(CacheKey key, V value, Duration ttl) {
-        byte[] raw = Envelope.value(encode(value)).encode();
         try {
             Object result = eval(RedisScripts.WRITE_IF_ABSENT, ReturnType.INTEGER,
                     List.of(keys.revision(key.namespace()), keys.data(key)),
-                    writeArgs(key, raw, ttl));
+                    writeArgs(key, encode(value), ttl));
             return result == null ? OptionalLong.empty() : OptionalLong.of(((Number) result).longValue());
         } catch (DataAccessException e) {
             throw translate(e);

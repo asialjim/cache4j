@@ -64,9 +64,8 @@ class DeclarationDrivenRedisTest {
     private static final String[] NAMESPACES = {NS_STATIC, NS_NONE, NS_DYNAMIC};
 
     /**
-     * 自动装配出来的 provider 用 {@code RedisKeyFormatter.defaults()}：前缀 {@code cache4j} + hash tag。
+     * key 布局：直接以 namespace 开头，没有前缀、没有 hash tag。
      */
-    private static final String REDIS_PREFIX = "cache4j";
 
     private static final AtomicInteger STATIC_LOADS = new AtomicInteger();
 
@@ -215,7 +214,7 @@ class DeclarationDrivenRedisTest {
     }
 
     private static byte[] pattern(String namespace) {
-        return (REDIS_PREFIX + ":{" + namespace + "}:*").getBytes(StandardCharsets.UTF_8);
+        return (namespace + ":*").getBytes(StandardCharsets.UTF_8);
     }
 
     private static void resetCounters() {

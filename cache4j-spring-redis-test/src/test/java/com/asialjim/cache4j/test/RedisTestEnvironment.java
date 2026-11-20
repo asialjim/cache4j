@@ -44,9 +44,10 @@ public final class RedisTestEnvironment {
     public static final String PASSWORD = System.getProperty("cache4j.test.redis.password", "");
 
     /**
-     * 测试 key 前缀（避免污染业务数据）。
+     * @deprecated key 布局已改为"直接以 namespace 开头"，不再有全局前缀；保留常量只为兼容旧断言。
      */
-    public static final String GLOBAL_PREFIX = "cache4j-it";
+    @Deprecated
+    public static final String GLOBAL_PREFIX = "";
 
     private RedisTestEnvironment() {
     }
@@ -91,7 +92,7 @@ public final class RedisTestEnvironment {
         // 生产可换成 JSON / Protobuf 等任意 RedisSerializer。
         RedisSerializer<Object> serializer = (RedisSerializer) new StringRedisSerializer();
         SpringRedisValueStore<Object> store = new SpringRedisValueStore<>(
-                factory, new RedisKeyFormatter(GLOBAL_PREFIX, true), serializer)
+                factory, RedisKeyFormatter.defaults(), serializer)
                 .globalSpecs(globalSpecs::get);
         HotKeyCoordinator coordinator = new com.asialjim.cache4j.central.redis.RedisHotKeyCoordinator(
                 store, globalSpecs::get);

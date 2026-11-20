@@ -6,8 +6,8 @@
 >
 > 1. `cache4j-core` 定义通用契约与编排：**不知道编解码这回事**；
 > 2. `cache4j-central` 定义**中央缓存 SPI**（读写、TTL、负缓存、版本、热 key 协调、provider）与内存参考实现；内存实现直接持有 `V`，同样不做序列化；
-> 3. `cache4j-central-redis` 定义**Redis 语义层 + 泛型下行 SPI**：`RedisCentralCache<V>`（版本、负缓存、TTL 抖动、批量对账、热 key 窗口的**语义**）与 `RedisValueStore<V>`（“存一个 V、给我版本”的抽象）。**它不碰字节**，也不知道 key 布局、envelope、Lua、序列化；
-> 4. 适配模块（`cache4j-spring-redis`、未来 `cache4j-solon-redis` / `cache4j-spring-redisson` / `cache4j-solon-redisson`）才是**真正与 Redis 发生 I/O 的地方**：它们实现 `RedisValueStore<V>`，自己决定 key 布局、envelope、Lua、连接与序列化（`RedisSerializer` / Redisson `Codec` / 自选）。
+> 3. `cache4j-central-redis` 定义**Redis 语义层 + 泛型下行 SPI**：`RedisCentralCache<V>`（版本、负缓存、TTL 抖动、批量对账、热 key 窗口的**语义**）与 `RedisValueStore<V>`（“存一个 V、给我版本”的抽象）。**它不碰字节**，也不知道 key 布局、Lua、序列化；
+> 4. 适配模块（`cache4j-spring-redis`、未来 `cache4j-solon-redis` / `cache4j-spring-redisson` / `cache4j-solon-redisson`）才是**真正与 Redis 发生 I/O 的地方**：它们实现 `RedisValueStore<V>`，自己决定 key 布局、Lua、连接与序列化（`RedisSerializer` / Redisson `Codec` / 自选）。
 >
 > 推论：不同适配模块的格式**互不兼容**，同一 key 空间必须统一适配器与 serializer；更换时请 bump `globalPrefix` 或清空缓存。
 
@@ -101,7 +101,7 @@ public record CentralCacheSpec(
 - 写入时用 Lua 取 `newRev = max(now, cur + 1)`：避免同一毫秒内两次写拿到相同值（相等会让其他节点的失配检测失效）；
 - 版本号**不要求跨节点单调**：不同节点时钟可能相差数秒，本地判断只看"不相等"（`entry.revision != centralRevision → 失效并回读`），方向无关；
 - 因此不需要 epoch、不需要随机前缀、不需要分布式时钟——`__rev` 丢失后重建的版本号天然是更新的时间，不会回到 0；
-- 版本号不是缓存值的一部分，不参与 envelope；它存在该 namespace 的 `__rev` HASH 里（field = `encodedKey`，value = `<revision>|<expireAtMillis>`）；
+- 版本号不是缓存值的一部分；它存在该 namespace 的 `__rev` HASH 里（field = `encodedKey`，value = `<revision>|<expireAtMillis>`）；
 - `expireAtMillis` 是该**数据 key** 的过期时刻（写时 TTL 已知，`0` 表示永不过期）：它的唯一用途是让对账能识别“数据已过期、field 还留着”的死版本并 `HDEL`，所以不需要额外的清理策略。
 - 读到比本地更小的版本也不会使旧值复活：本地只会用新值覆盖这条副本；仍建议记 `versionRegression` 指标用于观测时钟异常；
 - `evict` **不保留版本**：同一个 Lua 内 `DEL data` + `HDEL field`。删除对其他节点可见，因为对账时会发现“本地有、中央缺字段”。
@@ -151,40 +151,37 @@ public record HotKeyReport(
 
 ---
 
-## 2. Redis 值格式（envelope，**适配层职责**）
+## 2. Redis 值格式（**适配层职责**）
 
-> envelope 由**适配模块**（如 `cache4j-spring-redis`）定义与实现：`cache4j-central-redis` 只处理 `V`，
+> 值格式由**适配模块**（如 `cache4j-spring-redis`）决定：`cache4j-central-redis` 只处理 `V`，
 > 不知道值在 Redis 里长什么样；`cache4j-central` 连"有没有字节"都不知道。
->
-> 下文是一种经过验证的参考格式，供各适配器实现时对齐思路；它**不是**本库的契约。
 
-Redis 里的 value 不是裸的业务字节，而是带元信息的 envelope：
+**当前约定：值就是 serializer 的输出，一个字节都不加工。**
 
 ```text
-+--------+---------+--------+----------+-------------------+
-| magic  | version | flags  | reserved | payload           |
-| 1 byte | 1 byte  | 1 byte | 1 byte   | N bytes           |
-+--------+---------+--------+----------+-------------------+
-  0xC4     0x01      bit0=负缓存            codec 输出
+SET user:detail:s2:42  <serializer 输出>
 ```
 
-- `magic`：0xC4，快速识别"这是 cache4j 的数据"，避免误读其他系统写入的 key；
-- `version`：当前 0x01；未来可加压缩、加密、类型信息；
-- `flags`：bit0 = 负缓存（payload 为空）；其余位保留；
-- `reserved`：0；
-- `payload`：适配层自己的 serializer 输出；负缓存时为空。
+不做 envelope（不加 magic / version / flags 头）。理由：
 
-为什么需要 envelope：
+1. **可用性优先**：`redis-cli get` 看到的就是业务值本身，排查问题时不用再解一层；
+2. **不替使用者决定**：压缩、加密、类型信息属于业务的序列化策略，不是缓存层该强加的；
+3. **跨语言互操作**：别的系统按同一 serializer 读取即可，不需要实现 cache4j 的头部协议。
 
-1. **区分"缓存了 null"与"没有缓存"**：Redis 的 `GET` 对两者都返回 nil，必须靠 value 内容区分；
-2. **可演进**：版本号、压缩位、未来字段都有位置；
-3. **可诊断**：看到 magic 就知道数据来源，减少"这个 key 是谁写的"的排查成本。
+### 2.1 负缓存怎么表达
 
-约束：
+用**空字节数组**：`SET key ""`。
 
-- 解码时校验长度、magic、version；任一不合法抛 `CacheException(CODEC_DECODE_FAILED)`，**不允许**当作 miss；
-- `payload` 的大小建议 < 1 MB；超过时记 WARN（压缩列为后续）；
-- 更换 codec 会导致旧数据解码失败；上线时配合 key 前缀版本或清空缓存。
+Redis 的 `GET` 对"没有 key"返回 nil、对"空串"返回 `""`，两者天然可区分——这是唯一需要的元信息，
+不值得为它引入 4 字节头。
+
+> 由此带来的取舍：**无法再识别"这条数据是不是 cache4j 写的"**。隔离靠 namespace 独占——
+> 业务不会把别的系统的数据写进自己的 namespace，而 key 又是 `namespace:...` 开头，天然分得开。
+
+### 2.2 约束
+
+- 值大小建议 < 1 MB；超过时记 WARN；
+- 更换 serializer 会导致旧数据解码失败；上线时配合清空对应 namespace 或起新 namespace。
 
 ---
 
@@ -196,8 +193,10 @@ Redis 里的 value 不是裸的业务字节，而是带元信息的 envelope：
 ### 3.1 组成
 
 ```text
-<globalPrefix>:<namespacePart>:<encodedKey>
+<namespace>:<encodedKey>
 ```
+
+**存储 key 总是以 namespace 开头**：没有部署前缀、没有 `{hash tag}`、没有长度前缀。
 
 - `globalPrefix`：部署级前缀，默认 `cache4j`；多环境/多租户可设为 `prod:cache4j`；
 - `namespacePart`：
@@ -209,9 +208,9 @@ Redis 里的 value 不是裸的业务字节，而是带元信息的 envelope：
 
 | 配置 | 逻辑 key | Redis key |
 |---|---|---|
-| `hashTag=true` | `user:detail` + `s2:42` | `cache4j:{user:detail}:s2:42` |
+| 默认（唯一形态） | `user:detail` + `s2:42` | `user:detail:s2:42` |
 | `hashTag=false` | `user:detail` + `s2:42` | `cache4j:11:user:detail:s2:42` |
-| 多环境前缀 | `user:detail` + `s2:42` | `prod:cache4j:{user:detail}:s2:42` |
+| 多环境共存 | 用不同 Redis DB / 实例隔离，key 本身不加前缀 |
 
 ### 3.2 保留 key
 
@@ -226,8 +225,8 @@ Redis 里的 value 不是裸的业务字节，而是带元信息的 envelope：
 版本表与数据 key 在同一个 hash tag 下，才能一次往返取回：
 
 ```text
-HMGET cache4j:{user:detail}:__rev  s2:42
-GET   cache4j:{user:detail}:s2:42
+HMGET user:detail:__rev  s2:42
+GET   user:detail:s2:42
 # 同一 hash tag，可用 pipeline 或一个 Lua 合成一次网络往返
 ```
 
@@ -251,7 +250,7 @@ GET   cache4j:{user:detail}:s2:42
 `clear` 使用与写入完全一致的 `namespacePart`：
 
 ```text
-hashTag=true  → cache4j:{user:detail}:
+通用形式      → user:detail:
 hashTag=false → cache4j:11:user:detail:
 ```
 
@@ -367,7 +366,7 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
 }
 ```
 
-它只做**语义与策略**：TTL 抖动、负缓存开关、统计、故障翻译。不拼 key、不封 envelope、不写 Lua、
+它只做**语义与策略**：TTL 抖动、负缓存开关、统计、故障翻译。不拼 key、不封值、不写 Lua、
 不碰字节 —— 这些全在 `RedisValueStore` 的实现里。
 
 > **单 key 版本读取的场景**：`lookupWithRevision`（本地未命中时读中央）与 `revision(key)`
@@ -494,12 +493,12 @@ public HotKeyReport reportAndStatus(String namespace, CacheKey key, long delta) 
 #### 5.7.1 key 布局
 
 ```text
-cache4j:{ns}:__hot:meta                 HASH
+ns:__hot:meta                           HASH
   <encodedKey>:active   -> lastActiveWindow
   <encodedKey>:hot      -> lastHotWindow
   <encodedKey>:lowSince -> 连续低活动起始窗口
 
-cache4j:{ns}:__hot:w:<windowId>         ZSET
+ns:__hot:w:<windowId>                   ZSET
   member = <encodedKey>
   score  = 该窗口内的集群访问次数
 ```
@@ -644,7 +643,7 @@ HotKeyCoordinator coordinator = provider.hotKeyCoordinator().orElseThrow();
 - `provider.hotKeyCoordinator()` 返回构造时传入的协调器，未传入则 `Optional.empty()`；
 - 某个 namespace 没有 `GlobalSpec` 时返回 `UNKNOWN` 并记 WARN（不猜阈值）；
 - `provider.close()` 关闭 store，实现必须幂等；多个视图共享同一个 store，视图的 `close()` 不关闭 store；
-- 谁创建 store，谁负责它的连接配置、key 布局、envelope 与生命周期。
+- 谁创建 store，谁负责它的连接配置、key 布局、值格式与生命周期。
 
 ### 6.2 实现者清单
 
@@ -658,7 +657,7 @@ HotKeyCoordinator coordinator = provider.hotKeyCoordinator().orElseThrow();
 | `revisions` | 只取版本；缺失=已失效；顺手清理自己的死元数据 |
 | `reportHotKey(All)` | 一次往返：写窗口计数 + 读双窗口 + 返回状态 |
 | 序列化 | **自己决定**（Spring `RedisSerializer`、Redisson `Codec`、JSON、JDK…） |
-| key 布局 / envelope | **自己决定**，但同一 key 空间内必须自洽 |
+| key 布局 / 值格式 | **自己决定**，但同一 key 空间内必须自洽 |
 | 异常 | 统一 `RedisAccessException(UNAVAILABLE/TIMEOUT/COMMAND_FAILED)`；序列化失败直接抛 `CacheException(CODEC_*)` |
 | 超时 | 客户端侧配置；建议缓存命令 200–500ms 快速失败 |
 | 线程安全 | 必须可被多个缓存视图并发调用 |
@@ -685,10 +684,10 @@ v1 **不提供**独立的 Jedis / Lettuce 适配模块。非 Spring 使用方有
 
 - `cache4j-central-redis` **不出现** `org.springframework.*` 依赖，也不出现任何 Redis 客户端依赖；
 - Spring 应用的 Redis 连接、池、集群、哨兵、SSL 全部复用 Spring Data Redis 的 `RedisConnectionFactory`；
-- `cache4j-spring-redis` 实现 **`RedisValueStore<V>`**：连接适配 + key 布局 + envelope + Lua + **序列化**；
+- `cache4j-spring-redis` 实现 **`RedisValueStore<V>`**：连接适配 + key 布局 + Lua + **序列化**；
 - **serializer 由本模块决定**：默认复用业务提供的 `RedisSerializer<V>`（或按缓存名解析的 `CacheSerializerResolver`），也可以用内置 JDK / JSON 实现；`cache4j-central-redis` 与 `cache4j-core` 都不知情；
 - `cache4j-spring-redis` **不锁定底层客户端**：应用使用 Jedis、Lettuce 还是其他实现，由 Spring Data Redis 的依赖与 `spring.data.redis.*` 配置决定；
-- **不使用 `RedisTemplate` 的 value serializer 做二次包装**：`RedisConnection` 的 `byte[]` 命令只被调用一次，encode/decode 各自只发生一次（envelope 直接写在字节里）。
+- **不使用 `RedisTemplate` 的 value serializer 做二次包装**：`RedisConnection` 的 `byte[]` 命令只被调用一次，encode/decode 各自只发生一次（值就是这份字节，没有额外包装）。
 
 ### 7.2 `SpringRedisValueStore`
 
@@ -710,10 +709,10 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
             long revision = decodeRevision(raw);
             byte[] payload = ...;
             if (payload == null) return new VersionedLookup<>(revision, Lookup.miss());
-            Envelope env = Envelope.decode(payload);
-            return env.negative()
+            // 负副本 = 空字节数组；真值就是 serializer 的输出
+            return payload.length == 0
                     ? new VersionedLookup<>(revision, Lookup.negative())
-                    : new VersionedLookup<>(revision, Lookup.hit(serializer.deserialize(env.payload())));
+                    : new VersionedLookup<>(revision, Lookup.hit(serializer.deserialize(payload)));
         } catch (RuntimeException e) {
             throw translate(e);       // RedisAccessException
         }
@@ -729,7 +728,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 - `clear` 用 `keyCommands().scan(ScanOptions...)`；cluster 连接需要逐节点处理（v1 标记 best-effort）；
 - 底层 `RedisConnectionFailureException` / `RedisSystemException` 统一翻译成 `RedisAccessException`；
 - 序列化失败直接抛 `CacheException(CODEC_ENCODE_FAILED / CODEC_DECODE_FAILED)`；
-- **envelope 与 key 布局在本模块内实现**：`central-redis` 只看见 `V` 与 `CacheKey`。
+- **值格式与 key 布局在本模块内实现**：`central-redis` 只看见 `V` 与 `CacheKey`。
 
 ### 7.3 自动装配
 
@@ -754,11 +753,11 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 | 业务 | 提供实体与（可选）自己的 `RedisSerializer<V>` | — |
 | `cache4j-core` | 编排与契约 | 序列化（完全不知情） |
 | `cache4j-central` | 中央 SPI + 内存实现（直接存 `V`） | 序列化 |
-| `cache4j-central-redis` | `RedisValueStore<V>` 契约 + 版本/负缓存/TTL/对账/热 key **语义** | key 布局、envelope、Lua、序列化、字节 |
-| `cache4j-spring-redis` | 连接 + key 布局 + envelope + Lua + **serializer** | 缓存语义 |
+| `cache4j-central-redis` | `RedisValueStore<V>` 契约 + 版本/负缓存/TTL/对账/热 key **语义** | key 布局、值格式、Lua、序列化、字节 |
+| `cache4j-spring-redis` | 连接 + key 布局 + Lua + **serializer** | 缓存语义 |
 | Spring Data Redis | 连接池/集群/哨兵；客户端（Jedis / Lettuce / 其他）由用户选择 | value 序列化（不做二次包装） |
 
-**兼容性代价（必须知道）**：envelope、key 布局与 serializer 都下沉到适配层之后
+**兼容性代价（必须知道）**：值格式、key 布局与 serializer 都下沉到适配层之后
 
 - 不同适配模块（`spring-redis` vs `spring-redisson` vs `solon-redis`）的**数据格式互不兼容**；
 - 同一个 Redis key 空间必须统一使用同一个适配器 + 同一个 serializer；
@@ -771,7 +770,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 `InMemoryCentralCache`：
 
 - `ConcurrentHashMap<CacheKey, Entry>`；
-- `Entry` 保存 envelope 的语义（正值/负值）与 `expireAtNanos`；
+- `Entry` 保存值语义（正值/负值）与 `expireAtNanos`；
 - 每个 namespace 维护一个 `AtomicLong revision`，与写操作在同一把锁内递增；
 - `lookupWithRevision` 在同一锁内读取版本与值，保证快照一致；
 - 惰性过期 + 可选定时清理；
@@ -827,7 +826,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 
 ### 10.2 Redis 语义专项（`cache4j-central-redis`，用 `InMemoryValueStore`）
 
-- envelope 黄金字节：magic/version/flags/payload；
+- 字节黄金校验：写入 Redis 的字节与 serializer 输出完全一致（没有额外包装）；
 - key 布局：hash tag 开/关、globalPrefix、长度前缀、清理前缀不误伤兄弟 namespace；
 - 保留 key：`__rev` / `__hot:w:<id>` / `__hot:meta` 不与业务 key 冲突；
 - TTL 抖动范围；
@@ -856,9 +855,9 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 
 | 扩展 | 方式 |
 |---|---|
-| 其他 Redis 客户端（Redisson / Jedis / Solon 插件） | 实现 `RedisValueStore<V>`（自己的 key 布局 / envelope / Lua / serializer），复用 `RedisCentralCache` 语义层 |
+| 其他 Redis 客户端（Redisson / Jedis / Solon 插件） | 实现 `RedisValueStore<V>`（自己的 key 布局 / Lua / serializer），复用 `RedisCentralCache` 语义层 |
 | 其他中央存储（Memcached / 对象存储） | 实现 `CentralCache` / `CentralCacheProvider` |
-| 压缩 | 在 envelope 的 flags 增加压缩位，`RedisCentralCache` 层处理 |
+| 压缩 | 在 适配层在自己的值格式里加压缩位（`RedisCentralCache` 层不感知） |
 | 逻辑清空 | per-key 版本 + 批量对账：`clear` 删掉版本表（`DEL __rev`）后，下一轮对账会发现“中央缺字段”并清掉副本 |
 | 热 key 协调 | 实现 `HotKeyCoordinator`；Redis 实现位于 `cache4j-central-redis` |
 | 指标 | 包装 `CentralCache`，或在框架适配器读取 `CacheStatsSnapshot` |

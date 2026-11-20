@@ -23,7 +23,7 @@
 6. **跨节点热 key 协调**：`DYNAMIC` 的热升可以本地立即生效；本地不升热时，在同一次访问驱动的同步事件中向中央做补偿查询；降热只认中央判定 `COOLING`，本地频次下降不作数。
 7. **中央缓存 SPI**：`cache4j-central` 只定义中央缓存契约（读写、TTL、负缓存、版本、provider），不认识 Redis，也不认识任何 Redis 客户端；其他中央存储按同一组 SPI 扩展。
 8. **本地实现可替换**：默认提供零依赖的 HashMap 实现；生产推荐 Caffeine。
-9. **Redis 语义层 + 泛型下行 SPI**：`cache4j-central-redis` 定义 `RedisValueStore<V>`（“存一个 V、给我版本”的泛型抽象）与 `RedisCentralCache<V>`（版本、负缓存、TTL 抖动、批量对账、热 key 的**语义**），**不碰字节**；key 布局、envelope、Lua、序列化由真正做 I/O 的适配模块实现。
+9. **Redis 语义层 + 泛型下行 SPI**：`cache4j-central-redis` 定义 `RedisValueStore<V>`（“存一个 V、给我版本”的泛型抽象）与 `RedisCentralCache<V>`（版本、负缓存、TTL 抖动、批量对账、热 key 的**语义**），**不碰字节**；key 布局、Lua、序列化由真正做 I/O 的适配模块实现。
 10. **框架无关**：`cache4j-core` / `local` / `central` / `central-redis` 不引用 Spring、Solon、Jedis、Lettuce、Redisson；框架接入只存在于 `cache4j-spring`、`cache4j-spring-redis`、`cache4j-solon`。
 11. **统一错误体系**：缓存基础设施异常继承 `standard4j` 的 `SystemException`，错误码使用 `CACHE-` 前缀。
 12. **可观测**：命中、回源、负命中、升降热、版本同步、热同步、中央故障、编解码异常等均有计数；不依赖具体监控后端。
@@ -81,7 +81,7 @@ cache4j (pom)
 ├── cache4j-central              中央缓存 SPI：CentralCache / Spec / Provider + 测试用内存参考实现
 │   └── cache4j-central-redis   Redis 语义层 + 泛型下行 SPI（RedisValueStore<V> / RedisCentralCache<V>），不碰字节
 ├── cache4j-spring               Spring Boot 自动装配 + Spring Cache 桥接（不接 Redis）
-├── cache4j-spring-redis         接入 Spring Data Redis：连接 + key 布局 + envelope + Lua + serializer，客户端由用户选择
+├── cache4j-spring-redis         接入 Spring Data Redis：连接 + key 布局 + Lua + serializer，客户端由用户选择
 ├── cache4j-solon                Solon 插件 + CacheService（含 tags）桥接
 └── cache4j-starter              聚合/默认装配：只拉依赖 + 装配默认实现，**不放编排逻辑**（见 §3.5）
 ```
@@ -99,7 +99,7 @@ standard4j ← cache4j-core ← cache4j-local ← cache4j-local-caffeine
 - `cache4j-local` 与 `cache4j-central` **同级**，各自只依赖 `cache4j-core`，互不依赖；`cache4j-local-*` 依赖 `cache4j-local`，`cache4j-central-*` 依赖 `cache4j-central`，父子模块同级排列，不做聚合 `pom`。
 - `cache4j-central` 定义中央缓存 SPI：`CentralCache`、`CentralCacheSpec`、`CentralCacheProvider`、`HotKeyCoordinator`；附带的内存实现仅用于测试与单机，不作为生产存储。
 - `cache4j-central-redis` 定义 **Redis 语义层 + 泛型下行 SPI**：`RedisValueStore<V>`（泛型，无字节）、`RedisCentralCache<V>`、`RedisHotKeyCoordinator`、`RedisAccessException`；不依赖任何 Redis 客户端（Jedis / Lettuce / Redisson），也不依赖 Spring，更不关心序列化。
-- `cache4j-spring-redis` 是**真正与 Redis 发生 I/O 的模块**：用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`，并自己负责 key 布局、envelope、Lua 与 serializer；底层用 Jedis、Lettuce 还是其他客户端，由用户在 Spring 侧选择。
+- `cache4j-spring-redis` 是**真正与 Redis 发生 I/O 的模块**：用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`，并自己负责 key 布局、Lua 与 serializer；底层用 Jedis、Lettuce 还是其他客户端，由用户在 Spring 侧选择。
 - `cache4j-spring` 只做 Spring Cache / Boot 装配，不直接接 Redis；`cache4j-spring-redis` 只做 Redis 连接适配。
 - `cache4j-solon` 只做装配与协议转换，不复制缓存逻辑。
 - 非 Spring 的 Redis 客户端适配不在 v1：使用方可以实现 `RedisValueStore<V>`，或后续新增 `cache4j-redis-lettuce` / `cache4j-redis-jedis` / `cache4j-spring-redisson` 这类独立适配模块，同样不反向进入 `cache4j-central-redis`。
@@ -109,8 +109,8 @@ Redis 方向的三层 SPI：
 | 层 | 模块 | 定义 | 禁止 |
 |---|---|---|---|
 | 中央缓存 SPI | `cache4j-central` | 中央缓存读写、TTL、负缓存、版本、热 key 协调、provider 契约 | 出现 Redis 概念、出现任何客户端 |
-| Redis 语义层 + 下行 SPI | `cache4j-central-redis` | `RedisValueStore<V>` 泛型契约、`RedisCentralCache<V>` 语义（版本/负缓存/TTL/热 key） | 出现字节、key 布局、envelope、Lua、serializer、任何客户端 |
-| 适配层（真正做 I/O） | `cache4j-spring-redis` | 连接、key 布局、envelope、Lua、**serializer** | 复制缓存语义；锁定底层客户端 |
+| Redis 语义层 + 下行 SPI | `cache4j-central-redis` | `RedisValueStore<V>` 泛型契约、`RedisCentralCache<V>` 语义（版本/负缓存/TTL/热 key） | 出现字节、key 布局、Lua、serializer、任何客户端 |
+| 适配层（真正做 I/O） | `cache4j-spring-redis` | 连接、key 布局、Lua、**serializer** | 复制缓存语义；锁定底层客户端 |
 
 ### 3.2 为什么把编排放在 `cache4j-core`
 
@@ -126,7 +126,7 @@ Redis 方向的三层 SPI：
 
 边界说明：
 
-- `cache4j-core` 里有 `LocalCache`、`CentralCache`、`LocalCacheSpec`、`CentralCacheSpec`、`HotKeyCoordinator`、`TwoLevelCache`，但**没有** Caffeine、HashMap 分段 LRU、Redis 命令、envelope 实现；
+- `cache4j-core` 里有 `LocalCache`、`CentralCache`、`LocalCacheSpec`、`CentralCacheSpec`、`HotKeyCoordinator`、`TwoLevelCache`，但**没有** Caffeine、HashMap 分段 LRU、Redis 命令、值格式实现；
 - `cache4j-core` 不认识任何具体实现类型，只面向接口；
 - 门面需要"同时看到两层"，但看到的是**接口**，不是实现模块，因此没有反向依赖；
 - `cache4j-local` / `cache4j-central` 只回答"本地/中央怎么存"，不回答"两层怎么配合"。
@@ -144,8 +144,8 @@ Redis 方向的三层 SPI：
 
 - `cache4j-core`、`cache4j-local`、`cache4j-local-caffeine`、`cache4j-central`、`cache4j-central-redis` 的 `pom.xml` **不得**出现 Spring / Solon / Jedis / Lettuce / Redisson 依赖。
 - Caffeine 只允许出现在 `cache4j-local-caffeine`；cache4j 的任何模块都不声明 Jedis / Lettuce / Redisson 依赖。`cache4j-spring-redis` 只依赖 `spring-data-redis` 的 API，运行时客户端由用户引入并选择。
-- `cache4j-central-redis` 只定义 Redis 缓存 SPI；`RedisCentralCache` / key 布局 / envelope / 编解码逻辑完全不感知客户端类型。
-- `cache4j-spring-redis` 用 Spring Data Redis 实现 `RedisValueStore<V>`；它不重复版本/热 key 语义，只做连接适配、key/envelope/Lua 与序列化，也不锁定底层客户端。
+- `cache4j-central-redis` 只定义 Redis 缓存 SPI；`RedisCentralCache` / key 布局 / 值格式 / 编解码逻辑完全不感知客户端类型。
+- `cache4j-spring-redis` 用 Spring Data Redis 实现 `RedisValueStore<V>`；它不重复版本/热 key 语义，只做连接适配、key/Lua 与序列化，也不锁定底层客户端。
 - 通过 `maven-enforcer-plugin` 的 `bannedDependencies` 或 ArchUnit 测试守住边界；CI 失败即视为破坏架构。
 - 所有框架注解、自动装配、`CacheManager` / `CacheService` 适配都只放在 `cache4j-spring` / `cache4j-spring-redis` / `cache4j-solon`。
 
@@ -315,8 +315,8 @@ public record LocalEntry<V>(V value, long revision, EntryKind kind) {
 ```text
 本地：CacheKey("user:detail", "s2:42") → LocalEntry(value=…, revision=1795049239456)
 中央：CacheKey("user:detail", "s2:42")
-      → 数据：cache4j:{user:detail}:s2:42                     (SET … PX)
-      → 版本：cache4j:{user:detail}:__rev  HASH  s2:42 → 1795049239456
+      → 数据：user:detail:s2:42                     (SET … PX)
+      → 版本：user:detail:__rev  HASH  s2:42 → 1795049239456
 ```
 
 另一个 key 变了版本，与本条无关；`clear` 删整张 `__rev` HASH，于是所有本地副本都因"版本不存在 ≠ 本地 revision"而重新回中央。
@@ -448,7 +448,7 @@ Spring 的 `SimpleKey`、Solon 的自动 key 都由适配器转成参数数组�
 - `cache4j-central`：中央 SPI + 内存实现（直接持有 `V`），**无需编解码**；
 - `cache4j-central-redis`：`RedisValueStore<V>` 的下行 SPI 与版本/负缓存/热 key **语义**，**不碰字节**；
 - 适配层（`cache4j-spring-redis`、未来 `cache4j-spring-redisson` / `cache4j-solon-redis` / `cache4j-solon-redisson`）：
-  真正与 Redis 发生读写，**自己决定** key 布局、envelope、Lua 与 serializer。
+  真正与 Redis 发生读写，**自己决定** key 布局、Lua 与 serializer。
 
 推论与代价：
 
@@ -459,7 +459,7 @@ Spring 的 `SimpleKey`、Solon 的自动 key 都由适配器转成参数数组�
 | 换适配器/serializer | 必须 bump `globalPrefix` 或清空缓存，否则解码失败（显式抛 `CODEC_DECODE_FAILED`，不会静默当 miss） |
 | 数据损坏可见 | 序列化/反序列化失败**永远不降级**，必须抛异常 |
 
-> 具体到 Redis 家族的分层、`RedisValueStore<V>` 契约与 envelope 参考格式，见
+> 具体到 Redis 家族的分层、`RedisValueStore<V>` 契约与 值格式约定，见
 > [CENTRAL §4](CENTRAL.md) 与 [ADAPTERS](ADAPTERS.md)。
 
 ### 4.5 `CacheLoader` 与单飞
@@ -625,7 +625,7 @@ public class CacheException extends SystemException {
 | `CACHE-00001` | `INVALID_SPEC` | 500 | 配置非法：TTL 为负、STATIC 未设容量、DYNAMIC 阈值越界等 |
 | `CACHE-00002` | `KEY_ENCODE_FAILED` | 500 | key 类型不支持、自定义编码器抛错 |
 | `CACHE-00003` | `CODEC_ENCODE_FAILED` | 500 | 值序列化失败 |
-| `CACHE-00004` | `CODEC_DECODE_FAILED` | 500 | 值反序列化失败、envelope 损坏 |
+| `CACHE-00004` | `CODEC_DECODE_FAILED` | 500 | 值反序列化失败 |
 | `CACHE-00005` | `CENTRAL_UNAVAILABLE` | 503 | Redis 连接失败、命令失败且未降级 |
 | `CACHE-00006` | `CENTRAL_TIMEOUT` | 504 | Redis 命令超时 |
 | `CACHE-00007` | `LOCAL_INIT_FAILED` | 500 | Caffeine / HashMap 初始化失败 |
@@ -1057,8 +1057,8 @@ access(key):
 中央按 namespace 维护窗口计数：
 
 ```text
-cache4j:{ns}:__hot:w:<windowId>   ZSET   key -> count
-cache4j:{ns}:__hot:meta           HASH   key -> {active, hot, lowSince}
+ns:__hot:w:<windowId>   ZSET   key -> count
+ns:__hot:meta           HASH   key -> {active, hot, lowSince}
 ```
 
 | 状态 | 条件 | 本地动作 |
@@ -1485,7 +1485,7 @@ key 可能包含手机号、证件号等敏感信息；日志中只打印 `Cache
 | D17 | `DYNAMIC` 热 key 同步同样由访问触发 | 与版本机制共用信号；无访问无 I/O；上报与查询合并为一次 I/O | 定时上报 / 独立后台对账 |
 | D18 | 回填携带「读到的 revision」，只有现有副本的 revision 不大于它时才覆盖 | 回填与写并发时，无条件覆盖会把旧值盖回最新副本（旧值复活） | 回填直接覆盖；或回填不写本地 |
 | D19 | 版本值 = 中央时钟时间戳（写时取 `max(now, cur + 1)`） | 只要求"每次写产生不同的值"；比较只看不相等，因此不要求跳节点时钟单调，也不需要 epoch 基数 | 自然数计数 + epoch / 随机 prefix |
-| D20 | 版本表 = `<prefix>:<namespacePart>:__rev` **HASH**，field = `encodedKey`，value = `<revision>|<expireAtMillis>` | 一个 namespace 只多 1 个 key；`evict` 直接 `HDEL`，删除不留残余；`expireAt` 让 TTL 自然过期的死 field 也能被对账顺手清掉，因此**不需要额外的清理策略** | 每 key 一个 `__rev:<encodedKey>` / 版本塞进 value envelope |
+| D20 | 版本表 = `<prefix>:<namespacePart>:__rev` **HASH**，field = `encodedKey`，value = `<revision>|<expireAtMillis>` | 一个 namespace 只多 1 个 key；`evict` 直接 `HDEL`，删除不留残余；`expireAt` 让 TTL 自然过期的死 field 也能被对账顺手清掉，因此**不需要额外的清理策略** | 每 key 一个 `__rev:<encodedKey>` / 版本塞进值里 |
 | D21 | 对账用 `HMGET __rev <本地已知 key>`，不用 `HGETALL` | 载荷跟本地 `maxSize` 走，而不是跟中央该命名空间的 key 数走；缺字段天然表示已删除 | `HGETALL` 全量拉 / 逐 key 单查 |
 | D22 | 删除 = `DEL data` + `HDEL field`，不保留版本 | 删除天然可被对账观测到（本地有、中央缺字段），不需要 tombstone；`HLEN` 也不会因删除而膨胀 | 保留 field 当 tombstone / 写 DELETED 标记 |
 | D23 | **hotkey 频次只统计读**；`put` / `evict` / `clear` / 对账 / 上报均不计频 | hotkey 的唯一目的是减少**对 L2 的读**；写必须穿透中央，本地有无副本都不影响 L2 写压力，写在这套机制里没有可优化的对象。因此 `DYNAMIC` 丢弃冷 key 的写是设计必然，不是缺陷 | 写也计频 / 写时顺便升热 |

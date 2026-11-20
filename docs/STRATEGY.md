@@ -748,7 +748,7 @@ Lua(reportAndStatusAll):
 1. **仓库可选**：不实现 `CachePolicyStore` 就是单节点内存模式，声明 + 内建默认即可工作，
    启动不报错；挂上 Store 才有多节点一致与"重启不回退"；
 2. **只有一套内建默认**（§4.3），没有档位；仓库只做"整条覆盖"，不做字段级合并；
-3. **两层、无后台线程、无广播**：仓库门面对接本套缓存体系（自身即 `cache4j.strategy` 的
+3. **两层、无后台线程、无广播**：仓库门面对接本套缓存体系（自身即 `_c4j:stg` 的
    `STATIC` 缓存，版本窗口 5s，`maxSize` 默认 1000 可配但需重启），**数据源不对接**缓存体系
    （纯 KV，开发者只实现 `load`/`query`/`register`/`update`）。变更由门面缓存的版本对账传播（≤5s），
    本机改完立即生效靠写穿；门面自身策略**禁止 `NONE`/`DYNAMIC`**（否则每次打中央或自指依赖自身参数）。
@@ -875,7 +875,7 @@ change(update):
 | `change(StrategyChange)` | 幂等键 + 乐观锁（`expectedConfigVersion`）+ 原因；结果 `APPLIED` / `NO_CHANGE` / `CONFLICT` / `REJECTED` |
 | **无 `reset`** | 要回退就再 `change` 一次，审计链比"一键还原"重要 |
 
-建议默认关闭管理端点（`cache4j.strategy.admin.enabled=false`），生产显式开启；
+建议默认关闭管理端点（`_c4j:stg.admin.enabled=false`），生产显式开启；
 端点必须与业务端点隔离，身份校验在调用方完成（`operator` 只是审计字段）。
 
 ## 8. 五、模块归属与依赖方向

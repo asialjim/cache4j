@@ -29,7 +29,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -224,14 +226,31 @@ class SpringRedisValueStoreTest {
         }
 
         @Test
-        @DisplayName("垃圾数据（非 envelope）解码失败而不是当 miss")
-        void alienDataFailsLoudly() {
-            byte[] raw = "not-an-envelope".getBytes(StandardCharsets.UTF_8);
+        @DisplayName("值就是 serializer 输出的原始字节，一个字节都不加工")
+        void valueIsRawSerializerOutput() {
+            String value = "raw-value";
+            store.write(key("raw"), value, Duration.ofMinutes(1));
+
             try (var connection = factory.getConnection()) {
-                connection.stringCommands().set(
-                        RedisKeyFormatter.defaults().data(key("alien")), raw);
+                byte[] stored = connection.stringCommands()
+                        .get(RedisKeyFormatter.defaults().data(key("raw")));
+                assertArrayEquals("raw-value".getBytes(StandardCharsets.UTF_8), stored,
+                        "Redis 里存的就是 StringRedisSerializer 的输出，没有 envelope 头");
             }
-            assertThrows(CacheException.class, () -> store.read(key("alien")));
+        }
+
+        @Test
+        @DisplayName("负副本用空字节数组表达：GET 返回空串而不是 nil")
+        void negativeIsEmptyByteArray() {
+            store.writeNegative(key("null"), Duration.ofMinutes(1));
+
+            try (var connection = factory.getConnection()) {
+                byte[] stored = connection.stringCommands()
+                        .get(RedisKeyFormatter.defaults().data(key("null")));
+                assertNotNull(stored, "负副本必须真的写入，才能与「没有 key」区分");
+                assertEquals(0, stored.length);
+            }
+            assertTrue(store.read(key("null")).lookup().isNegative());
         }
     }
 }
