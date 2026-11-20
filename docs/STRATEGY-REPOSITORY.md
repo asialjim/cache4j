@@ -320,7 +320,10 @@ change(req)
       该 namespace 此前无记录 ⇒ register(policy)   —— false（已被别人抢先建）⇒ CONFLICT
       已有记录              ⇒ update(policy, expectedConfigVersion) —— empty ⇒ CONFLICT
   → 失败 ⇒ REJECTED / CONFLICT（本机与数据源都不变）
-  → 成功 ⇒ 写穿自己的中央缓存（**无条件 put**）+ 本地副本 → 审计
+  → 成功 ⇒ 写穿自己的中央缓存（**无条件 put**）+ 本地副本
+        　 失败 ⇒ 退化为 clear 中央条目 + 本地副本（让下次读回源）
+               　 仍失败 ⇒ APPLIED_STALE（已持久化，缓存未同步）
+  → 审计 + 指标
 ```
 
 #### 4.3.1 三种写入语义，各归其位（这就是不需要缓存层 CAS 的原因）
@@ -352,24 +355,50 @@ change(req)
 **"只 evict 不写穿"的变体同样挡不住**：evict 让缓存变空，A 的 `putIfAbsent` 反而会成功写入旧值。
 所以必须"**写穿（put）+ 回填（putIfAbsent）**"成对使用。
 
-#### 4.3.3 写穿失败是必须处置的降级，而不是可忽略的抖动
+#### 4.3.3 写穿失败的两级兜底（clear 兜底 + 告警）
 
-数据源已 `update` 成功、但写穿失败（中央 Redis 抖动）时的后果：
+数据源已 `update` 成功、但写穿失败（中央 Redis 抖动）时，**不能就这样收工**——
+中央缓存仍是旧值且该条目 revision 未变，业务端对账发现不了差异，会一直用旧策略。
 
-```text
-中央缓存仍是旧值 → 该条目 revision 未变 → 业务端对账发现不了差异
-→ 一直用旧策略，最坏 centralTtl（3 天）后才过期回源
+按三级处置，逐级降级：
+
+| 级别 | 动作 | 效果 | 记账 |
+|---|---|---|---|
+| **1. 写穿** | 中央 `put` 新值 + 本地 `put` 新值 | 业务端 5s 内对账发现新 revision → 回源拿到新值 | 正常 `APPLIED` |
+| **2. clear 兜底** | 中央 `evict`（删 data + 删版本 field）+ 本地 `evict` | 业务端对账发现"中央缺字段" → 清本地副本 → 下次读回源数据源拿新值；传播仍 ≤5s | `APPLIED` + `strategyRepoClearFallbackCount++` + `warn` |
+| **3. 都失败** | 保持现状，只告警 | 最坏 `centralTtl`（3 天）后才过期回源 | `APPLIED_STALE` + `error` + `strategyRepoSyncErrorCount++` |
+
+为什么 clear 能当兜底：缓存体系里"中央缺字段"**天然表示已删除**（D22），业务端对账会清掉
+本地副本，下一次读自然回源数据源 —— 这正是"让全网重新拉一次权威值"的效果。
+
+> 注意：clear 兜底**不能替代写穿作为首选**。clear 会让缓存变空，若同期有线程正拿着旧值回填，
+> `putIfAbsent` 会成功写入旧值（§4.3.2 的窗口）。写穿时该窗口被"缓存里已有新值"堵住。
+> 所以顺序固定：**先写穿，写穿失败才 clear**。
+
+#### 4.3.4 写穿需要值编码：`PolicyCodec`（放在 `cache4j-strategy`）
+
+写穿要把 `StoredPolicy` 编成缓存 value 的字节。为守住"**core 不碰字节**"的既有约束：
+
+```java
+/** 策略值的编解码。实现放 cache4j-strategy，core 只依赖抽象。 */
+public interface PolicyCodec {
+
+    byte[] encode(StoredPolicy policy);
+
+    /** @throws CacheException 编码损坏（CODEC_DECODE_FAILED） */
+    StoredPolicy decode(byte[] raw);
+}
 ```
 
-契约要求：
+- 默认实现：**手写紧凑文本格式**（字段都是简单类型：字符串/长整/时长），不引 JSON 库，
+  避免给 core 增加依赖；格式带 `schema` 版本号便于演进；
+- 若使用方已有 JSON/Protobuf 体系，自行实现 `PolicyCodec` 即可——与业务缓存值的序列化方式解耦；
+- **clear 兜底不需要编码**（它只删 key），所以编码器坏掉时 clear 路径仍可用。
 
-1. 写穿失败必须 **`error` 日志 + `strategyRepoSyncErrorCount` 指标**（不能静默）；
-2. `ChangeResult` 要能区分"已持久化但缓存未同步"（建议 `Outcome.APPLIED_STALE`），
-   否则运维会以为已经全节点生效；
-3. 补偿手段：再执行一次 `change`（幂等且值相同 ⇒ 会重新写穿），或手动 evict 中央条目；
-4. **这一条 `writeIfRevision` 类扩展也堵不住**——它只改变写入方式，不改变失败处置。
+#### 4.3.5 两条顺序约束
 
-- 先持久化、后写穿：数据源失败时管理服务不生效，避免"管理服务看到新值、业务端看不到"；
+- **先持久化、后写穿**：数据源失败时管理服务不生效，避免"管理服务看到新值、业务端看不到"；
+- **先写穿、失败才 clear**：反过来的话会回到 §4.3.2 的旧值回填窗口；
 - 业务端不写穿，它只会在 5s 内通过对账发现新版本。
 
 ### 4.4 数据源能力分级（只有"有没有 CAS"一个维度）
@@ -590,8 +619,9 @@ public record StrategyChange(
 /**
  * 变更结果。五态 + 明确的下一步。
  *
- * <p>{@code APPLIED_STALE} = 数据源已写入成功、但写穿缓存失败：**当前节点已生效，
- * 其他节点可能延迟到 centralTtl 才看到**，必须告警并重试（见 §4.3.3）。</p>
+ * <p>{@code APPLIED_STALE} = 数据源已写入成功，但**写穿与 clear 兜底都失败**：
+ * 当前节点已生效，其他节点可能延迟到 {@code centralTtl} 才看到，必须告警并补偿（见 §4.3.3）。
+ * 若仅写穿失败而 clear 成功，结果仍是 {@code APPLIED}，只多记一个兜底指标。</p>
  */
 public record ChangeResult(
         Outcome outcome,           // APPLIED / APPLIED_STALE / NO_CHANGE / CONFLICT / REJECTED
@@ -653,7 +683,9 @@ public record ChangeResult(
                      │ 6. 持久化                     │ 无记录→register(否⇒CONFLICT)
                      │    （register 或 update）     │ 有记录→update(空⇒CONFLICT)
                      ├──────────────────────────────┤
-                     │ 7. 原子提交（换引用）+ 写穿   │ 写穿失败 ⇒ APPLIED_STALE
+                     │ 7. 原子提交（换引用）         │
+                     │    → 写穿（put）              │ 失败 ⇒
+                     │    → clear 兜底（evict）      │ 失败 ⇒ APPLIED_STALE
                      ├──────────────────────────────┤
                      │ 8. 审计 + 指标（无广播）      │ 其他节点靠 5s 版本对账自行发现
                      └──────────────────────────────┘
@@ -665,8 +697,8 @@ public record ChangeResult(
 - **第 5 步试装配**：先造出新 Runtime 再提交，确保"提交后不可能因装配失败而空转"；
 - **第 8 步没有广播**：变更写在中央条目里，其他节点在下一次读策略时由版本对账发现（≤5s）；
   审计/指标写失败只影响可观测性，不回滚已生效的值；
-- **写穿失败是唯一的"部分成功"**：`APPLIED_STALE`，当前节点已生效、其他节点可能延迟到
-  `centralTtl` 才看到 → 必须告警 + 可补偿（§4.3.3）。
+- **写穿失败不是终点**：先 clear 兜底（让全网回源，传播仍 ≤5s），clear 也失败才是
+  `APPLIED_STALE`（其他节点最坏延迟到 `centralTtl`）→ 必须告警 + 可补偿（§4.3.3）。
 
 ## 13. 幂等、乐观锁与并发
 
@@ -752,7 +784,9 @@ long strategyRepoErrorCount();     // 读策略失败次数
 long strategyRepoHitRate();        // 仓库自用缓存的本地命中率（诊断：太低说明策略读得太散）
 long strategyAbsentCount();        // find 返回 Absent 的次数（策略确实没配）
 long strategyUnavailableCount();   // find 返回 Unavailable 的次数（数据源/中央读不到）
-long strategyRepoSyncErrorCount(); // 写穿缓存失败次数（>0 说明有变更可能延迟到 centralTtl 才传播）
+long strategyRepoSyncErrorCount();     // 写穿失败次数（>0 说明缓存同步有抖动）
+long strategyRepoClearFallbackCount(); // 写穿失败后 clear 兜底成功次数（传播仍 ≤5s）
+long strategyRepoStaleCount();         // 写穿与 clear 都失败次数（最坏等 centralTtl）
 
 > 没有"变更检查次数"这类指标了——传播由版本对账完成，相关观测看仓库自用缓存自身的
 > `versionSyncCount` / `versionInvalidationCount`。
@@ -793,7 +827,9 @@ long strategyRepoSyncErrorCount(); // 写穿缓存失败次数（>0 说明有变
 | 数据源无 CAS（B 级） | `update` 忽略 `expectedConfigVersion` ⇒ 永不 `CONFLICT`，`StrategyView.casSupported=false` |
 | 写穿顺序 | `change` 成功后本机 `find` 立即新值；并发"读到旧值的回填"不会覆盖写穿的新值（回填用 `putIfAbsent`） |
 | 回填竞态 | 构造"A 中央 miss 读数据源 v1 → B update+写穿 v2 → A 回填"，断言缓存最终是 v2（两种执行顺序都要过） |
-| 写穿失败 | 中央写穿抛异常 ⇒ `APPLIED_STALE` + error 日志 + `strategyRepoSyncErrorCount++`；再次 `change` 可补偿 |
+| 写穿失败 → clear 兜底 | 中央写穿失败 ⇒ evict 成功 ⇒ `APPLIED` + `strategyRepoClearFallbackCount++`；业务端对账"中央缺字段"清本地 → 下次读回源拿到新值 |
+| 写穿与 clear 都失败 | ⇒ `APPLIED_STALE` + error + `strategyRepoStaleCount++`；再次 `change` 可补偿 |
+| `PolicyCodec` 往返 | 编码→解码等价；编码损坏 ⇒ `CODEC_DECODE_FAILED` 且按 `Unavailable` 处理（不缓存坏值） |
 | 自举参数 | `maxSize` 默认 1000；改配置需重启；启动日志打印实际生效值 |
 
 ## 19. 模块归属与分期
@@ -801,7 +837,7 @@ long strategyRepoSyncErrorCount(); // 写穿缓存失败次数（>0 说明有变
 | 模块 | 内容 |
 |---|---|
 | `cache4j-core` | 全部 SPI 与模型：`CacheStrategyRepository`（门面接口）、**`CacheStrategyDataSource`（数据源 SPI）**、`CacheStrategyAdmin`、`NamespacePolicy`、`StoredPolicy`、`StrategyChange`、`ChangeResult`、`StrategyView`、`StrategySelfCacheOptions`、`PolicyLookup`（三态） |
-| **`cache4j-strategy`（新增）** | `CachedCacheStrategyRepository`（门面实现）：用本库的 `TwoLevelCache`（namespace=`cache4j.strategy`，`STATIC`）承载策略读取与写穿；把 `CacheStrategyDataSource` 当作回源；解析三层优先级；自举校验（禁止 NONE/DYNAMIC）。依赖 `core` + `local` + `central`，**不依赖** `spring*` |
+| **`cache4j-strategy`（新增）** | `CachedCacheStrategyRepository`（门面实现）：用本库的 `TwoLevelCache`（namespace=`cache4j.strategy`，`STATIC`）承载策略读取、写穿与 clear 兜底；把 `CacheStrategyDataSource` 当作回源；解析三层优先级；自举校验（禁止 NONE/DYNAMIC）。另含 **`PolicyCodec`（默认手写紧凑文本实现）**。依赖 `core` + `local` + `central`，**不依赖** `spring*` |
 | `cache4j-spring-redis` | **不新增**：不开箱数据源（R8），也不加 `writeIfRevision`（业务端纯读、写穿用普通 `put`/`putIfNewer`）。数据源由使用者自己按 §20.2 实现 |
 | `cache4j-spring` | 端点（可选 Actuator）、`@CacheNamespace` 扫描接入 |
 | `cache4j-starter` | 默认装配与开关配置（含"仓库自身策略被配成 NONE/DYNAMIC 即启动失败"的校验） |
@@ -821,7 +857,7 @@ long strategyRepoSyncErrorCount(); // 写穿缓存失败次数（>0 说明有变
 
 ```text
 # 数据：普通缓存条目，value 是 StoredPolicy 的编码字节
-<cache4j.strategy 前缀>:<encoded(namespace)>  →  StoredPolicy
+<cache4j.strategy 前缀>:<encoded(namespace)>  →  PolicyCodec.encode(StoredPolicy)
 
 # 版本表：缓存体系自带
 __rev:cache4j.strategy
@@ -886,6 +922,7 @@ return next
 | R6 | 数据源写入方法 | **拆两个**：`register`（初始注册，已存在返回 false、不覆盖）+ `update`（乐观锁更新，empty = 冲突） |
 | R7 | 是否强制数据源支持 CAS | 尽力而为：只有 A（真 CAS）/ B（last-write-wins）两级，用 `StrategyView.casSupported` 暴露 |
 | R8 | 是否提供开箱数据源 | **不提供**，谁接谁实现；`cache4j-spring-redis` 不为策略新增任何能力 |
+| R9 | 写穿还是 clear | **写穿为主 + clear 兜底**：写穿（无条件 put）能堵住"旧值回填"窗口；写穿失败退化为 evict（让全网回源），两者都失败才 `APPLIED_STALE`。代价是写穿需要 `PolicyCodec`（放 `cache4j-strategy`，core 不碰字节） |
 
 ### 仍开放
 
