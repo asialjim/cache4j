@@ -148,7 +148,7 @@ public interface CacheDecl {
 |---|---|---|---|
 | **按 `ServiceLoader` 约定读文件**（`META-INF/services/...CacheDecl`） | 零依赖、可预测；文件格式是通用约定，工具都认识 | 需要一行 `resources` 文件 | **core 默认**（加载逻辑自研，见 4.2.1） |
 | **包扫描**（`@CacheNamespace` + 扫描器） | 用户零配置，贴注解即可 | 自研扫描要处理 jar/目录/模块路径/类加载器，易错；启动耗时 | **Spring 适配层**（用 Spring 自带扫描能力），core 不做 |
-| **多态自注册**（枚举静态块调 `Registry.register`） | 无需任何配置 | 类不被加载就不会注册，**漏注册是静默的** | 不采用 |
+| **多态自注册**（枚举静态块调 `Registry.register`） | 用户零配置 | 类不被加载就不会注册，**漏注册是静默的** | 不作主路径，见 §4.2.4 |
 
 因此：
 
@@ -292,6 +292,74 @@ public final class Cache4jRuntimeHints implements RuntimeHintsRegistrar {
 [缓存装配]-初始化-订单快照-策略=NONE，仅中央，epoch=1，来源=声明
 [缓存装配]-初始化-冲突-user:detail-声明来源=USER_DETAIL 与 USER_DETAIL_V2，启动中止
 ```
+
+### 4.2.4 自注册机制：可行形态与可靠性边界
+
+**先说前提：Java 没有"列出某个接口的全部实现类"的原生能力。** 任何"自注册"最终都落在三件事之一：
+① 有人**显式调用**注册方法；② 有**静态清单**可读（文件 / 生成的常量）；③ 有**扫描器**枚举 classpath。
+所以问题不是"要不要自注册"，而是"**由谁保证那段注册代码被执行**"。
+
+四种形态的对比：
+
+| 形态 | 用户要写 | 可靠性 | 可测性 | native image | 结论 |
+|---|---|---|---|---|---|
+| **A. 静态块自注册**<br>`static { Registry.global().register(values()); }` | 只写枚举 | ❌ **不确定**（类不加载就漏） | ❌ 全局单例污染测试 | ❌ 类被裁则静默失效 | 只能当糖，不能当主路径 |
+| **B. 显式 install**<br>`Cache4j.install(UserCacheDecls.values())` | 枚举 + 一行代码 | ✅ 确定 | ✅ 无全局状态 | ✅ 静态可达 | **纯 Java 主路径（P1）** |
+| **C. 生成式清单（APT）**<br>注解处理器生成 `META-INF/services/...CacheDecl` | **只写枚举** | ✅ 确定 | ✅ | ✅ 清单静态 | **零配置首选（P2）** |
+| **D. Spring 包扫描** | 枚举 + `@CacheNamespace` | ✅ 确定 | ✅ | ⚠️ 需 hints | **Spring 零配置（P4）** |
+
+#### A 的三个坑（为什么不能当主路径）
+
+1. **类不被加载 = 静默漏注册**。枚举只在被 `import`/引用/反射时才初始化。业务只在
+   `@Cacheable("user:detail")` 里写了字符串，没人引用 `UserCacheDecls` → `static` 块永不执行 →
+   启动后该 namespace 没有策略 → 行为随"某处是否恰好引用了这个枚举"而变，**这是最坏的一类 bug**。
+2. **全局单例污染测试**：`Registry.global()` 是静态状态，两个测试类交叉注册后无法隔离，
+   并行测试更糟。本库其余部分刻意避免静态可变状态（`CacheLogger.DIAGNOSED` 是唯一的特例，
+   且只写不读业务语义）。
+3. **注册顺序不确定**：`static` 块的执行时机取决于类初始化顺序。若 `values()` 里某个常量需要
+   读取中央配置，会撞上"registry 还没建好"的窗口。
+
+#### 推荐的组合（把自注册降级为"可选糖"）
+
+```
+主路径：B（显式 install） → P2 由 C（APT 生成清单）接管，用户彻底零配置
+补充：  A（静态块）仍可写，但它只是把一个"待定池"填上，
+        由 Registry 创建时统一认领；漏了也不致命（B/C/D 兜底）
+零配置：D（Spring 注解扫描）
+```
+
+**"待定池"设计**（让 A 无害的关键）：
+
+```java
+/** 静态块只能往这里塞，不直接生效，避免"注册早于 registry 创建"和"顺序不确定"。 */
+final class PendingDecls {
+    private static final Set<CacheDecl> PENDING = ConcurrentHashMap.newKeySet();
+    static void offer(Collection<CacheDecl> decls) { PENDING.addAll(decls); }
+    static List<CacheDecl> drain() {                      // registry 创建时调用一次
+        List<CacheDecl> out = new ArrayList<>(PENDING);
+        PENDING.clear();
+        return out;
+    }
+}
+```
+
+- `PENDING` 是幂等集合（同一枚举重复塞入只留一份）；
+- registry 创建时 `drain()` 一次，与 B/C/D 的结果合并后统一做冲突检测（§4.4）；
+- 进程内多 registry（多租户/测试）各自 drain 会互相抢 —— 因此 **drain 只允许一次**，
+  多次创建 registry 时后续实例不再从池取（明确写进契约，避免"第二个 registry 空手而归"的困惑）。
+
+#### 与热更的关系
+
+自注册只解决"**初始声明从哪来**"。热更的权威始终是注册表（§5），与发现方式无关：
+无论声明来自 A/B/C/D，`change()` 的操作对象都是同一个 `CacheStrategyRegistry`。
+
+#### 分期
+
+| 期 | 内容 |
+|---|---|
+| P1 | 形态 B（`Cache4j.install(...)`）+ 文件清单（§4.2.1）+ 待定池骨架 |
+| P2 | 形态 C（APT 生成清单，`cache4j-processor` 可选依赖，不加也能手写文件） |
+| P4 | 形态 D（Spring 注解扫描） |
 
 > 主题必须是**组件名**（`缓存装配` / `策略仓库` / `统一中央缓存`），不得用 namespace 当主题；
 > namespace 放在"具体信息"里，如上。
@@ -636,7 +704,14 @@ public record StrategyUpdate(
 | **P2** | `change()` + 迁移矩阵 + 乐观锁 + 审计日志 + 指标 | 单节点热更可用 |
 | **P3** | `RedisStrategyStore` + 访问驱动 epoch 检查 + 临时策略 | 多节点一致 |
 | **P4** | Spring 扫描 + Actuator 端点 + `cache4j-starter` | 开箱可用 |
-| **P5** | `RuntimeHintsRegistrar` + 模板生成 + native image 冒烟（可选：生成式零反射入口） | GraalVM 可部署（详见 §12） |
+| **P9（暂不排期）** | `RuntimeHintsRegistrar` + 模板生成 + native image 冒烟（可选：生成式零反射入口） | GraalVM 可部署（详见 §12） |
+
+**GraalVM 排在所有功能之后，现阶段只做"不给自己挖坑"的三条约束**（不做实现、不做 CI）：
+
+1. **不给库加 `--initialize-at-build-time`**（`CacheLogger` 的绑定探测会被固化，见 §12.6）；
+2. **核心不引入运行期 classpath 扫描**，也不引入新的未登记反射用法（新增反射点必须先想清楚能否在 hints 里精确注册）；
+3. **声明与装配的元数据保持"静态可枚举"**：类名以字符串常量形式存在（文件清单 / 生成的常量表），
+   而不是运行期推导出来的，这样将来补 hints 时是"照抄清单"而不是"重构发现机制"。
 
 > P1 的 Runtime 改造是纯重构（行为不变），可以先独立合入，把风险与热更解耦。
 
@@ -782,3 +857,5 @@ GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热
 | S8 | `CacheDefinition` 是否从 `cache4j-spring` 下沉到 `core.strategy` | 下沉 / 保留双份 | **下沉**，Spring 侧保留同名兼容别名 |
 | S9 | 是否提供「真零反射」的生成式入口（APT / AOT 生成 `register(...)`） | 提供 / 不提供 | 先不提供（P1–P3 用文件清单 + 库自带 hints），等有明确 native image 需求再加 |
 | S10 | GraalVM 支持的交付深度 | 只出 hints + 模板 / 再加 CI 冒烟 / 再加生成式入口 | **hints + 模板 + 一次实测冒烟**；CI job 与生成式入口按需再加 |
+| S11 | 自注册的定位 | 主路径（静态块）/ 降级为可选糖 / 完全不做 | **降级为可选糖**（待定池 + `drain` 一次），主路径用显式 `install`，P2 由 APT 生成清单接管 |
+| S12 | 是否引入 `cache4j-processor`（APT） | 引入 / 只用文件清单 | **P2 引入**（用户才能"只写枚举"），但保持可选依赖：不加也能手写一行文件 |
