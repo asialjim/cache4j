@@ -52,4 +52,16 @@ public interface CacheStrategyDataSource {
      * @return 新的版本号；版本冲突返回 empty
      */
     OptionalLong update(StoredPolicy policy, long expectedConfigVersion);
+
+    /**
+     * 数据源是否支持乐观锁 CAS（条件更新）。
+     *
+     * <p>不支持的实现可以让 {@link #update} 退化为 last-write-wins；此时运维视图里
+     * {@code casSupported=false}，提示"并发修改同一 namespace 不会报冲突，请自行避免"。</p>
+     *
+     * @return 是否支持 CAS
+     */
+    default boolean supportsCas() {
+        return true;
+    }
 }

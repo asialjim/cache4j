@@ -63,6 +63,8 @@ public final class CacheLogger {
         public static final String STATIC_LOCAL = "静态本地缓存";
         /** DYNAMIC 装饰器（热点门控、上报、冷却）。 */
         public static final String DYNAMIC_LOCAL = "动态本地缓存";
+        /** 策略仓库（声明登记、三层解析、运维变更与审计）。 */
+        public static final String STRATEGY_REPO = "策略仓库";
         /** 缓存装配与生命周期（`TwoLevelCacheManager` / Spring 配置）。 */
         public static final String ASSEMBLY = "缓存装配";
         /** Redis 语义层（`RedisCentralCache`）。 */
