@@ -142,21 +142,28 @@ public sealed interface PolicyLookup {
 
 ### 2.3 `DynamicSpec`（仅 `DYNAMIC`）
 
-| 字段 | 默认 | 约束 |
+| 字段 | 默认 | 约束 / 换算 |
 |---|---|---|
-| `hotThresholdQps` | 100 | ≥ 1（**QPS 语义**） |
-| `window` | 10s | > 0（滑动窗口长度） |
-| `hotWindowBuckets` | 10 | ≥ 1（每桶 `window / buckets`） |
+| `hotThresholdQps` | **100** | ≥ 1（**本地** QPS 阈值；`globalQps ≥ localQps` 单调，不会误报） |
+| `coolQps` | 25 | ≥ 0 且 < `hotThresholdQps`（本地降热参考，实际降热只认中央） |
+| `window` | **5s** | > 0（**总**滑动窗口） |
+| `windowSlices` | **16** | ≥ 2（每片 `window / windowSlices` = 312.5ms） |
+| `sketchWidthBits` | **12** | **10 ≤ bits ≤ 16**；宽度 = `1 << bits` = 4096 格；内存 = `2^(bits+1) × depth × 2B`（bits=12,depth=4 → 64KB） |
+| `sketchDepth` | **4** | ≥ 2（溢出概率 `δ = e^(-depth)`，4 → 1.8%） |
+| `candidateCapacity` | 1 000 | ≥ 1（候选表容量；使用率长期 > 80% ⇒ width 偏小，见 `STRATEGY.md` §4.7.2） |
 | `maxHotKeys` | 1 000 | ≥ 1 |
-| `candidateCapacity` | 1 000 | ≥ 1 |
 | `cooldown` | 30s | ≥ 0；`GLOBAL` 下 ≥ `demoteWindows × window` |
-| `hotReportPartitions` | 16 | 2 的幂 |
+| `hotReportPartitions` | 16 | 2 的幂（**key 分区**，与 `windowSlices` 的**时间片**是两个维度） |
 | `hotReportBatchMax` | 16 | ≥ 1 |
 | `coordination` | `LOCAL` | `LOCAL` / `GLOBAL` |
 | `global` | `null` | `GLOBAL` 时必填 |
 
 > `hotTtl` **不存在**：DYNAMIC = STATIC + 准入判定，热副本的 TTL 与 `localTtl` 共用
 > （见 `STRATEGY.md` §4.6）。同理 `localNullTtl` 不单独存在（见 §2.1）。
+
+> `sketchWidthBits` 用**位**而不是格数配置：天然保证 2 的幂（免去校验），且 bits 每 +1
+> 就是"精度翻倍、内存翻倍"，换算关系一眼可见。CMS 的**计数器位宽固定 16 位**，不开放配置
+> （理由见 `STRATEGY.md` §4.7.2）。
 
 ## 2.4 仓库自举：门面自己就是一个 `STATIC` 缓存
 

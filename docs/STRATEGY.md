@@ -447,7 +447,10 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
 | `version.reconcileBatchSize` | `1_000` | 单次 `HMGET` 的 field 数 |
 | `version.retryBackoff` | `200ms`（运行时取 `max(backoff, checkInterval)`） | 对账失败退避 |
 | `dynamic.window` | **`5s`** | **总**滑动窗口长度 |
-| `dynamic.windowSlices` | **`16`** | 时间片数（每片 `312.5ms`）；循环数组长度 / 上报分区数都是 16 |
+| `dynamic.windowSlices` | **`16`** | 时间片数（每片 `312.5ms`）；循环数组长度 `2×16` |
+| `dynamic.sketchWidthBits` | **`12`**（4096 格，64KB） | CMS 精度旋钮；规则 `width > e × totalQps / candidateQps`，范围 10~16 |
+| `dynamic.sketchDepth` | **`4`** | CMS 溢出概率 1.8% |
+| `dynamic.coolQps` | **`25`** | = `hotThresholdQps / 4`；降热参考（实际降热只认中央） |
 | `dynamic.hotThresholdQps` | **`100`** | 本地升热阈值（QPS）；`globalQps` 用 `GlobalSpec.hotQps=100` |
 | `dynamic.hotTtl` | **不提供**（与本地非空 TTL 共用） | DYNAMIC 热副本没有独立 TTL |
 | `dynamic.hotReportPartitions` | `16` | 热 key 上报分区数 |
@@ -560,33 +563,80 @@ localQps      = sum / 5.0
    清理只需抹掉"当前索引之后 16 格"；
 3. 窗口边界不做插值——16 片本身就是"精度 1/16 窗口"的滑动窗口近似，比双桶插值（误差一整个窗口）准得多。
 
-#### 4.7.2 为什么不用 Count-Min Sketch 做判定
+#### 4.7.2 CMS 的定位与三个参数：位宽 / 宽度 / 深度
 
-CMS 与 jd-hotkey 式的 per-key 表，取舍方向相反：
+**结论：CMS 只做候选预选，永不参与升热判定**（升热由 §4.7.1 的 16 片精确窗口决定）。
 
-| 维度 | CMS（共享草图） | per-key 窗口表 |
+理由——两层的误差方向不同，而我们对两个方向的容忍度也不对称：
+
+| 阶段 | 判据 | 允许误差方向 |
 |---|---|---|
-| 内存 | **固定**，与 key 数无关 | 与 key 数成正比 |
-| 精度 | **只会高估**（`true ≤ est ≤ true + εN`，碰撞越多越离谱） | 精确 |
-| 误判方向 | 冷 key 被算成热 → **误升热** | 只会少算 |
-| 计数上限 | 8 位饱和 **255**；QPS=100/5s 就是 500 次 → **早爆表** | `int`/`long`，无饱和 |
-| 能否精确降级 | 不能（删不掉单个 key 的计数） | 能 |
+| 候选预选（谁值得被精确统计/上报） | **宁多勿少** | 高估安全：多进几个候选，代价只是多几次上报 |
+| 升热判定（谁真的占本地内存） | **必须精确** | 高估会挤掉真热点；大幅少算会让热点打穿中央缓存 |
 
-jd-hotkey 作者的一句话正好是判据：**"少算没事（热 key 频率高），多算不行（冷 key 被干成热就错了）"**。
-CMS 的误判恰好全在"多算"那一侧，而且 8 位饱和让它连"粗筛阈值"都撑不住
-（`255 次 / 5s ≈ 51 QPS` 就封顶）。
+CMS"只会高估"（`true ≤ est ≤ true + εN`）恰好匹配候选阶段；但它的**8 位计数器饱和 255**
+会让"升热阈值（100 QPS × 5s = 500 次）"永远饱和 —— 所以它不能做升热判定，而不是"精度不够"。
 
-**结论**：`FrequencySketch` 不作为判定依据。本地改为 per-key 计数表：
+##### 参数一：计数器位宽 —— **固定 16 位，不开放配置**
+
+| 位宽 | 单格上限 | 等价 QPS（5s 窗口） | 内存（width=4096, depth=4, 双桶） | 结论 |
+|---|---|---|---|---|
+| 8 位 | 255 | 51 QPS | 32 KB | 不够（候选阈值一调高就饱和） |
+| **16 位** | **65 535** | **13 107 QPS** | **64 KB** | ✅ **采用** |
+| 32 位 | 2.1×10⁹ | 4.3×10⁸ QPS | 128 KB | 不划算：内存 4×、工作集 128KB 挤出 L2 舒适区，换来永远不会碰到的上限 |
+
+##### 参数二：宽度 —— **用位（bits）配置**：`sketchWidthBits`，默认 12
+
+宽度决定精度，与位宽无关：`est ≤ true + (e / width) × N`，其中 **`N` 是窗口内所有 key 的总访问次数**
+（不是被测 key 自己的计数）——所以**总流量越大，同一张草图对所有 key 的高估越严重**。
 
 ```text
-Map<CacheKey, int[]>  或  Map<CacheKey, long>
-- 只对"进入统计范围"的 key 建状态
-- 容量上限 = candidateCapacity（默认 1000），满了之后新 key 只计数不进表（或按淘汰策略）
-- 窗口旋转时：把最老的一片清零（循环数组），无需遍历全部 key
+选型规则：width > e × totalQps / candidateQps ，再向上取 2 的幂
 ```
 
-> 保留 `FrequencySketch` 作为**可选的极长尾兜底**（默认关闭）；打开时它只用于"决定谁进统计表"，
-> 永不参与 QPS 判定。
+以候选阈值 `candidateQps = hotThresholdQps / 4 = 25`、窗口 5s 为例：
+
+| 单实例总读 QPS | `sketchWidthBits` | width | 误差折算 | 相对候选阈值 | 内存（depth=4，16 位，双桶） |
+|---|---|---|---|---|---|
+| ≤ 2 000 | 10 | 1 024 | 26.5 QPS | 106% ✗ | 16 KB |
+| ≤ 10 000 | **12（默认）** | **4 096** | **6.6 QPS** | **26%** | **64 KB** |
+| ≤ 50 000 | 14 | 16 384 | 1.7 QPS | 7% | 256 KB |
+| ≤ 100 000 | 15 | 32 768 | 0.8 QPS | 3% | 512 KB |
+
+**用 bits 而不是格数配置**：天然保证 2 的幂（免去 `isPowerOfTwo` 校验），且 bits 每 +1 就是
+"精度翻倍、内存翻倍"，运维换算一眼可见。约束 `10 ≤ bits ≤ 16`（2^16 格 = 1MB，再大没有意义）。
+
+**运行期自检**（width 够不够，只有一个可靠的实测信号）：
+
+```text
+候选表使用率 = candidateCount / candidateCapacity
+  长期 > 80% ⇒ width 偏小（长尾被高估进候选表）或 candidateQps 偏低
+  → warnThrottled + 指标 candidateSaturation
+```
+
+这比让运维猜 QPS 靠谱——QPS 本来就只有运行期才知道。
+
+##### 参数三：深度 —— 默认 4
+
+溢出概率 `δ = e^(-depth)`：2 → 13.5%、3 → 5%、**4 → 1.8%**、5 → 0.67%。
+`depth` 每加一层，`estimate()` 就多一次随机读，而它在**每个读请求入口**都执行 ——
+**depth=4 是甜点**（1.8% 溢出 + 4 次读）。
+
+##### 结论：三层各司其职
+
+```text
+CMS（16 位计数、bits=12、depth=4）
+  └─ 全量粗筛，决定"谁进候选表" —— 高估安全（宁多勿少）
+        ↓
+候选表（≤ candidateCapacity，每 key 16 片窗口，int 精确计数）
+  └─ 决定"谁升热" —— 必须精确，配 cooldown 抑抖
+        ↓
+热点集合（≤ maxHotKeys）
+```
+
+> **为什么不能省掉 CMS 只用 per-key 表**：候选表容量有限（1000），长尾 key（每个只访问 1~2 次）
+> 会不断涌入并把真候选挤出去（缓存污染），于是又一次踩到"少算热点"那一侧。CMS 用固定内存
+> 把长尾挡在候选表之外，这是它不可替代的价值。
 
 #### 4.7.3 口径：localQps 与 globalQps 是两个量，不可互换
 
@@ -643,7 +693,12 @@ globalQps = Σ localQps_i  ≥  localQps_j          （任意节点 j）
 | ~~`DynamicSpec.hotWindowBuckets`~~ | **删除**（与 16 片重叠，且原设计与双桶插值自相矛盾） |
 | `DynamicSpec.hotTtl` | **删除**（DYNAMIC = STATIC + 准入，见 §4.6） |
 | `GlobalSpec.hotThreshold` / `coolThreshold` | 语义改 QPS（`hotQps` / `coolQps`），默认 **100 / 25**；直接与 `globalQps` 比较 |
-| `FrequencySketch` | **不再参与判定**；作为可选的长尾兜底（默认关闭），只决定"谁进统计表" |
+| `DynamicSpec.sketchWidth`（格数） | 改名 **`sketchWidthBits`**（默认 12 = 4096 格，范围 10~16）：用位配置，天然 2 的幂 |
+| `DynamicSpec.sketchDepth` | 不变，默认 **4**（溢出 1.8%） |
+| CMS 计数器位宽 | **固定 16 位**（8 位饱和 51 QPS、32 位内存 4× 且挤出 L2），不开放配置 |
+| 新增 `DynamicSpec.coolQps` | 默认 `hotThresholdQps / 4` = 25 |
+| 候选阈值 | **不再折算全局**：`candidateQps ≈ hotThresholdQps / 4`（必须 `≪` 升热阈值，防止 CMS 高估冲爆候选表） |
+| `FrequencySketch` | **保留且默认开启**，职责严格限定为"候选预选"，**永不参与升热判定**（§4.7.2） |
 | `HotKeyReport.total` | **删除**：中央只回传状态（§4.7.4） |
 | 指标 | 控制层新增 `localQps` / `globalQps`(仅中央侧可见) 估计值，便于对照阈值调参 |
 
@@ -1053,6 +1108,8 @@ GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热
 | S29 | 中央是否回传计数/QPS | 回传 / 只回传状态 | **只回传状态**（HOT/ACTIVE/COOLING/UNKNOWN）：回传数值会让本地下次上报把累计值当增量重复放大，两个口径串味；`HotKeyReport.total` 删除 |
 | S30 | 中央聚合格局 | 每(key,片)一 key / 每片一 HASH / 每 namespace 一 HASH / **每(分区,片)一 HASH** | **每(分区,片)一 HASH**：`hot:<ns>:<partition>:<sliceId>`，一次对账只碰一个分区；key 数 256/namespace 且与候选数无关；TTL 自动过期零清理；**禁止**在一次 Lua 里扫全 namespace |
 | S31 | 中央窗口时间基准 | 各节点本机墙钟 / Redis 服务端 TIME | **Redis `TIME`**（Lua 内 `redis.call('TIME')`）：所有节点写同一 `sliceId`，窗口天然对齐 |
+| S32 | CMS 计数器位宽 | 8 / 16 / 32 位 | **固定 16 位**（上限 13 107 QPS，内存 64KB）：8 位只够 51 QPS 会饱和；32 位内存 4×、工作集 128KB 挤出 L2，换一个用不到的上限 |
+| S33 | CMS 宽度怎么配 | 格数（4096）/ 位（12） | **用位**：`sketchWidthBits` 默认 12（4096 格），范围 10~16；天然保证 2 的幂，bits 每 +1 即"精度翻倍、内存翻倍"；真实够不够用**候选表饱和度**实测（>80% 说明 width 偏小） |
 | S23 | 未声明 namespace 被业务使用 | 报错 / 自动创建 / 静默返回 null | **告警 + 自动创建**：告警说明"没走声明接口"，创建用数据源策略（有记录）或内建默认；启动期无法穷举，强校验只会把拼写错误变成启动失败 |
 | S24 | 数据源有、代码没声明的孤儿配置 | 预装配 / 不预装配 | **不装配**：预装配集合 = 声明集合（文件 + 扫描），数据源不参与"装什么"；启动不调用 `loadAll()` |
 | S25 | 数据源里单条记录损坏 | fail-fast / 跳过 | **跳过 + 标记 `broken`**，不自动修复：一条坏配置不该挡住整站 |
