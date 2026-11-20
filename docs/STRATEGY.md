@@ -987,6 +987,11 @@ GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热
 | S19 | DYNAMIC 是否保留独立热 TTL | 保留 / 取消 | **取消**：DYNAMIC = STATIC + 准入判定，判定通过后本地配置与 STATIC 完全一致 |
 | S20 | 热升/热降阈值的语义 | 窗口内累计次数 / **QPS** | **QPS**（`hotThresholdQps`），运维可直接对照监控里的 QPS |
 | S21 | 统计方式 | 固定窗口 / 滑动窗口 / EWMA | **滑动窗口**：CMS 粗筛 + 每 key 惰性双桶线性插值（`hotWindowBuckets` 可调，默认 10），误差 ≤ 1 桶且无后台线程 |
+| S23 | 未声明 namespace 被业务使用 | 报错 / 自动创建 / 静默返回 null | **自动按内建默认创建但不报错**，并 `warn` 一次 + 指标 + 视图标 `undeclared`（启动期无法穷举，强校验只会把拼写错误变成运行期 500） |
+| S24 | 数据源有、代码没声明的孤儿配置 | 预装配 / 不预装配 | **不预装配**（否则数据源变成远程内存控制面），被业务用到时按数据源策略生效，未使用的标 `orphan` |
+| S25 | 数据源里单条记录损坏 | fail-fast / 跳过 | **跳过 + 标记 `broken`**，不自动修复：一条坏配置不该挡住整站 |
+| S26 | 多应用共享数据源 | namespace 加前缀 / 数据源侧隔离 | **不加前缀**，隔离靠 DB/key 前缀，保持 `@Cacheable("user:detail")` 干净 |
+| S27 | `GlobalSpec` 改 QPS 后的候选阈值 | 保留窗口比例 / 简化 | **简化**：`candidateQps = clamp(ceil(globalHotQps / clientEstimate), 1, hotThresholdQps - 1)`，去掉窗口因子；需回写 LOCAL.md |
 | S22 | 仓库与管理的契约形态 | 与声明文档混写 / 独立契约文档 | **独立**：`STRATEGY-REPOSITORY.md`（仓库 §1–§9、管理 §10–§21），本文只留摘要与指向，避免两份事实漂移 |
 | S3 | `DYNAMIC → STATIC` 是否保留副本 | 保留 / 清空 | **保留**（无冲突且避免回源高峰） |
 | S4 | 声明发现方式 | 文件约定（类 ServiceLoader 但不实例化枚举）/ 自研包扫描 / 注解自注册 | **文件约定为主 + Spring 扫描为辅 + 显式传入兜底**；core 不自研包扫描 |

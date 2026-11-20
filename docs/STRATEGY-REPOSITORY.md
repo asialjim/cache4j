@@ -108,7 +108,7 @@ public sealed interface PolicyLookup {
 | `localTtl` | `Duration` | > 0；本地**非空副本**存活；`NONE` 忽略 | 内建默认 30s |
 | `localNullTtlDivisor` | `int` | ≥ 1；本地空值副本 = `min(localTtl, centralNullTtl / N)` | 内建默认 10 |
 | `version` | `VersionSpec` | 见 §2.2 | 内建默认 |
-| `dynamic` | `DynamicSpec` | 仅 `DYNAMIC` 有意义；其它策略为 `null` | 内建默认 |
+| `dynamic` | `DynamicSpec` | 仅 `DYNAMIC` 生效；**其它策略仍保留上一次的配置**（切回 DYNAMIC 不丢参数），视图用 `dynamicActive` 标注是否生效 | 内建默认 |
 | `centralTtl` | `Duration` | > 0；中央**非空**存活 | 内建默认 30m |
 | `centralNullTtl` | `Duration` | ≥ 0；`ZERO` = 不缓存空值 | 内建默认 30s |
 | `failOpen` | `boolean` | — | 内建默认 `true` |
@@ -232,6 +232,27 @@ public sealed interface PolicyLookup {
 3. 内建默认只有**一套**（表见 §2.1–§2.3），不提供档位；
 4. 解析结果必须**冻结**为不可变对象，`find` 返回的是同一份快照（同一 `configVersion` 内 identity 稳定，
    便于上层做 `==` 快速判断"换没换过"）。
+
+### 3.1 三类"对不上"的配置怎么处置
+
+声明（代码）、数据源（运维配置）、业务使用（运行期）三者天然会对不齐，逐类定死：
+
+| 情形 | 判定时机 | 处置 | 可见性 |
+|---|---|---|---|
+| **业务用了未声明的 namespace**<br>（`@Cacheable("order:detail")`，无枚举、数据源也无记录） | 运行期（`getCache(name)` 时） | **按内建默认自动创建**，不报错 | `warn`（每个 namespace 一次，限流）+ 指标 `undeclaredNamespaceCount` + 视图标 `undeclared=true` |
+| **数据源有、代码没声明**（可能连带业务也没用） | 启动期不装配（不预创建实例）；**运行期若被业务用到，则按数据源策略生效** | 不预装配；**始终没被用到的**在视图里标 `orphan=true`，启动 `warn` 一次 | `orphanPolicyCount` |
+| **数据源里某条记录损坏**（解码失败 / schema 不认识） | 启动期解析时 | **跳过该条**（用声明 + 内建默认继续），**不自动修复**（不覆盖数据源） | `error` + `brokenPolicyCount` + 视图标 `broken=true` |
+
+**为什么"未声明"不报错**：启动期**无法穷举**业务会用哪些缓存名——`@Cacheable` 的 name 可以是
+SpEL、`cacheManager.getCache(name)` 的名字来自运行时数据。强行在启动期校验只能覆盖静态字面量，
+反而把"拼写错误"变成运行期 500。所以选择"能跑 + 必须可见"：自动按默认策略创建，
+但每个未声明的 namespace 都要在日志、指标、运维视图里露出来，避免策略治理悄悄失效。
+
+**为什么"孤儿"不预装配**：数据源里的任意记录若都能在进程里创建缓存实例，等于把数据源变成
+远程控制面（谁能写数据源就能让所有节点分配内存）。孤儿只在运行时被业务真正用到时才实例化。
+
+**为什么"损坏记录"不 fail-fast**：一条运维写坏的记录不该让全站起不来；但也不自动修复
+（避免把错误配置"修"成静默默认值）。损坏条目在视图里长期可见，直到有人改掉。
 
 ## 4. 两层结构：仓库门面 + 仓库数据源
 
@@ -787,6 +808,9 @@ long strategyUnavailableCount();   // find 返回 Unavailable 的次数（数据
 long strategyRepoSyncErrorCount();     // 写穿失败次数（>0 说明缓存同步有抖动）
 long strategyRepoClearFallbackCount(); // 写穿失败后 clear 兜底成功次数（传播仍 ≤5s）
 long strategyRepoStaleCount();         // 写穿与 clear 都失败次数（最坏等 centralTtl）
+long undeclaredNamespaceCount();       // 业务用了但没人声明的 namespace 数（治理告警用）
+long orphanPolicyCount();              // 数据源有但始终没被用到的策略数
+long brokenPolicyCount();              // 数据源里解析失败的记录数
 
 > 没有"变更检查次数"这类指标了——传播由版本对账完成，相关观测看仓库自用缓存自身的
 > `versionSyncCount` / `versionInvalidationCount`。
@@ -830,6 +854,10 @@ long strategyRepoStaleCount();         // 写穿与 clear 都失败次数（最�
 | 写穿失败 → clear 兜底 | 中央写穿失败 ⇒ evict 成功 ⇒ `APPLIED` + `strategyRepoClearFallbackCount++`；业务端对账"中央缺字段"清本地 → 下次读回源拿到新值 |
 | 写穿与 clear 都失败 | ⇒ `APPLIED_STALE` + error + `strategyRepoStaleCount++`；再次 `change` 可补偿 |
 | `PolicyCodec` 往返 | 编码→解码等价；编码损坏 ⇒ `CODEC_DECODE_FAILED` 且按 `Unavailable` 处理（不缓存坏值） |
+| 未声明 namespace | `getCache("nobody:declared")` ⇒ 按内建默认创建成功；warn 只打一次；`undeclaredNamespaceCount=1`；视图标 `undeclared` |
+| 孤儿配置 | 数据源有 `x:y` 但没声明也没被用 ⇒ 不创建实例；`orphanPolicyCount=1`；被业务 `getCache("x:y")` 使用后转为正常（用数据源策略） |
+| 损坏记录 | 数据源某条解码失败 ⇒ 跳过该条（其余正常装配）+ `brokenPolicyCount=1` + 视图标 `broken`；**不覆盖数据源** |
+| `dynamic` 保留 | STATIC 策略下视图保留上次的 `DynamicSpec` 且 `dynamicActive=false`；切回 DYNAMIC 后参数沿用 |
 | 自举参数 | `maxSize` 默认 1000；改配置需重启；启动日志打印实际生效值 |
 
 ## 19. 模块归属与分期
@@ -900,6 +928,10 @@ redis.call('HSET', KEYS[1], 'data', ARGV[2], 'configVersion', next, 'updatedAt',
 return next
 ```
 
+**多应用隔离不进 namespace**：不同应用共用一套 Redis 时，靠**不同的 DB / 不同的 key 前缀**
+（由数据源实现自己决定）隔离，**不在 `namespace` 上加应用前缀**——那会逼业务在
+`@Cacheable("myapp:user:detail")` 里写死前缀，侵入代码且无法跨应用共享缓存。
+
 硬性要求：
 
 1. **两套前缀不得重叠**：`cache4j.strategy`（缓存）与 `cache4j.policy:`（数据源）互不相干；
@@ -910,7 +942,7 @@ return next
    门面自身**不得**用它绕过乐观锁；
 5. **不做自动修复**：条目解析失败时不得回写，返回错误让门面按未命中处理。
 
-## 21. 已拍板的契约细节
+## 21. 契约细节（已全部拍板）
 
 | # | 问题 | 结论 |
 |---|---|---|
@@ -924,15 +956,15 @@ return next
 | R8 | 是否提供开箱数据源 | **不提供**，谁接谁实现；`cache4j-spring-redis` 不为策略新增任何能力 |
 | R9 | 写穿还是 clear | **写穿为主 + clear 兜底**：写穿（无条件 put）能堵住"旧值回填"窗口；写穿失败退化为 evict（让全网回源），两者都失败才 `APPLIED_STALE`。代价是写穿需要 `PolicyCodec`（放 `cache4j-strategy`，core 不碰字节） |
 
-### 仍开放
+### 剩余问题（Q1–Q8）的结论
 
-| # | 问题 | 备选 | 倾向 |
-|---|---|---|---|
-| Q1 | 业务用了未声明的 namespace（如 `@Cacheable("order:detail")` 但没人声明过） | 启动/首次访问报错 / 按内建默认自动创建 / 只告警返回 null | **报错**（声明是强制清单，否则策略治理形同虚设） |
-| Q2 | 数据源里有、代码里没声明的 namespace（孤儿配置） | 装配 / 忽略 / 忽略并标记 | 不装配，`list()` 标 `orphan=true` 并告警 |
-| Q3 | 多应用共享同一数据源时 namespace 重名 | 加 appId 前缀 / 每个应用独立数据源 | 倾向**独立数据源或独立 DB**，不在 key 上加前缀（避免和业务 cache4j 实例的 namespace 语义打架） |
-| Q4 | 数据源里一条损坏记录是否阻塞全站启动 | fail-fast / 跳过并标记 | **跳过 + 告警 + 视图标 `broken`**（不让一条坏配置挡住整站），但不自动修复 |
-| Q5 | 是否需要"变更历史"查询 API | 不提供（归管理服务）/ 提供 | **不提供**（R4 已定），管理服务自己落审计表 |
-| Q6 | `GlobalSpec` 改 QPS 后，候选阈值派生公式需重算 | — | 属 LOCAL 层（`LOCAL.md`），要在实现前重算并回写 |
-| Q7 | `StrategyView.dynamic` 对非 DYNAMIC 策略的展示 | `null` / 保留并标 `inactive` | 保留并标 `inactive`（切 STATIC 再切回来不丢配置） |
-| Q8 | `description` / `reason` 的日志注入与长度 | 不限 / 限长并禁控制字符 | **限 128 且禁控制字符**（写日志前转义） |
+| # | 问题 | 结论 |
+|---|---|---|
+| Q1 | 业务用了未声明的 namespace | **按内建默认自动创建，不报错**；每个未声明的 namespace `warn` 一次 + `undeclaredNamespaceCount` + 视图标 `undeclared`。理由：启动期无法穷举（`@Cacheable` 的 name 可为 SpEL、`getCache` 的名字来自运行时），强校验只能覆盖字面量，反而把拼写错误变成运行期 500 —— 选择"能跑但必须可见" |
+| Q2 | 数据源有、代码没声明（孤儿配置） | **不预装配**（避免数据源变成远程内存控制面）；运行期若被业务用到则按数据源策略生效；始终没用到的在视图标 `orphan` + 启动 warn 一次 |
+| Q3 | 多应用共享数据源的 namespace 重名 | **namespace 不加应用前缀**；隔离靠数据源实现的 DB / key 前缀。让 `@Cacheable("user:detail")` 保持干净，也不阻止跨应用共享同一缓存 |
+| Q4 | 数据源里一条损坏记录 | **跳过该条**（声明 + 内建默认继续），不自动修复也不 fail-fast；`brokenPolicyCount` + 视图标 `broken` |
+| Q5 | 变更历史查询 API | **不提供**（R4 已定）：审计持久化与历史回看归管理服务 |
+| Q6 | `GlobalSpec` 改 QPS 后的候选阈值公式 | 口径统一为 **QPS**，公式简化为 `candidateQps = clamp(ceil(globalHotQps / clientEstimate), 1, hotThresholdQps - 1)`——**去掉原来的窗口比例因子**（`scale = window / global.window`），因为两侧已是同一尺度。默认 `globalHotQps = 100`、`coolQps = 25`（1/4）。需回写 `LOCAL.md` 的推导与默认值 |
+| Q7 | `StrategyView.dynamic` 对非 DYNAMIC 策略 | **保留上一次配置**并标 `dynamicActive=false`（切 STATIC 再切回 DYNAMIC 不丢参数） |
+| Q8 | `description` / `reason` 的日志注入 | 已落在 §14：**≤ 128 字符 + 禁控制字符**，写日志前统一转义 |
