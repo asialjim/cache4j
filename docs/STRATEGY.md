@@ -445,8 +445,9 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
 | `version.reconcilePartitions` | `16` | 对账分区数（2 的幂） |
 | `version.reconcileBatchSize` | `1_000` | 单次 `HMGET` 的 field 数 |
 | `version.retryBackoff` | `200ms`（运行时取 `max(backoff, checkInterval)`） | 对账失败退避 |
-| `dynamic.localHotThreshold` | `100` | 热升阈值 |
-| `dynamic.window` | `10s` | 频次统计窗口 |
+| `dynamic.hotThresholdQps` | `100` | 热升阈值，**按 QPS**（原来叫 `localHotThreshold`，语义是窗口内累计次数） |
+| `dynamic.window` | `10s` | **滑动**统计窗口长度 |
+| `dynamic.hotWindowBuckets` | `10` | 滑动窗口分桶数（每桶 `1s`），越多越精确、内存越高 |
 | `dynamic.hotTtl` | **不提供**（与本地非空 TTL 共用） | DYNAMIC 热副本没有独立 TTL |
 | `dynamic.hotReportPartitions` | `16` | 热 key 上报分区数 |
 | `dynamic.cooldown` | `30s` | 降热冷却 |
@@ -518,6 +519,100 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
 - **重启后仍是运维改过的值** —— 这是热更的前提。本设计**不提供 `reset`**：要回到声明值，
   运维自己再改一次（审计留痕比"一键还原"更重要，也避免误操作把线上配置打回代码旧值）；
 - 启动时若发现"生效值 ≠ 声明值"，打一条 info/warn：`[缓存装配]-初始化-<ns>-生效策略=DYNAMIC，代码声明=STATIC，来源=仓库`。
+
+### 4.6 设计原则：DYNAMIC = STATIC + 准入判定
+
+`DYNAMIC` 与 `STATIC` 的本质区别只有一件事：**多一套 hotkey 机制判断这个 key 该不该进本地**。
+一旦判定"该进"，后续本地缓存所需的一切——版本号对账、本地非空/空值 TTL、`maxSize`、
+淘汰机制——**与 `STATIC` 完全共用同一套配置**。
+
+两个直接推论（都已在契约里体现）：
+
+- **没有独立热 TTL**：热副本的 TTL 就是本地非空 TTL（空值走 `centralNullTtl / N`）。
+  "热"只影响**准入**，不影响**存活时长**；
+- **仓库里 DYNAMIC 不需要第二套容量/过期配置**：`maxSize`、`localTtl` 一份配置，切换策略时
+  这些值原样沿用（这也是 §6.4 迁移矩阵里"STATIC → DYNAMIC 只清空副本、不动参数"的依据）。
+
+### 4.7 热升/热降判定：QPS + 滑动时间窗口
+
+**阈值按 QPS 语义**（不是"窗口内累计次数"），统计用**滑动窗口**，而非固定窗口累加——
+固定窗口在窗口边界会出现"跨边界两次计数被算成一次突增"和"边界前后重复计算"两类抖动。
+
+#### 4.7.1 两层结构（粗筛 + 精判）
+
+| 层 | 结构 | 作用 | 内存 |
+|---|---|---|---|
+| 粗筛 | 共享 Count-Min Sketch（现有 `FrequencySketch`，双桶） | 对**海量一次性 key** 也能估出频次，筛出"值得进候选池"的 key | 固定（几 KB） |
+| 精判 | **每 key 一个 O(1) 的滑动窗口状态** | 只对候选池 + 热点集合（各 ≤ 1000）做精确 QPS 判定 | `(候选 + 热点) × 每 key 状态` |
+
+精判不能省：CMS 是概率结构，用它直接跟阈值比较会出现"热点抖动"（误差在阈值附近来回跳）。
+反过来粗筛也不能省：只靠精判就要为每个访问过的 key 建状态，长尾 key 会撑爆内存。
+
+#### 4.7.2 精判：惰性双桶 + 线性插值（默认，`hotWindowBuckets` 可调）
+
+每个 key 只存三个字段，O(1) 内存、无后台线程、无定时任务：
+
+```java
+long bucketStart;     // 当前桶起点
+int  current;         // 当前桶计数
+int  previous;        // 上一个桶计数
+```
+
+访问时（惰性，只在访问路径上）：
+
+```text
+elapsedBuckets = (now - bucketStart) / bucketWidth
+if      elapsedBuckets == 0  → current++
+else if elapsedBuckets == 1  → previous = current; current = 1; bucketStart += width
+else                         → previous = 0;       current = 1; bucketStart = now
+```
+
+估计值（线性插值，误差上界 = 一个桶）：
+
+```text
+ratio     = (now - bucketStart) / bucketWidth          // 0..1
+estimated = previous * (1 - ratio) + current           // 相当于"过去 1 个窗口内的访问次数"
+qps       = estimated / windowSeconds
+升热判定   = qps >= hotThresholdQps
+```
+
+- 默认 `window = 10s`、`hotWindowBuckets = 10`（每桶 1s）→ 误差 ≤ 1s，内存每 key 约 16B；
+- 想更精确就调大分桶数（`hotWindowBuckets`），内存线性增长但仍是常数级；
+- 想更省就让 CMS 承担更多判定，精判只做确认。
+
+#### 4.7.3 为什么不用另外两种常见方案
+
+| 方案 | 问题 |
+|---|---|
+| 固定窗口累加（现状） | 边界抖动：窗口末尾一小段时间 + 新窗口开头的一小段时间，会被判成"两倍"或"零"，热升热降来回跳 |
+| 纯 EWMA（指数衰减） | 内存同样 O(1)，但"阈值"语义变成"衰减后的加权和"，与 QPS 的换算不直观（`freq = qps × halfLife / ln2`），运维看不懂 |
+| 每 key 环形数组（k 桶精确） | 最精确，但每 key 一个数组对象（对象头 + k 个 int），2000 个 key × 10 桶的分配与 GC 压力明显高于三字段版本；精度收益在 QPS 判定这种场景里不值 |
+
+#### 4.7.4 热降：对称的 QPS 判定 + 持续性要求
+
+```text
+降热判定 = qps < coolThresholdQps 且 连续 N 个检查点都成立（N = demoteWindows）
+```
+
+- 单点低于阈值就降热会抖（一两秒没流量就被踢出本地），必须要求**持续**低于；
+- 中央侧（`GLOBAL`）同样按 QPS 统计窗口内的访问，阈值 `hotThresholdQps` / `coolThresholdQps`
+  都由仓库按 namespace 配；
+- `cooldown`（冷却期）保留：降热后一段时间内即使又达标也不许升热，抑制抖动。
+
+#### 4.7.5 连带的参数与实现变更
+
+| 项 | 变化 |
+|---|---|
+| `DynamicSpec.localHotThreshold`（int，窗口累计次数） | 改名 **`hotThresholdQps`**（int，QPS 语义） |
+| `DynamicSpec.window` | 语义变为"滑动窗口长度"，取值不变（10s） |
+| 新增 `DynamicSpec.hotWindowBuckets` | 默认 10 |
+| `DynamicSpec.hotTtl` | **删除**（见 §4.6） |
+| `GlobalSpec.hotThreshold` / `coolThreshold`（long） | 语义改为 QPS，阈值量级从"窗口计数"降到"每秒"，默认值需重算 |
+| `FrequencySketch` | 保留作为粗筛；新增 per-key 滑动窗口状态（并入 `hotKeys` / `candidateByPartition` 的值里） |
+| 指标 | 控制层新增 `hotQps` 估计值（诊断用），便于运维对照阈值调参 |
+
+> **连带文档**：以上参数改名与语义变更同时要回写到 `LOCAL.md`（热 key 判定一节）、
+> `DESIGN.md`（决策表）与 `CentralCacheSpec`/`GlobalSpec` 的默认值；本设计只负责把"仓库里能配什么"定清楚。
 
 ## 5. 二、策略仓库 SPI
 
@@ -859,7 +954,8 @@ public record StrategyUpdate(
 9. **本地负副本的存活由中央空值 TTL 按比例派生**：本地层**没有**独立的"空值 TTL"旋钮，
    `localNullTtl = min(localTtl, centralNullTtl / N)`，`N` 由仓库按 namespace 配（默认 10）；
    `centralNullTtl = ZERO` 表示不缓存空值，此时负副本不落本地也不落中央；
-10. **DYNAMIC 没有独立热 TTL**：热副本的 TTL 与本地非空 TTL 共用；空值热副本走第 9 条；
+10. **DYNAMIC = STATIC + 准入判定**（§4.6）：热副本的 TTL、`maxSize`、淘汰机制、版本对账与
+    `STATIC` 共用同一套配置；"热"只决定**该不该进本地**，不决定**活多久**；空值热副本走第 9 条；
 11. **枚举只声明策略，不声明参数**：`CacheStrategyDecl` 恒为三个成员
     （`namespace` / `strategy` / `description`），不开档位、不加可选参数；
 12. **`description` 非空**：空白即启动失败（运维视角的唯一说明）；
@@ -887,6 +983,8 @@ public record StrategyUpdate(
 | `description` 非空 | 空白描述 ⇒ 启动失败，报出 `枚举#常量` |
 | 无仓库可用 | 不实现仓库时：枚举 + 内建默认即可装配成功，且不报错 |
 | 本地空值副本 | `centralNullTtl=ZERO` ⇒ 负副本两层都不落；`centralNullTtl=200ms < localTtl` ⇒ 本地负副本 200ms 后消失 |
+| 热升 QPS 判定 | 100 QPS 持续 10s ⇒ 升热；10 QPS 持续 10s ⇒ 不升热；**跨窗口边界**匀速流量不产生"双倍/归零"抖动 |
+| 热降持续性 | QPS 掉到阈值以下但未满 `demoteWindows` ⇒ 不降热；连续满足 ⇒ 降热并进入冷却 |
 | **native image 冒烟** | 三档各一个最小程序，`native-image` 构建后能加载声明并装配缓存（回填实测的 hints 模板） |
 
 ## 11. 八、分期实施
@@ -1048,7 +1146,9 @@ GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热
 | S16 | 本地空值副本的存活 | 独立旋钮 / 由中央 `nullTtl` 派生 | **由中央 `nullTtl` 按 `1/N` 派生**（`N` 仓库可配，默认 10），再与 `localTtl` 取小；`LocalCacheSpec` 不加字段 |
 | S17 | 枚举契约的命名风格 | 裸方法（`namespace()`）/ getter（`getNamespace()`） | **getter**，配合 Lombok `@Getter` 让"三个字段 + 一个注解"即满足契约 |
 | S18 | `version.jitter` 的语义 | 比例（±N%）/ 绝对时长 | **绝对时长**（默认 `100ms`），不同 `checkInterval` 下抖动幅度一致；代价是 `VersionSpec` 组件类型变更 |
-| S19 | DYNAMIC 是否保留独立热 TTL | 保留 / 取消 | **取消**：热副本与本地非空 TTL 共用，少一个旋钮也少一处不一致 |
+| S19 | DYNAMIC 是否保留独立热 TTL | 保留 / 取消 | **取消**：DYNAMIC = STATIC + 准入判定，判定通过后本地配置与 STATIC 完全一致 |
+| S20 | 热升/热降阈值的语义 | 窗口内累计次数 / **QPS** | **QPS**（`hotThresholdQps`），运维可直接对照监控里的 QPS |
+| S21 | 统计方式 | 固定窗口 / 滑动窗口 / EWMA | **滑动窗口**：CMS 粗筛 + 每 key 惰性双桶线性插值（`hotWindowBuckets` 可调，默认 10），误差 ≤ 1 桶且无后台线程 |
 | S3 | `DYNAMIC → STATIC` 是否保留副本 | 保留 / 清空 | **保留**（无冲突且避免回源高峰） |
 | S4 | 声明发现方式 | 文件约定（类 ServiceLoader 但不实例化枚举）/ 自研包扫描 / 注解自注册 | **文件约定为主 + Spring 扫描为辅 + 显式传入兜底**；core 不自研包扫描 |
 | S5 | 多节点一致性是否 P1 必需 | 是 / 否（先单节点） | 单节点先上（P1–P2），P3 补中央存储 |
