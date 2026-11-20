@@ -47,35 +47,35 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 策略仓库落 Redis：枚举声明 → {@link CachedCacheStrategyRepository} 门面 → Redis 里的策略记录，
- * 并且装配层的缓存定义**确实来自仓库**。
+ * 策略仓库落本地文件：枚举声明 → {@link CachedCacheStrategyRepository} 门面 →
+ * {@code ~/data/github/db/strategy.dat}，并且装配层的缓存定义**确实来自仓库**。
  *
- * <p>这里把本机 Redis 同时当作两样东西：</p>
+ * <p>两样东西分开看：</p>
  * <ol>
- *   <li><strong>策略数据源</strong>（{@link RedisStrategyDataSource}）：HASH {@code cache4j:strategy:defs}
- *       存每条策略；</li>
+ *   <li><strong>策略数据源</strong>（{@link FileStrategyDataSource}）：本地文件
+ *       {@code ~/data/github/db/strategy.dat}，一策略一段可读文本；</li>
  *   <li><strong>门面自缓存</strong>的中央层：{@code CachedCacheStrategyRepository} 自己是 STATIC
- *       二级缓存，namespace {@code cache4j.strategy}，数据落在 {@code cache4j:{cache4j.strategy}:*}。</li>
+ *       二级缓存，namespace {@code cache4j.strategy}，仍走 Redis。</li>
  * </ol>
  *
- * <p><strong>跑完不清 Redis</strong>，方便直接观察：</p>
+ * <p><strong>跑完不删文件、不清 Redis</strong>，方便直接观察：</p>
  * <pre>
- * redis-cli hgetall 'cache4j:strategy:defs'              # 策略记录（value 是 key=value 文本）
+ * cat ~/data/github/db/strategy.dat                      # 策略记录（key=value 文本）
  * redis-cli --scan --pattern 'cache4j:{cache4j.strategy}:*'   # 门面自缓存
  * </pre>
  *
  * @author Asial Jim
  */
-class RedisStrategyRepositoryTest {
+class FileStrategyRepositoryTest {
 
     /**
      * 策略记录所在的 HASH。
      */
-    private static final String POLICY_HASH = SpringRedisStrategyDataSource.DEFAULT_KEY;
+
 
     private LettuceConnectionFactory connectionFactory;
 
-    private SpringRedisStrategyDataSource dataSource;
+    private FileStrategyDataSource dataSource;
 
     private CachedCacheStrategyRepository repository;
 
@@ -84,10 +84,9 @@ class RedisStrategyRepositoryTest {
         Assumptions.assumeTrue(RedisTestEnvironment.redisAvailable(),
                 "Redis 不可达（" + RedisTestEnvironment.HOST + ":" + RedisTestEnvironment.PORT + "），跳过");
         connectionFactory = RedisTestEnvironment.connectionFactory();
+        dataSource = new FileStrategyDataSource(FileStrategyDataSource.DEFAULT_DIRECTORY);
         // 每次开始前清一次，保证可重复；结束不清理，留给人工观察
         cleanup();
-
-        dataSource = new SpringRedisStrategyDataSource(connectionFactory);
         repository = newRepository();
     }
 
@@ -104,26 +103,27 @@ class RedisStrategyRepositoryTest {
     }
 
     @Test
-    @DisplayName("启动装配即可：枚举声明被播种进 Redis，HASH 里能看到三条策略（测试不手动 declare）")
-    void declarationsArePersistedToRedis() {
+    @DisplayName("启动装配即可：枚举声明被播种进本地文件（测试不手动 declare）")
+    void declarationsArePersistedToFile() {
         // 唯一一个动作：启动装配。声明登记、播种、解析全部由装配层完成。
         TwoLevelCacheManager manager = TwoLevelCacheManager.create(options());
         try {
-            Map<String, String> stored = rawHash();
-        assertEquals(3, stored.size(), "三条声明应各落一条记录");
-        assertTrue(stored.containsKey("decl:static"));
-        assertTrue(stored.containsKey("decl:none"));
-        assertTrue(stored.containsKey("decl:dynamic"));
-        // 内容是可读的 key=value 文本，直接 redis-cli 就能看懂
-            assertTrue(stored.get("decl:static").contains("namespace=decl:static"));
-            assertTrue(stored.get("decl:static").contains("strategy=STATIC"));
+            String content = fileText();
+            assertEquals(3, content.split("namespace=").length - 1, "三条声明应各落一段");
+            assertTrue(content.contains("namespace=decl:static"));
+            assertTrue(content.contains("namespace=decl:none"));
+            assertTrue(content.contains("namespace=decl:dynamic"));
+            // 直接 cat 就能看懂：策略语义 + 原始 description 都在
+            assertTrue(content.contains("strategy=STATIC"));
+            assertTrue(content.contains("description=静态本地缓存（仓库落库测试）"));
+            assertTrue(content.contains("reason=代码声明播种（bootstrap）"));
 
             PolicyLookup lookup = repository.find("decl:static");
             assertTrue(lookup instanceof PolicyLookup.Found, "声明登记后应能从仓库查到");
             assertEquals(1L, ((PolicyLookup.Found) lookup).policy().configVersion(),
                     "首次登记的配置版本应为 1");
 
-            // 运维列表页：HSCAN MATCH 流式分页（存储侧过滤），total 是满足条件的总数
+            // 运维列表页：文件数据源天然全量，过滤在内存做，分页语义与数据源一致
             Page<StoredPolicy> firstPage = dataSource.query("decl:", 0, 2);
             assertEquals(2, firstPage.items().size(), "第一页取 2 条");
             assertEquals(3L, firstPage.total(), "total 应为匹配总数，不是当前页条数");
@@ -198,12 +198,11 @@ class RedisStrategyRepositoryTest {
 
     // ------------------------------------------------------------------ Redis 辅助
 
-    private Map<String, String> rawHash() {
-        try (RedisConnection connection = connectionFactory.getConnection()) {
-            Map<byte[], byte[]> entries = connection.hashCommands().hGetAll(bytes(POLICY_HASH));
-            Map<String, String> result = new java.util.LinkedHashMap<>();
-            entries.forEach((key, value) -> result.put(text(key), text(value)));
-            return result;
+    private String fileText() {
+        try {
+            return java.nio.file.Files.readString(dataSource.file(), StandardCharsets.UTF_8);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("读取策略文件失败：" + dataSource.file(), e);
         }
     }
 
@@ -219,8 +218,12 @@ class RedisStrategyRepositoryTest {
     }
 
     private void cleanup() {
+        try {
+            java.nio.file.Files.deleteIfExists(dataSource.file());
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("清理策略文件失败：" + dataSource.file(), e);
+        }
         try (RedisConnection connection = connectionFactory.getConnection()) {
-            connection.keyCommands().del(bytes(POLICY_HASH));
             for (String pattern : new String[]{"cache4j:{cache4j.strategy}:*", "cache4j:{decl:*"}) {
                 Set<byte[]> found = connection.keyCommands().keys(bytes(pattern));
                 if (found != null && !found.isEmpty()) {
