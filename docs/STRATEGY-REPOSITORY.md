@@ -10,7 +10,8 @@
 | 组件 | 职责 | 不负责 |
 |---|---|---|
 | **声明**（`CacheStrategyDecl`） | 开发者表达"要一个叫什么、初始什么策略、干什么用"的缓存 | 任何参数 |
-| **仓库**（本文 §1–§7） | 持有**生效配置**，是"当前这个 namespace 到底怎么配"的唯一权威 | 缓存实例的创建与读写 |
+| **仓库门面**（`CacheStrategyRepository`，§1–§7） | 持有**生效配置**，是"当前这个 namespace 到底怎么配"的唯一权威；**对接本套缓存体系**（本地 + 中央两层） | 缓存实例的创建与读写（业务侧） |
+| **仓库数据源**（`CacheStrategyDataSource`，§4） | 提供策略的**权威持久值与写入**；**不对接**本套缓存体系（纯 KV，不感知版本/两层/TTL） | 缓存、版本、一致性（由门面负责） |
 | **管理**（本文 §8–§15） | 给出变更入口、校验、审计、观测 | 鉴权（使用方的 HTTP 层负责） |
 
 **核心不变量（贯穿全文）**
@@ -20,9 +21,10 @@
 3. **没有仓库也能跑**：不实现任何仓库实现时，声明 + 内建默认即可装配，不报错。
 4. **不提供 reset**：要回退就再改一次，审计留痕优先于"一键还原"。
 5. **无后台线程、无广播**：仓库自身不建线程也不推送变更；传播由仓库自用缓存的版本对账承担（§2.4.4，≤5s）；
-6. **仓库自举**：策略数据本身就是缓存体系里的 `cache4j.strategy` 命名空间，`STATIC` 策略，
-   禁止 `NONE`/`DYNAMIC`（§2.4.3）。
-7. **不做半应用**：任何一步失败，生效值不变。
+6. **仓库自举**：仓库门面本身就是缓存体系里的 `cache4j.strategy` 命名空间，`STATIC` 策略，
+   禁止 `NONE`/`DYNAMIC`（§2.4.3）；自身缓存参数来自**启动配置**，改需重启（§2.4.6）。
+7. **两层分工**：门面对接缓存体系，**数据源不对接**；开发者只需实现数据源（§4）。
+8. **不做半应用**：任何一步失败，生效值不变。
 
 ---
 
@@ -31,7 +33,10 @@
 ## 1. SPI 全景
 
 ```java
-/** 仓库：进程内生效配置的唯一权威。 */
+/**
+ * 仓库门面：进程内生效配置的唯一权威，内部对接本套缓存体系（§2.4）。
+ * 数据源（可选）通过工厂注入，见 §4.1。
+ */
 public interface CacheStrategyRepository {
 
     // ---------- 启动期 ----------
@@ -136,10 +141,11 @@ public interface CacheStrategyRepository {
 > `hotTtl` **不存在**：DYNAMIC = STATIC + 准入判定，热副本的 TTL 与 `localTtl` 共用
 > （见 `STRATEGY.md` §4.6）。同理 `localNullTtl` 不单独存在（见 §2.1）。
 
-## 2.4 仓库自举：仓库自己也用这套缓存体系
+## 2.4 仓库自举：门面自己就是一个 `STATIC` 缓存
 
-**仓库的策略数据不是另建一套存储，而是缓存体系里的一个普通 namespace。** 这条自我约束把
-"策略存储"降级成"缓存读写"，于是版本号、TTL、跨节点一致、降级全部由既有机制承担。
+**门面不另建存储：它自己就是一个缓存实例。** 这条自我约束把"策略的读取"
+降级成"缓存读写"，于是版本号、TTL、跨节点一致、降级全部由既有机制承担；
+而"权威持久值"这一职责交给数据源（§4），两者严格分层。
 
 ### 2.4.1 仓库自身缓存的固定策略
 
@@ -213,37 +219,145 @@ public interface CacheStrategyRepository {
 4. 解析结果必须**冻结**为不可变对象，`find` 返回的是同一份快照（同一 epoch 内 identity 稳定，
    便于上层做 `==` 快速判断"换没换过"）。
 
-## 4. 存储与自用缓存的关系
+## 4. 两层结构：仓库门面 + 仓库数据源
 
-**默认形态：策略数据就存在仓库自用缓存里（§2.4），不需要额外的存储 SPI。**
-`CachePolicyStore` 只在"想用非缓存介质（如数据库、配置中心）承载策略"时才需要，属可选扩展点。
+```
+        ┌───────────────────────────── 业务装配 ─────────────────────────────┐
+        ▼                                                                    │
+ CacheStrategyRepository（门面，库提供，CachedCacheStrategyRepository）        │
+        │                                                                    │
+        ├─ 本地缓存：STATIC（30m，maxSize 默认 1000，可配，重启生效）  ← 本套缓存体系
+        ├─ 中央缓存：TTL 3d（非空）/ 5m（空值），版本窗口 5s          ← 本套缓存体系
+        └─ 回源 / 写穿↓
+              CacheStrategyDataSource（数据源 SPI，开发者实现，纯 KV）
+                    load(namespace) / loadAll() / save(policy, expectedRevision)
+```
+
+**分工必须严格切开**：
+
+| 层 | 感知什么 | 不感知什么 |
+|---|---|---|
+| **门面** | 版本号、TTL、两层缓存、对账、5s 传播、乐观锁判定、解析与校验 | 数据源用什么介质、怎么连 |
+| **数据源** | 一条记录的读写：`load` / `loadAll` / `save` | 缓存、版本窗口、两层结构、TTL、对账 |
+
+**为什么这样切**：开发者接自己的存储（DB、配置中心、甚至一个 Redis 的 hash）时，只需实现三个方法，
+不需要理解缓存库的任何机制；而"策略读取要快、要能降级、要多节点 5s 内一致"这些缓存问题全部由门面兜住。
+
+### 4.1 数据源 SPI
 
 ```java
-/** 可选：用非缓存介质承载策略。默认不实现，走 §2.4 的自用缓存。 */
-public interface CachePolicyStore {
+/** 策略的权威持久值。开发者实现这个接口即可接入任意存储。 */
+public interface CacheStrategyDataSource {
 
-    /** @return 该 namespace 的持久化记录；不存在返回 empty */
+    /** @return 该 namespace 的记录；不存在返回 empty（不是错误） */
     Optional<StoredPolicy> load(String namespace);
 
-    /** @return 全部 namespace（启动对账与运维视图用） */
+    /** @return 全部记录；启动时枚举与运维视图用。返回空列表表示"一条都没有" */
     List<StoredPolicy> loadAll();
 
     /**
-     * 乐观锁写入：仅当存储里的 revision == expectedEpoch 时成功并返回新 revision；
-     * 否则返回 empty（冲突）。revision 必须由存储生成，客户端不得自增。
+     * 写入并返回新 revision（必须单调递增）。
+     *
+     * <p><strong>乐观锁是尽力而为</strong>：能 CAS 的实现（Redis Lua、DB 条件更新）
+     * 应在 {@code expectedRevision} 不匹配时返回 empty；实在不支持的实现可以退化为
+     * last-write-wins 并照常返回新 revision——此时门面会在 {@link StrategyView} 里标注
+     * {@code casSupported=false}，运维知道"并发覆盖不会报冲突"。</p>
      */
-    Optional<Long> save(StoredPolicy policy, long expectedEpoch);
+    OptionalLong save(StoredPolicy policy, long expectedRevision);
 }
 ```
 
-**`StoredPolicy` 与 `NamespacePolicy` 的区别**：前者是**持久化形态**（字段可缺省、可带 schema 版本），
-后者是**解析后的完整生效值**。二者不得互相替代：
+约定：
 
-- 存储里只写"与内建默认不同"的字段是允许的（省空间），但解析时必须补齐默认；
+1. **revision 由数据源生成**（时间戳或自增），必须单调；门面只比较、不自增；
+2. `load` 未命中返回 `empty`，**不得**抛异常表示"没有"；
+3. 数据源**不得**做缓存（不要在实现里再加一层 LRU），缓存是门面的事；
+4. 数据源**不得**依赖 `cache4j` 的任何缓存实现（只依赖 `cache4j-core` 的模型）；
+5. 单节点部署可以**不提供**数据源：门面退化为"声明 + 内建默认 + 进程内 `AtomicLong` 版本"。
+
+### 4.2 读路径（门面）
+
+```text
+find(ns)
+  ├─ 本地副本命中 → 直接返回（顺带 version.checkInterval 到点则对账，最多 5s 一次）
+  ├─ 本地未命中 → 中央缓存 → 命中则回填本地
+  └─ 中央也未命中 → dataSource.load(ns) → 有值则回填两层 → 无值则走声明 + 内建默认
+```
+
+- 中央缓存未命中且数据源也没有 ⇒ **不缓存"策略不存在"**给数据源，但**中央空值 TTL 5 分钟**会缓存
+  这个"不存在"结论，避免每次启动都穿透到数据源；
+- 数据源抛异常 ⇒ `failOpen=true` 时按"未命中"继续（用声明 + 默认），累加 `repoErrorCount`。
+
+### 4.3 写路径（门面）
+
+```text
+change(req)
+  → 校验 → 与当前比对 → 读当前 revision 作为 expectedRevision
+  → dataSource.save(policy, expectedRevision)          // 数据源负责持久化与版本递增
+  → 失败/冲突 ⇒ REJECTED / CONFLICT（本机不变更）
+  → 成功 ⇒ 用返回的新 revision 写穿两层缓存             // 读己之写
+  → 审计 + 指标
+```
+
+- **写穿的顺序**：先写中央缓存（带新 revision），再写本地副本；两者都用 `putIfNewer`，
+  避免与并发的回填/对账打架（本地持有更新版本时不会被旧值覆盖）；
+- 其他节点不接收任何通知，靠 5s 版本对账发现（§2.4.4）。
+
+### 4.4 数据源实现难度分级
+
+| 级别 | 实现方式 | 乐观锁 | 门面行为 |
+|---|---|---|---|
+| **A（推荐）** | Redis Lua / DB 条件更新（`UPDATE … WHERE revision = ?`） | 真 CAS | 冲突返回 `CONFLICT` |
+| **B（够用）** | 普通 KV `set` / DB upsert | last-write-wins | 永不冲突，`StrategyView.casSupported=false`，运维自行避免并发改同一 namespace |
+| **C（单节点）** | 不提供数据源 | 进程内 `AtomicLong` | 重启回到声明值 |
+
+### 4.4.1 两个版本号，别混用
+
+分层之后版本号有两个，**职责不同、不得互换**：
+
+| 版本号 | 归属 | 谁生成 | 用途 |
+|---|---|---|---|
+| **缓存副本 revision** | 门面中央缓存条目（`__rev:cache4j.strategy`） | 缓存体系 Lua：`max(now, cur+1)` | 判断本地/中央**副本是否落后**，驱动 5s 对账 |
+| **`policy.epoch`（数据源 revision）** | 数据源记录（`StoredPolicy.revision`） | 数据源 `save` 时递增 | **运维乐观锁**（`expectedEpoch`）、审计、`StrategyView.epoch` |
+
+关系与传播：
+
+```text
+节点 A： save(dataSource) → dataSource.revision 前进 → 写穿中央缓存（缓存 revision 同时前进）
+节点 B： 对账发现「缓存 revision」变了 → 本地副本作废 → 回源中央缓存（命中，不碰数据源）
+        → 拿到新的 StoredPolicy → policy.epoch 前进 → 触发运行时切换
+数据源： 只在中央缓存未命中/过期（3 天）时被访问
+```
+
+**禁止**：把缓存副本 revision 当 `expectedEpoch`（它是缓存内部时间戳，与数据源版本无关，
+跨节点数值不可比）；也禁止把 `policy.epoch` 用于对账（那是缓存层的活）。
+
+### 4.5 `StoredPolicy` 与 `NamespacePolicy`
+
+前者是**持久化形态**（字段可缺省、带 schema 版本），后者是**解析后的完整生效值**。二者不得互相替代：
+
+- 数据源里只写"与内建默认不同"的字段是允许的（省空间），解析时补齐默认；
 - `StoredPolicy` 必须能表达"这条记录没写 description"，以便识别"运维没改过描述"。
 
-**无 Store 时（默认）**：单节点内存模式——声明 + 内建默认，重启回到声明值；
-`epoch` 由进程内 `AtomicLong` 生成。存在 Store 时才是多节点模式。
+### 4.6 仓库自身缓存的参数来自启动配置，改需重启
+
+自举缓存的参数**不能**放在策略仓库里（否则自指：读策略要先读策略），只能来自启动配置：
+
+| 配置项（`StrategySelfCacheOptions`） | 默认 | 备注 |
+|---|---|---|
+| `maxSize` | **1 000** | 最可能需调的项：namespace 上千时上调 |
+| `localTtl` | 30m | 本地副本存活 |
+| `centralTtl` | 3d | 中央副本存活 |
+| `centralNullTtl` | 5m | "该 namespace 无策略"的缓存时长 |
+| `versionCheckInterval` | 5s | 即"多节点生效最大延迟"，**不建议调大** |
+
+**全部需要重启生效**（它们决定了仓库自身缓存的构造参数，热改等于重建仓库自己）。
+启动日志必须打印实际生效值：
+
+```
+[策略仓库]-启动-自举缓存 namespace=cache4j.strategy，策略=STATIC，maxSize=1000，localTtl=PT30M，
+         centralTtl=PT72H，centralNullTtl=PT5M，versionCheck=PT5S
+```
 
 ## 5. 一致性与线程模型
 
@@ -288,6 +402,8 @@ public interface CachePolicyStore {
 | **无 Store** | 单节点模式；启动日志明确标注；不报错 |
 | 中央不可达（启动期） | **必须**用"声明 + 内建默认"装配成功，并打 `warn`（不得启动失败，除非 `failClosed` 配置为 true） |
 | 中央不可达（运行期读策略） | 读本地副本继续服务；**不得**回落到声明值、不得清空已生效配置 |
+| 数据源不可达（回源失败） | `failOpen=true` ⇒ 按未命中继续（声明 + 内建默认），`repoErrorCount++` + `warnThrottled`；**不得**缓存该失败 |
+| 数据源不可达（写入失败） | `change` 返回 `REJECTED`，两层缓存与生效值都不变 |
 | 存储记录损坏（字段解析失败） | 同"不可达"，且**不得**覆盖存储（不做自动修复） |
 | 变更持久化失败 | `change` 返回 `REJECTED`，生效值不变（先持久化后生效，见 §9.4） |
 | 目标配置校验失败 | `change` 返回 `REJECTED` + 具体字段与原因，生效值不变 |
@@ -439,7 +555,7 @@ public record StrategyView(
                      ├──────────────────────────────┤
                      │ 5. 试装配（构建新 Runtime）   │ 失败 → REJECTED（生效值不变）
                      ├──────────────────────────────┤
-                     │ 6. 持久化（Store.save）       │ 失败/冲突 → REJECTED / CONFLICT
+                     │ 6. 持久化（DataSource.save）  │ 失败/冲突 → REJECTED / CONFLICT
                      ├──────────────────────────────┤
                      │ 7. 原子提交（换引用）         │ 唯一提交点
                      ├──────────────────────────────┤
@@ -449,7 +565,7 @@ public record StrategyView(
 
 顺序的硬要求：
 
-- **先持久化（6）后生效（7）**：存储失败时本机不生效，避免"单节点自己变了、其他节点没变"；
+- **先持久化（6）后生效（7）**：数据源失败时本机不生效，避免"单节点自己变了、其他节点没变"；
 - **第 5 步试装配**：先造出新 Runtime 再提交，确保"提交后不可能因装配失败而空转"；
 - **第 8 步没有广播**：变更写在中央条目里，其他节点在下一次读策略时由版本对账发现（≤5s）；
   审计/指标写失败只影响可观测性，不回滚已生效的值。
@@ -561,48 +677,82 @@ long strategyRepoHitRate();        // 仓库自用缓存的本地命中率（诊
 | 声明间冲突 | 两个枚举声明同一且仓库里**没有**的 namespace ⇒ 启动失败，报双方来源 |
 | 仓库自举策略 | 自身 namespace 被配成 `NONE` 或 `DYNAMIC` ⇒ 启动失败，错误信息说明自指/不可用原因 |
 | 自举传播 | 节点 A 改策略后本机立即生效；节点 B 在 5s 内读到新值；节点 B 无流量时不生效（对账访问驱动） |
+| 数据源未命中 | 本地/中央/数据源都没有 ⇒ 用声明 + 内建默认装配；"不存在"结论被中央空值 TTL 缓存 5m |
+| 数据源异常 | `load` 抛异常 ⇒ 按未命中继续 + `repoErrorCount++`；**不得**缓存失败结果 |
+| 数据源写入失败 | `save` 抛异常/返回 empty ⇒ `REJECTED`/`CONFLICT`，两层缓存不变 |
+| 数据源无 CAS（B 级） | `save` 忽略 `expectedRevision` ⇒ 永不 `CONFLICT`，`StrategyView.casSupported=false` |
+| 写穿顺序 | `change` 成功后本机 `find` 立即新值；并发对账不会把旧值回填回来（`putIfNewer` 保护） |
+| 自举参数 | `maxSize` 默认 1000；改配置需重启；启动日志打印实际生效值 |
 
 ## 19. 模块归属与分期
 
 | 模块 | 内容 |
 |---|---|
-| `cache4j-core` | 全部 SPI 与模型：`CacheStrategyRepository`、`CachePolicyStore`（可选）、`CacheStrategyAdmin`、`NamespacePolicy`、`StoredPolicy`、`StrategyChange`、`ChangeResult`、`StrategyView`；`InMemoryCacheStrategyRepository`（单节点，无中央） |
-| **`cache4j-strategy`（新增）** | `CachedCacheStrategyRepository`：用本库的 `TwoLevelCache`（namespace=`cache4j.strategy`，`STATIC`）承载策略数据；解析三层优先级；仓库自举校验（禁止 NONE/DYNAMIC）。依赖 `core` + `local` + `central`，**不依赖** `spring*` |
-| `cache4j-spring-redis` | `RedisValueStore.writeIfRevision(...)`（乐观锁 Lua）+ `RedisSerializer<StoredPolicy>` 的默认实现 |
+| `cache4j-core` | 全部 SPI 与模型：`CacheStrategyRepository`（门面接口）、**`CacheStrategyDataSource`（数据源 SPI）**、`CacheStrategyAdmin`、`NamespacePolicy`、`StoredPolicy`、`StrategyChange`、`ChangeResult`、`StrategyView`、`StrategySelfCacheOptions`；`InMemoryCacheStrategyRepository`（单节点，无数据源、无中央） |
+| **`cache4j-strategy`（新增）** | `CachedCacheStrategyRepository`（门面实现）：用本库的 `TwoLevelCache`（namespace=`cache4j.strategy`，`STATIC`）承载策略读取与写穿；把 `CacheStrategyDataSource` 当作回源；解析三层优先级；自举校验（禁止 NONE/DYNAMIC）。依赖 `core` + `local` + `central`，**不依赖** `spring*` |
+| `cache4j-spring-redis` | ① `RedisValueStore.writeIfRevision(...)`（乐观锁 Lua，供门面写穿用）；② **`RedisCacheStrategyDataSource`**（数据源实现：直接用 RedisTemplate 读写 `StoredPolicy`，不经缓存体系，Lua 做 CAS）；③ `RedisSerializer<StoredPolicy>` 默认实现 |
 | `cache4j-spring` | 端点（可选 Actuator）、`@CacheNamespace` 扫描接入 |
 | `cache4j-starter` | 默认装配与开关配置（含"仓库自身策略被配成 NONE/DYNAMIC 即启动失败"的校验） |
 
 | 期 | 内容 |
 |---|---|
-| **P1** | 仓库 SPI + `InMemoryCacheStrategyRepository`（无 Store）+ 解析优先级 + 启动装配 |
+| **P1** | 仓库门面 SPI + `CacheStrategyDataSource` SPI + `InMemoryCacheStrategyRepository`（无数据源/无中央）+ 解析优先级 + 启动装配 |
 | **P2** | 管理 SPI + `change` 状态机 + 校验 + 审计 + 指标（单节点热更） |
-| **P3** | `CachePolicyStore` + `RedisPolicyStore` + 访问驱动检查（多节点一致） |
+| **P3** | `CachedCacheStrategyRepository`（自举缓存）+ `RedisCacheStrategyDataSource` + 5s 版本对账传播（多节点一致） |
 | **P4** | 端点、`@Scheduled` 触发、`cache4j-starter` 装配 |
 
-## 20. 仓库自用缓存的 Redis 布局契约
+## 20. Redis 布局契约（两套，别混）
 
-策略数据就是缓存条目，所以布局**沿用缓存体系既有的 key 形态**，不再自定义 HASH：
+分层之后 Redis 里有两份数据，前缀不同、职责不同：
+
+### 20.1 门面的中央缓存层（副本，可丢）
 
 ```text
-# 数据（仓库自用缓存的中央层）
-<cache4j.strategy 命名空间前缀>:<encoded(namespace)>   →  StoredPolicy 的编码字节
+# 数据：普通缓存条目，value 是 StoredPolicy 的编码字节
+<cache4j.strategy 前缀>:<encoded(namespace)>  →  StoredPolicy
 
-# 版本表（缓存体系自带，`__rev` 按 namespace 一张 HASH）
+# 版本表：缓存体系自带
 __rev:cache4j.strategy
     <encoded(namespace)>  →  <revision>|<expireAtMillis>
 ```
 
+- TTL：**3 天**（非空）/ **5 分钟**（空值，即"该 namespace 没有策略"的负缓存）；
+- revision 由既有 Lua 生成（`max(now, cur+1)`），"版本前进 + 值生效"原子完成；
+- **可以丢**：丢了只是要回源数据源一次，不影响正确性。
+
+### 20.2 数据源（权威值，不可丢）
+
+`RedisCacheStrategyDataSource` 的布局（实现可自定，但建议如下）：
+
+```text
+cache4j.policy:<namespace>   HASH
+    data      StoredPolicy 的编码字节
+    revision  <long>，单调递增
+    updatedAt <millis>          # 排障用，不参与判定
+```
+
+写用 Lua（`cache4j.policy:cas`）：
+
+```lua
+-- KEYS[1]=policy key, ARGV[1]=expectedRevision, ARGV[2]=newData, ARGV[3]=nowMillis
+local cur = tonumber(redis.call('HGET', KEYS[1], 'revision') or '0')
+if tonumber(ARGV[1]) >= 0 and cur ~= tonumber(ARGV[1]) then
+  return nil                                   -- 版本冲突
+end
+local next = math.max(tonumber(ARGV[3]), cur + 1)
+redis.call('HSET', KEYS[1], 'data', ARGV[2], 'revision', next, 'updatedAt', ARGV[3])
+return next
+```
+
 硬性要求：
 
-1. **命名空间隔离**：`cache4j.strategy` 与业务 namespace、其他 `__rev:*` 互不重叠；
-   `clear(<业务 namespace>)` **不得**波及它（按 namespace 前缀删除，天然隔离）；
-2. **版本号即 epoch**：写入由既有 Lua 完成（`newRev = max(now, cur+1)`），
-   "版本前进"与"值生效"在同一脚本内原子完成——不再需要 `HINCRBY` 或额外事务；
-3. **乐观锁靠版本比对**：`change` 的 `expectedEpoch` 与当前 revision 比较，不符则不写。
-   需要在 `RedisValueStore` 上补一个 `writeIfRevision(key, value, ttl, expectedRevision)`
-   （Lua 里比较后写入），这是本设计对既有 SPI 的**唯一扩展**；
-4. **TTL**：非空 3 天、空值 5 分钟（由仓库自身 `CentralCacheSpec` 决定，不走 `__strategy:` 前缀的 HASH）；
-5. **不做自动修复**：条目解析失败时不回写，避免把错误配置"修"成静默默认值。
+1. **两套前缀不得重叠**：`cache4j.strategy`（缓存）与 `cache4j.policy:`（数据源）互不相干；
+   `clear(<业务 namespace>)` 两者都不得波及；
+2. **数据源不做缓存**：它只回答"当前权威值是什么"，不要在其中再加 LRU/TTL；
+3. **revision 单调**：`max(now, cur+1)` 或自增，二者都行，但必须单调；
+4. **`expectedRevision = -1` 表示"无条件下写"**（首次写入/迁移时用），仅限运维脚本，
+   门面自身**不得**用它绕过乐观锁；
+5. **不做自动修复**：条目解析失败时不得回写，返回错误让门面按未命中处理。
 
 ## 21. 开放的契约问题
 
@@ -613,4 +763,6 @@ __rev:cache4j.strategy
 | R3 | `cache4j.strategy.admin.enabled` 默认值 | 默认开 / 默认关 | **默认关**（生产要显式开启管理端点），但需在 starter 里方便打开 |
 | R4 | 审计是否也要落 Store（持久化审计） | 只打日志 / 也存一份 | 只打日志（日志系统负责留存），Store 只存当前值 |
 | R5 | `StrategyView.consistentWithDeclared` 不一致时是否告警 | 只展示 / 启动 + 每次检查告警 | 启动 `warn` 一次 + 视图展示，**不**每轮检查刷日志 |
-| R6 | `RedisValueStore.writeIfRevision(...)` 的返回语义 | 成功返回新 revision / 冲突返回 empty | 返回 `OptionalLong`：`empty` = 版本冲突，便于 `change` 直接映射为 `CONFLICT` |
+| R6 | 数据源 `save` 的返回语义 | 成功返回新 revision / 冲突返回 empty | 返回 `OptionalLong`：`empty` = 版本冲突 → 门面直接映射为 `CONFLICT` |
+| R7 | 是否强制数据源支持 CAS | 强制 / 尽力而为 | **尽力而为**（§4.4 分级 A/B/C），并让 `StrategyView.casSupported` 暴露能力，避免为了强一致把小团队挡在门外 |
+| R8 | 是否提供开箱即用的数据源 | 只给 SPI / 给 Redis 与 JDBC 两个实现 | 先给 `RedisCacheStrategyDataSource`（spring-redis 模块），JDBC 等有需求再加 |

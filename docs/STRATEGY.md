@@ -630,9 +630,10 @@ qps       = estimated / windowSeconds
 1. **仓库可选**：不实现 `CachePolicyStore` 就是单节点内存模式，声明 + 内建默认即可工作，
    启动不报错；挂上 Store 才有多节点一致与"重启不回退"；
 2. **只有一套内建默认**（§4.3），没有档位；仓库只做"整条覆盖"，不做字段级合并；
-3. **无后台线程、无广播**：仓库自身就是一个 `STATIC` 缓存（namespace=`cache4j.strategy`，
-   版本窗口 5s），变更由该缓存的**版本对账**传播，跨节点延迟 ≤5s；本机改完立即生效靠写穿。
-   仓库自身策略**禁止 `NONE`/`DYNAMIC`**（否则策略读取要么每次打中央、要么自指依赖自身参数）。
+3. **两层、无后台线程、无广播**：仓库门面对接本套缓存体系（自身即 `cache4j.strategy` 的
+   `STATIC` 缓存，版本窗口 5s，`maxSize` 默认 1000 可配但需重启），**数据源不对接**缓存体系
+   （纯 KV，开发者只实现 `load`/`loadAll`/`save`）。变更由门面缓存的版本对账传播（≤5s），
+   本机改完立即生效靠写穿；门面自身策略**禁止 `NONE`/`DYNAMIC`**（否则每次打中央或自指依赖自身参数）。
 
 ## 6. 三、运行时切换
 
@@ -763,7 +764,7 @@ change(update):
 
 | 模块 | 新增内容 | 依赖 |
 |---|---|---|
-| `cache4j-core` | `CacheStrategyDecl`、`CacheDefinition`、`CacheStrategyRepository` / `CachePolicyStore` / `CacheStrategyAdmin` SPI、`NamespacePolicy` / `StoredPolicy` / `StrategyChange` / `ChangeResult` / `StrategyView`、`InMemoryCacheStrategyRepository`、`CacheStrategyLoader`（文件约定）、`StrategyRuntime` | 无新增 |
+| `cache4j-core` | `CacheStrategyDecl`、`CacheDefinition`、`CacheStrategyRepository`（门面）/ `CacheStrategyDataSource`（数据源）/ `CacheStrategyAdmin` SPI、`NamespacePolicy` / `StoredPolicy` / `StrategyChange` / `ChangeResult` / `StrategyView`、`InMemoryCacheStrategyRepository`、`CacheStrategyLoader`（文件约定）、`StrategyRuntime` | 无新增 |
 | `cache4j-local` / `cache4j-local-caffeine` / `cache4j-central` / `cache4j-central-redis` | **不改**（只被装配） | 不变 |
 | `cache4j-spring` | `@CacheNamespace` 注解 + 包扫描发现、可选 Actuator 端点 | Spring Framework |
 | `cache4j-spring-redis` | `RedisPolicyStore`（HASH 读写 + epoch 自增 + 乐观锁，布局见仓库契约 §20） | Spring Data Redis |
