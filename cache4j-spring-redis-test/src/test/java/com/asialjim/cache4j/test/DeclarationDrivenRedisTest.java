@@ -24,6 +24,7 @@ import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -117,7 +118,7 @@ class DeclarationDrivenRedisTest {
     @DisplayName("三条声明自动装配成三条缓存，不需要任何程序化定义")
     void declarationsDriveAssembly() {
         TwoLevelCacheManager manager = context.getBean(TwoLevelCacheManager.class);
-        assertEquals(Set.of(NS_STATIC, NS_NONE, NS_DYNAMIC), manager.names());
+        assertEquals(Set.of(NS_STATIC, NS_NONE, NS_DYNAMIC, "decl:map"), manager.names());
     }
 
     @Test
@@ -132,6 +133,15 @@ class DeclarationDrivenRedisTest {
 
         assertTrue(localHasKey(NS_STATIC), "STATIC 策略应当把副本放进本地");
         assertTrue(redisHasKey(NS_STATIC), "中央也应写入，供其他节点/回源使用");
+    }
+
+    @Test
+    @DisplayName("STATIC：本地有副本，存入redis测试用redis的默认序列化器")
+    void staticDeclarationObject(){
+        DeclService service = context.getBean(DeclService.class);
+        Map<String, Object> a = service.mapOf("我擦");
+
+        System.out.println(a);
     }
 
     @Test
@@ -243,6 +253,7 @@ class DeclarationDrivenRedisTest {
          * 禁用本地缓存，只走中央。
          */
         NONE("decl:none", LocalStrategy.NONE, "只走中央缓存（声明驱动测试）"),
+        MAP("decl:map", LocalStrategy.STATIC, "对象静态缓存测试"),
 
         /**
          * 动态本地缓存。
@@ -314,6 +325,7 @@ class DeclarationDrivenRedisTest {
      * 被缓存的业务方法：三条声明各一个。
      */
     static class DeclService {
+        private static final AtomicInteger INTEGER =  new AtomicInteger(0);
 
         @Cacheable(cacheNames = NS_STATIC, key = "#id")
         public String staticValue(String id) {
@@ -321,6 +333,12 @@ class DeclarationDrivenRedisTest {
             return "static-" + id;
         }
 
+        @Cacheable(cacheNames = "decl:map", key = "#key")
+        public Map<String,Object> mapOf(String key){
+            return Map.of("key",key,"desc","Map", "count",INTEGER.addAndGet(1));
+        }
+
+        //
         @Cacheable(cacheNames = NS_NONE, key = "#id")
         public String noneValue(String id) {
             NONE_LOADS.incrementAndGet();

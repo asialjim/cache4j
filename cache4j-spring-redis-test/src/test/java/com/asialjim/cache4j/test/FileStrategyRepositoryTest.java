@@ -379,17 +379,17 @@ class FileStrategyRepositoryTest {
     static class DeclService {
 
         @Cacheable(cacheNames = "decl:static", key = "#id")
-        String staticValue(String id) {
+        public String staticValue(String id) {
             return "static-" + id;
         }
 
         @Cacheable(cacheNames = "decl:none", key = "#id")
-        String noneValue(String id) {
+        public String noneValue(String id) {
             return "none-" + id;
         }
 
         @Cacheable(cacheNames = "decl:dynamic", key = "#id")
-        String dynamicValue(String id) {
+        public String dynamicValue(String id) {
             return "dynamic-" + id;
         }
     }

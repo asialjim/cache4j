@@ -541,6 +541,19 @@ public class Cache4jConfig {
 }
 ```
 
+#### 值序列化器的三级优先
+
+缓存写进的是**业务自己的 Redis**，所以格式要跟业务其他数据一致：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1 | 容器里显式的 `RedisSerializer` Bean | 业务明确指定，听它的 |
+| 2 | 容器里 `RedisTemplate` 的 `valueSerializer` | 同一个 Redis 用同一套编码，`redis-cli` 看到的格式统一 |
+| 3 | 默认实现 | 有 jackson 用 `GenericJackson2JsonRedisSerializer`，否则 `JdkSerializationRedisSerializer` |
+
+> `StringRedisTemplate` 也是 `RedisTemplate`，它的 valueSerializer 是 `StringRedisSerializer`——
+> 缓存里会放非 String 值时别让它成为唯一候选，显式声明一个 `RedisSerializer` Bean 覆盖即可。
+
 #### 约定的边界
 
 - 用 `spring.data.redis.*` 或自己声明 `RedisConnectionFactory`（host/port/SSL/sentinel/cluster/pool 都归它）；
