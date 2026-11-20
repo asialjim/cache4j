@@ -79,7 +79,55 @@
 | 延迟目标 | 毫秒级，面向秒杀/刷子拦截 | 秒级，面向缓存保护 |
 | 额外中间件 | Worker 集群 + etcd | 无，中央缓存兼任聚合与策略分发 |
 
-一句话：**JD HotKey 用热点判定去"限流"，所以怕误杀；我们用热点判定去"选谁进本地"，所以怕漏判。**
+一句话：**JD HotKey 的热点判定主要服务于"限流/熔断"这类动作，误判就是误杀业务，所以怕多算；
+我们用它来"选谁进本地"，漏判就直接打穿中央缓存，所以怕漏算。**
+（JD HotKey 也能配合本地缓存使用，但本地缓存的读取、写入、失效全部要业务自己接管，见下一节。）
+
+### 使用方式的区别：谁为"热点缓存"这堆事负责
+
+这个理念差异直接体现在**业务代码要写什么**上。JD HotKey 与缓存在架构上是解耦的——它不知道你的数据存在哪、
+也不知道数据什么时候变了，所以只能把"怎么用"交给业务；cache4j 与两级缓存深度耦合，
+它知道每一次读写，因此可以替业务把失效、回源、容量都接管掉。
+
+**JD HotKey：每处查询都要显式写一套样板**
+
+```java
+String key = "skuId__" + skuId;
+if (JdHotKeyStore.isHotKey(key)) {              // ① 判定是否热 key（顺带上报计数）
+    Object cached = JdHotKeyStore.get(key);     // ② 纯本地读取
+    if (cached != null) {
+        return (Sku) cached;
+    }
+}
+Sku sku = loadFromRedis(skuId);                 // ③ 未命中自己回源
+JdHotKeyStore.smartSet(key, sku);               // ④ 是热 key 才写本地
+return sku;
+
+// ⑤ 数据变更时还得手动失效，否则各节点本地仍是旧值
+redisTemplate.opsForValue().set(key, newSku);
+JdHotKeyStore.remove(key);                      // 且 remove 对"探测出来的热 key"并不可靠
+```
+
+**cache4j：调用方式与普通缓存完全一致**
+
+```java
+// 读：本地 → 中央 → 回源，命中/回填/版本对账全在库内完成
+Lookup<Sku> result = cache.lookup(skuId, id -> loadFromRedis(id));
+
+// 写：库负责让所有节点的本地副本在 version.checkInterval（默认 5s）内失效
+cache.put(skuId, newSku);
+```
+
+| 维度 | JD HotKey | cache4j |
+|---|---|---|
+| 业务代码 | 每个查询方法都要写"判定 → 本地读 → 回源 → 写本地"的样板 | 一次 `lookup(key, loader)`，与普通缓存一致 |
+| 本地缓存谁维护 | 业务（存取都要手动调 SDK） | 库（本地实例 + TTL + 容量上限 + 淘汰） |
+| **数据变更后本地旧值** | **框架与缓存无通信**，感知不到更新；必须业务手动 `remove`/`smartSet`，且 `remove` 只对"手工添加"的 key 可靠 | **key 级版本对账**：写入即让所有节点本地副本在 `checkInterval` 内失效，业务无需任何动作 |
+| 策略怎么切换 | 改代码（加/删 `isHotKey` 调用） | 改声明或仓库配置（`NONE`/`STATIC`/`DYNAMIC`），**业务代码不动，可运行时切** |
+| 热点识别规则 | dashboard 里配 `interval/threshold/duration`，key 要匹配"精确/前缀通配"规则 | 按 namespace 声明策略，无 key 前缀约定 |
+| 要部署什么 | Worker 集群 + etcd + SDK | 一个 jar（复用已有的 Redis） |
+
+> 一句话：**JD HotKey 提供的是"热点探测能力"，怎么用由你决定；cache4j 提供的是"已经用好了的缓存"。**
 
 核心模块不依赖 Spring、Solon 或任何运行时框架；框架适配放在独立的 `cache4j-spring`、`cache4j-solon` 模块中。
 
