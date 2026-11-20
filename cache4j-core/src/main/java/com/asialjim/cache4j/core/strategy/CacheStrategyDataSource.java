@@ -1,6 +1,5 @@
 package com.asialjim.cache4j.core.strategy;
 
-import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 
@@ -13,6 +12,7 @@ import java.util.OptionalLong;
  * <p>契约：</p>
  * <ul>
  *   <li>{@code load} 未命中返回 empty，<strong>不得</strong>用异常表示"没有"；异常一律表示"不可用"；</li>
+ *   <li>{@code query} 的过滤与分页必须在<strong>存储侧</strong>完成，不得全量拉回内存分页；</li>
  *   <li>{@code configVersion} 由数据源生成且单调递增；门面只比较、不自增；</li>
  *   <li>实现里<strong>不要</strong>再加一层 LRU/TTL 缓存；</li>
  *   <li>不支持 CAS 的实现可以让 {@code update} 退化为 last-write-wins（照常返回新版本号）。</li>
@@ -29,12 +29,20 @@ public interface CacheStrategyDataSource {
     Optional<StoredPolicy> load(String namespace);
 
     /**
-     * 全部记录。<strong>仅供运维视图</strong>（列孤儿/损坏）；启动装配<strong>不依赖</strong>它
-     * ——预装配集合由声明决定。
+     * 分页查询（可模糊）：<strong>运维列表页专用</strong>。
      *
-     * @return 全部记录；空列表表示"一条都没有"
+     * <p>必须由数据源<strong>在存储侧</strong>完成过滤与分页（SQL {@code WHERE ... LIMIT}、
+     * Redis {@code SCAN} + {@code MATCH} 等），不能把全部记录拉回调用方再内存分页——
+     * namespace 上千时那样等于每次翻页都做一次全量传输。</p>
+     *
+     * <p>启动装配<strong>不依赖</strong>本方法：预装配集合由声明决定。</p>
+     *
+     * @param keyword 模糊关键字（匹配 namespace / description），空表示不过滤
+     * @param page    页码（从 0 开始）
+     * @param size    页大小
+     * @return 分页结果；{@code total} 必须是<strong>满足条件的总数</strong>，不是当前页条数
      */
-    List<StoredPolicy> loadAll();
+    Page<StoredPolicy> query(String keyword, int page, int size);
 
     /**
      * 初始注册：写一条新记录，<strong>已存在则返回 false，绝不覆盖</strong>。

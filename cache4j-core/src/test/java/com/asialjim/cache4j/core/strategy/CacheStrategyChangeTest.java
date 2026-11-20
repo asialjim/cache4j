@@ -257,8 +257,8 @@ class CacheStrategyChangeTest {
         }
 
         @Override
-        public List<StoredPolicy> loadAll() {
-            return new ArrayList<>(store.values());
+        public Page<StoredPolicy> query(String keyword, int page, int size) {
+            return Page.of(new ArrayList<>(store.values()), keyword, page, size);
         }
 
         @Override

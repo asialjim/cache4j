@@ -127,7 +127,8 @@ public record NamespacePolicy(
      * @return 生效值是否与声明值一致（仅展示用，<strong>不告警</strong>）
      */
     public boolean consistentWithDeclared() {
-        return strategy == declaredStrategy;
+        // 孤儿配置（数据源有、代码没声明）没有可比对象，视为一致
+        return declaredStrategy == null || strategy == declaredStrategy;
     }
 
     private static CacheException invalid(String message) {

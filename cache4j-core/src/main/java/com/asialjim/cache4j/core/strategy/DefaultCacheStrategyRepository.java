@@ -96,15 +96,25 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
     public Page<StrategyView> page(String keyword, int page, int size) {
         int safeSize = Math.max(1, size);
         int safePage = Math.max(0, page);
-        String lowered = keyword == null ? "" : keyword.trim().toLowerCase();
-        List<StrategyView> all = views().stream()
-                .filter(view -> lowered.isEmpty()
-                        || view.namespace().toLowerCase().contains(lowered)
-                        || (view.description() != null && view.description().toLowerCase().contains(lowered)))
-                .toList();
-        int from = Math.min(all.size(), safePage * safeSize);
-        int to = Math.min(all.size(), from + safeSize);
-        return new Page<>(all.subList(from, to), safePage, safeSize, all.size());
+        if (dataSource == null) {
+            // 未启用数据源：只有声明（数量与代码里的枚举常量同量级，内存分页天然有界）
+            String lowered = keyword == null ? "" : keyword.trim().toLowerCase();
+            List<StrategyView> all = views().stream()
+                    .filter(view -> lowered.isEmpty()
+                            || view.namespace().toLowerCase().contains(lowered)
+                            || (view.description() != null && view.description().toLowerCase().contains(lowered)))
+                    .toList();
+            int from = Math.min(all.size(), safePage * safeSize);
+            int to = Math.min(all.size(), from + safeSize);
+            return new Page<>(all.subList(from, to), safePage, safeSize, all.size());
+        }
+        // 启用数据源：过滤与分页交给数据源（存储侧），不把全量记录拉回内存
+        Page<StoredPolicy> stored = dataSource.query(keyword, safePage, safeSize);
+        List<StrategyView> views = new ArrayList<>(stored.items().size());
+        for (StoredPolicy policy : stored.items()) {
+            views.add(viewOfStored(policy));
+        }
+        return new Page<>(views, stored.page(), stored.size(), stored.total());
     }
 
     @Override
@@ -312,6 +322,35 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
         return views;
     }
 
+    /**
+     * 数据源记录 → 运维视图（分页查询用）。
+     *
+     * <p>代码里没声明的记录标 {@code orphan=true}（数据源有、声明没有，**不做预装配**，
+     * 但运维视图里要能看见并清理）；有声明则按三层解析补齐缺省字段。</p>
+     *
+     * @param stored 数据源记录
+     * @return 视图
+     */
+    private StrategyView viewOfStored(StoredPolicy stored) {
+        DeclEntry decl = declarations.get(stored.namespace());
+        boolean casSupported = dataSource == null || dataSource.supportsCas();
+        if (decl == null) {
+            NamespacePolicy policy;
+            try {
+                policy = PolicyResolver.fromStored(null, stored);
+            } catch (RuntimeException e) {
+                // 记录损坏：不自动修复，标 broken 并让其余字段取内建默认
+                LOG.warn(CacheLogger.Subject.STRATEGY_REPO, "查询",
+                        "记录解析失败，已标记 broken：namespace=" + stored.namespace()
+                                + "，原因=" + e.getMessage());
+                return null;
+            }
+            return StrategyView.of(policy, null, casSupported).withOrphan(true);
+        }
+        NamespacePolicy policy = PolicyResolver.fromStored(decl.decl(), stored);
+        return StrategyView.of(policy, decl.decl().getDescription(), casSupported);
+    }
+
     private StrategyView viewOf(NamespacePolicy policy) {
         DeclEntry decl = declarations.get(policy.namespace());
         String declaredDescription = decl == null ? null : decl.decl().getDescription();
@@ -349,39 +388,19 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
         return fromStored(decl, stored);
     }
 
-    private NamespacePolicy fromDeclaration(CacheStrategyDecl decl, NamespacePolicy.Source source) {
-        CacheDefinition definition = BuiltinDefaults.definitionOf(decl.getNamespace(), decl.getStrategy());
-        LocalCacheSpec local = definition.local();
-        return new NamespacePolicy(
-                decl.getNamespace(), decl.getDescription(), decl.getStrategy(), decl.getStrategy(),
-                local.maxSize(), local.ttl(), BuiltinDefaults.LOCAL_NULL_TTL_DIVISOR,
-                local.version(), local.dynamic(),
-                definition.central().ttl(), definition.central().nullTtl(), definition.central().failOpen(),
-                0L, 0L, null, null, source);
+    private NamespacePolicy fromDeclaration(CacheStrategyDecl decl, NamespacePolicy.Source ignored) {
+        return PolicyResolver.fromDeclaration(decl);
     }
 
+    /**
+     * 数据源记录 + 声明 → 生效配置（逻辑集中在 {@link PolicyResolver}，避免两处规则漂移）。
+     *
+     * @param decl   声明
+     * @param stored 数据源记录
+     * @return 生效配置
+     */
     private NamespacePolicy fromStored(CacheStrategyDecl decl, StoredPolicy stored) {
-        LocalStrategy strategy = stored.strategy() == null ? decl.getStrategy() : stored.strategy();
-        String description = stored.description() == null ? decl.getDescription() : stored.description();
-        long maxSize = stored.maxSize() == null ? BuiltinDefaults.MAX_SIZE : stored.maxSize();
-        Duration localTtl = stored.localTtl() == null ? BuiltinDefaults.LOCAL_TTL : stored.localTtl();
-        LocalCacheSpec.VersionSpec version = stored.version() == null
-                ? LocalCacheSpec.VersionSpec.defaults() : stored.version();
-        LocalCacheSpec.DynamicSpec dynamic = stored.dynamic() == null
-                ? (strategy == LocalStrategy.DYNAMIC ? LocalCacheSpec.DynamicSpec.defaults() : null)
-                : stored.dynamic();
-        Duration centralTtl = stored.centralTtl() == null ? BuiltinDefaults.CENTRAL_TTL : stored.centralTtl();
-        Duration centralNullTtl = stored.centralNullTtl() == null
-                ? BuiltinDefaults.CENTRAL_NULL_TTL : stored.centralNullTtl();
-        boolean failOpen = stored.failOpen() == null || stored.failOpen();
-        int nullDivisor = stored.localNullTtlDivisor() == null
-                ? BuiltinDefaults.LOCAL_NULL_TTL_DIVISOR : stored.localNullTtlDivisor();
-        return new NamespacePolicy(
-                decl.getNamespace(), description, strategy, decl.getStrategy(),
-                maxSize, localTtl, nullDivisor, version, dynamic,
-                centralTtl, centralNullTtl, failOpen,
-                stored.configVersion(), stored.updatedAtMillis(), stored.updatedBy(), stored.reason(),
-                NamespacePolicy.Source.REPOSITORY);
+        return PolicyResolver.fromStored(decl, stored);
     }
 
     private void logResolved(NamespacePolicy policy) {

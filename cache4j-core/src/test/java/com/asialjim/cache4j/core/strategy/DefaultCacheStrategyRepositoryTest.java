@@ -150,7 +150,7 @@ class DefaultCacheStrategyRepositoryTest {
             }
 
             @Override
-            public List<StoredPolicy> loadAll() {
+            public Page<StoredPolicy> query(String keyword, int page, int size) {
                 throw new IllegalStateException("redis down");
             }
 
@@ -174,7 +174,7 @@ class DefaultCacheStrategyRepositoryTest {
     }
 
     @Test
-    @DisplayName("启动装配不调用 loadAll（预装配集合由声明决定，孤儿不参与）")
+    @DisplayName("启动装配不查数据源列表（预装配集合由声明决定，孤儿不参与）")
     void bootstrapNeverCallsLoadAll() {
         FakeDataSource dataSource = new FakeDataSource();
         dataSource.put(new StoredPolicy("orphan:cache", null, LocalStrategy.STATIC, null, null, null,
@@ -184,9 +184,41 @@ class DefaultCacheStrategyRepositoryTest {
 
         repository.bootstrap();
 
-        assertEquals(0, dataSource.loadAllCalls, "启动装配不应遍历数据源");
+        assertEquals(0, dataSource.queryCalls, "启动装配不应遍历数据源");
         assertEquals(1, repository.all().size(), "孤儿配置不参与装配");
         assertEquals("user:detail", repository.all().get(0).namespace());
+    }
+
+    @Test
+    @DisplayName("分页查询交给数据源（存储侧过滤+分页），孤儿记录标 orphan")
+    void pageDelegatesToDataSource() {
+        FakeDataSource dataSource = new FakeDataSource();
+        dataSource.put(new StoredPolicy("user:detail", "声明过的", LocalStrategy.STATIC, 3_000L, null,
+                null, null, null, null, null, null, 5L, 0L, null, null));
+        dataSource.put(new StoredPolicy("orphan:a", null, LocalStrategy.NONE, null, null,
+                null, null, null, null, null, null, 1L, 0L, null, null));
+        dataSource.put(new StoredPolicy("orphan:b", null, LocalStrategy.NONE, null, null,
+                null, null, null, null, null, null, 2L, 0L, null, null));
+
+        DefaultCacheStrategyRepository repository = new DefaultCacheStrategyRepository(dataSource);
+        repository.declare(Decls.USER_DETAIL, "测试声明");
+        repository.bootstrap();
+        dataSource.queryCalls = 0;
+
+        Page<StrategyView> firstPage = repository.page(null, 0, 2);
+        assertEquals(1, dataSource.queryCalls, "分页必须调用数据源的 query，而不是在内存里切");
+        assertEquals(3L, firstPage.total(), "total 是满足条件的总数，不是当前页条数");
+        assertEquals(2, firstPage.items().size(), "每页 2 条");
+
+        Page<StrategyView> secondPage = repository.page(null, 1, 2);
+        assertEquals(1, secondPage.items().size());
+        assertEquals(2, dataSource.queryCalls);
+
+        // 孤儿记录：数据源有、代码没声明 → 标 orphan，且 declaredStrategy 为空
+        Page<StrategyView> orphans = repository.page("orphan", 0, 10);
+        assertEquals(2L, orphans.total());
+        assertTrue(orphans.items().stream().allMatch(StrategyView::orphan));
+        assertTrue(orphans.items().stream().allMatch(v -> v.declaredStrategy() == null));
     }
 
     // ------------------------------------------------------------------ fixtures
@@ -233,12 +265,12 @@ class DefaultCacheStrategyRepositoryTest {
     }
 
     /**
-     * 内存数据源 fixture（记录 loadAll 调用次数）。
+     * 内存数据源 fixture（记录 query 调用次数）。
      */
     private static final class FakeDataSource implements CacheStrategyDataSource {
 
         private final Map<String, StoredPolicy> store = new LinkedHashMap<>();
-        private int loadAllCalls;
+        private int queryCalls;
 
         void put(StoredPolicy policy) {
             store.put(policy.namespace(), policy);
@@ -250,9 +282,9 @@ class DefaultCacheStrategyRepositoryTest {
         }
 
         @Override
-        public List<StoredPolicy> loadAll() {
-            loadAllCalls++;
-            return new ArrayList<>(store.values());
+        public Page<StoredPolicy> query(String keyword, int page, int size) {
+            queryCalls++;
+            return Page.of(new ArrayList<>(store.values()), keyword, page, size);
         }
 
         @Override
