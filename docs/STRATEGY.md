@@ -146,18 +146,73 @@ public interface CacheDecl {
 
 | 方案 | 优点 | 缺点 | 结论 |
 |---|---|---|---|
-| **`ServiceLoader`**（`META-INF/services/...CacheDecl`） | 零反射扫描、零依赖、可预测、GraalVM 友好 | 需要一行 `resources` 文件；**枚举类必须被列进去** | **core 默认** |
+| **按 `ServiceLoader` 约定读文件**（`META-INF/services/...CacheDecl`） | 零依赖、可预测；文件格式是通用约定，工具都认识 | 需要一行 `resources` 文件 | **core 默认**（加载逻辑自研，见 4.2.1） |
 | **包扫描**（`@CacheNamespace` + 扫描器） | 用户零配置，贴注解即可 | 自研扫描要处理 jar/目录/模块路径/类加载器，易错；启动耗时 | **Spring 适配层**（用 Spring 自带扫描能力），core 不做 |
 | **多态自注册**（枚举静态块调 `Registry.register`） | 无需任何配置 | 类不被加载就不会注册，**漏注册是静默的** | 不采用 |
 
 因此：
 
-- `cache4j-core` 提供 `CacheStrategyLoader.load()`：`ServiceLoader.load(CacheDecl.class)`，逐个
-  `toDefinition()` → `validate()` → 交给注册表；
+- `cache4j-core` 提供 `CacheStrategyLoader.load()`：按 `ServiceLoader` 的**文件约定**读声明，
+  逐个 `toDefinition()` → `validate()` → 交给注册表；
 - `cache4j-spring` 额外提供注解扫描（`@CacheNamespace` 标注的枚举），把扫到的实例一并交给同一个注册表。
-  两条路径幂等合并，冲突检测见 4.4；
-- 纯 Java（无 Spring）用户只需一行 `META-INF/services/com.asialjim.cache4j.core.strategy.CacheDecl`
-  写枚举类名 —— 比包扫描更稳。
+  多条路径幂等合并，冲突检测见 4.4。
+
+### 4.2.1 为什么不能直接用 `ServiceLoader.load(CacheDecl.class)`
+
+`ServiceLoader` 创建 provider 的唯一方式是**反射调用无参构造器**：
+
+```java
+// ServiceLoader 内部（简化）
+Class.forName(className).getDeclaredConstructor().newInstance()
+```
+
+而 `java.lang.reflect.Constructor#newInstance` 对枚举类型**直接拒绝**：
+
+```text
+IllegalArgumentException: Cannot reflectively create enum objects
+```
+
+枚举常量由 JVM 在类初始化时创建，反射新建会破坏单例语义，JDK 明确禁止。所以
+`ServiceLoader.load(CacheDecl.class)` 遇到枚举必然抛 `ServiceConfigurationError`。
+
+**结论：文件格式、路径、每行一个类名的约定全部沿用，但加载逻辑自研**：
+
+```java
+// CacheStrategyLoader 内部（简化）
+for (String line : lines(entry)) {                       // 跳过空行与 # 注释
+    Class<?> type = Class.forName(line, false, loader);
+    if (!CacheDecl.class.isAssignableFrom(type)) {
+        throw invalid(entry + " 第 " + lineNo + " 行：" + line + " 不是 CacheDecl 实现");
+    }
+    if (type.isEnum()) {
+        for (Object constant : type.getEnumConstants()) { // ← 枚举走这里，不反射构造
+            decls.add((CacheDecl) constant);
+        }
+    } else {
+        decls.add((CacheDecl) type.getDeclaredConstructor().newInstance());  // 兼容非枚举写法
+    }
+}
+```
+
+用户体感：**一个枚举 + 一行 resources 文件**。
+
+```text
+src/main/resources/META-INF/services/com.asialjim.cache4j.core.strategy.CacheDecl
+────────────────────────────────────────────────────────────────────────────
+# 每行一个全限定类名，支持 # 注释与空行
+com.acme.cache.UserCacheDecls
+com.acme.cache.OrderCacheDecls
+```
+
+### 4.2.2 加载器的三条实现细节
+
+1. **必须读取全部同名资源再合并**：用 `ClassLoader.getResources(...)` 遍历所有 URL，
+   不要用 `getResource(...)`（只返回第一个，多 jar 场景会静默漏掉一半声明）；
+2. **类加载器可注入**：默认 `Thread.currentThread().getContextClassLoader()`，容器/native image
+   场景允许显式传入，否则容易在插件类加载器下找不到类；
+3. **零文件兜底**：额外支持显式传入枚举类 —— `options.declEnums(UserCacheDecls.class, ...)`，
+   供 GraalVM native image、单元测试、以及不愿维护 resources 文件的使用方使用。
+   三条来源（文件 / 注解扫描 / 显式传入）汇入同一个注册表，同一枚举重复出现只注册一次。
 
 ### 4.3 翻译与校验
 
@@ -175,7 +230,7 @@ public interface CacheDecl {
 ### 4.4 启动流程与 fail-fast
 
 ```
-1. 加载声明：ServiceLoader（+ Spring 扫描）→ List<CacheDecl>
+1. 加载声明：按约定读 `META-INF/services`（+ Spring 注解扫描 + 显式传入）→ List<CacheDecl>
 2. 翻译：CacheDecl → CacheDefinition（一次性）
 3. 冲突检测：同一 namespace 出现多条声明 → 启动失败（报出全部冲突来源）
 4. 中央覆盖：读中央策略存储，命中则以中央为准（运维改过的值优先于代码声明）
@@ -530,7 +585,7 @@ public record StrategyUpdate(
 
 | 期 | 范围 | 产出 |
 |---|---|---|
-| **P1** | `CacheDecl` + `CacheDefinition` 下沉 + ServiceLoader + `InMemoryRegistry` + `StrategyRuntime` 改造（`DefaultTwoLevelCache` 内部按 Runtime 组织） | 声明式初始化可用；**尚无热更**（Runtime 只有一代） |
+| **P1** | `CacheDecl` + `CacheDefinition` 下沉 + 声明加载器（文件约定 + `getEnumConstants`）+ `InMemoryRegistry` + `StrategyRuntime` 改造（`DefaultTwoLevelCache` 内部按 Runtime 组织） | 声明式初始化可用；**尚无热更**（Runtime 只有一代） |
 | **P2** | `change()` + 迁移矩阵 + 乐观锁 + 审计日志 + 指标 | 单节点热更可用 |
 | **P3** | `RedisStrategyStore` + 访问驱动 epoch 检查 + 临时策略 | 多节点一致 |
 | **P4** | Spring 扫描 + Actuator 端点 + `cache4j-starter` | 开箱可用 |
@@ -544,7 +599,7 @@ public record StrategyUpdate(
 | S1 | 变更传播机制 | 访问驱动 / 后台轮询 / pub-sub | **访问驱动**（零线程，与对账同构）；pub-sub 留给适配层加速 |
 | S2 | `STATIC → DYNAMIC` 是否清空本地副本 | 清空 / 转成热点 | **清空**（否则"读得到写不进"）；配预热缓解 |
 | S3 | `DYNAMIC → STATIC` 是否保留副本 | 保留 / 清空 | **保留**（无冲突且避免回源高峰） |
-| S4 | 声明发现方式 | ServiceLoader / 自研包扫描 / 注解自注册 | **ServiceLoader 为主 + Spring 扫描为辅**；core 不自研扫描 |
+| S4 | 声明发现方式 | 文件约定（类 ServiceLoader 但不实例化枚举）/ 自研包扫描 / 注解自注册 | **文件约定为主 + Spring 扫描为辅 + 显式传入兜底**；core 不自研包扫描 |
 | S5 | 多节点一致性是否 P1 必需 | 是 / 否（先单节点） | 单节点先上（P1–P2），P3 补中央存储 |
 | S6 | 是否允许热更中央 TTL | 允许 / 禁止 | **允许但标注"只影响后续写入"**；连接类参数禁止 |
 | S7 | 临时策略（`ttlOfChange`）是否要做 | 做 / 不做 | 做（大促场景刚需，实现成本低：访问驱动检查即可发现过期） |
