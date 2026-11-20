@@ -1,12 +1,16 @@
 package com.asialjim.cache4j.xml;
 
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
+import com.asialjim.cache4j.core.strategy.CacheNamespace;
 import com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.cache.CacheManager;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.FilterType;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 
@@ -52,6 +56,32 @@ class AutoScanAssemblyTest {
             CacheManager springCacheManager = context.getBean("cacheManager", CacheManager.class);
             assertNotNull(springCacheManager.getCache("xml:demo"));
         }
+    }
+
+    @Test
+    @DisplayName("不配 decl.packages：靠 component-scan 扫 @CacheNamespace 自动发现声明")
+    void discoversDeclarationsByComponentScanOnly() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(RedisConnectionFactory.class, AutoScanAssemblyTest::fakeFactory);
+            context.register(Cache4jAutoScanConfiguration.class, NamespaceScanConfig.class);
+            context.refresh();
+
+            TwoLevelCacheManager manager = context.getBean(TwoLevelCacheManager.class);
+            assertEquals(java.util.Set.of("xml:demo"), manager.names(),
+                    "枚举被扫进容器后应当自动成为缓存定义，不需要额外配包名");
+        }
+    }
+
+    /**
+     * 业务侧的常规写法：component-scan 只收 {@code @CacheNamespace}。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ComponentScan(
+            basePackages = "com.asialjim.cache4j.xmlfixture",
+            useDefaultFilters = false,
+            includeFilters = @ComponentScan.Filter(
+                    type = FilterType.ANNOTATION, classes = CacheNamespace.class))
+    static class NamespaceScanConfig {
     }
 
     private static RedisConnectionFactory fakeFactory() {

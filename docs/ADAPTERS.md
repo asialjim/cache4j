@@ -428,13 +428,50 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 > `@Configuration` 类不会被 `ConfigurationClassPostProcessor` 解析——bean 存在，但
 > `@ComponentScan` / `@Autowired` / `@Value` 全是死代码，扫不出任何东西。
 
-业务侧仍要自己提供的三件事：
+业务侧仍要自己提供的两件事：
 
 | 项 | 为什么 |
 |---|---|
 | `RedisConnectionFactory` | 客户端由你选（Lettuce / Jedis），`cache4j-spring-redis` 不锁定客户端 |
-| `cache4j.decl.packages` | `@CacheNamespace` 声明枚举所在包；库无法替你决定 |
 | 值序列化器（可选） | 不提供则用库的默认（JSON，缺 jackson 时退回 JDK）；定义 `cache4jSerializer` 覆盖 |
+
+#### 声明枚举的两种发现方式
+
+**① 交给 Spring 的组件扫描（推荐，不用配包名）**
+
+`@CacheNamespace` 是纯标记（`cache4j-core` 不依赖 Spring，加不了 `@Component`），所以用
+include-filter 把它拉进你的 `component-scan` 即可：
+
+```xml
+<context:component-scan base-package="com.acme">
+    <context:include-filter type="annotation"
+            expression="com.asialjim.cache4j.core.strategy.CacheNamespace"/>
+</context:component-scan>
+```
+
+注解方式：
+
+```java
+@Configuration
+@ComponentScan(basePackages = "com.acme",
+        useDefaultFilters = false,
+        includeFilters = @ComponentScan.Filter(
+                type = FilterType.ANNOTATION, classes = CacheNamespace.class))
+public class AcmeCache4jConfig { }
+```
+
+扫进来的枚举会被 `Cache4jDeclBeanFactoryPostProcessor` 接管：
+
+> Spring 默认拿枚举的构造器做自动装配（`(String, LocalStrategy, String)`），找不到 `String` Bean
+> 直接启动失败。该后置处理器把实例化改成 `getEnumConstants()[0]`——一个枚举类只占一个 Bean 位，
+> 库再从这个类取**全部**常量（`STATIC` / `NONE` / `DYNAMIC` …）。只碰
+> `CacheStrategyDecl` 的枚举，其他枚举一概不动。
+
+**② 配包名让库自己扫**
+
+`cache4j.decl.packages=com.acme.cache`（逗号分隔）。适合没有 `component-scan` 的纯 XML 项目。
+
+两种可以混用：重复的 namespace 会按 namespace 去重，不会报"来源冲突"。
 
 #### Java Config 等价写法
 

@@ -1,13 +1,21 @@
 package com.asialjim.cache4j.spring;
 
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
+import com.asialjim.cache4j.core.strategy.CacheCandidate;
+import com.asialjim.cache4j.core.strategy.CacheDeclTranslator;
+import com.asialjim.cache4j.core.strategy.CacheDefinition;
+import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
+import org.springframework.util.ClassUtils;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 默认的 {@link Cache4jSpringOptions}：从配置读 {@code cache4j.*}，不需要业务自己写 {@code @Bean}。
@@ -43,6 +51,7 @@ public class Cache4jDefaultOptionsConfiguration {
     /**
      * @param centralProvider   中央缓存 provider（由子模块或业务提供）
      * @param environment       注解容器里的配置源
+     * @param declarations      容器里已有的 {@link CacheStrategyDecl}（业务用 component-scan 扫进来的）
      * @param declPackages      XML 容器里的声明扫描包
      * @param statsEnabled      XML 容器里的统计开关
      * @param undeclaredEnabled XML 容器里的未声明自动创建开关
@@ -52,15 +61,44 @@ public class Cache4jDefaultOptionsConfiguration {
     public Cache4jSpringOptions cache4jOptions(
             CentralCacheProvider centralProvider,
             Environment environment,
+            ObjectProvider<CacheStrategyDecl> declarations,
             @Value("${cache4j.decl.packages:}") String declPackages,
             @Value("${cache4j.stats.enabled:}") String statsEnabled,
             @Value("${cache4j.undeclared.enabled:}") String undeclaredEnabled) {
         return Cache4jSpringOptions.builder()
                 .centralProvider(centralProvider, false)
-                .declPackages(packages(value(declPackages, KEY_DECL_PACKAGES, environment)))
+                .caches(discover(declarations,
+                        packages(value(declPackages, KEY_DECL_PACKAGES, environment))))
                 .statsEnabled(flag(value(statsEnabled, KEY_STATS_ENABLED, environment), false))
                 .undeclaredEnabled(flag(value(undeclaredEnabled, KEY_UNDECLARED_ENABLED, environment), true))
                 .build();
+    }
+
+    /**
+     * 汇总声明来源并<b>按 namespace 去重</b>：容器里扫到的与按包名扫到的可能是同一批枚举，
+     * 重复交给装配层会被判成"不同来源争抢同一 namespace"。
+     *
+     * @param declarations 容器里已有的声明
+     * @param packages     按包名扫描的范围
+     * @return 去重后的缓存定义
+     */
+    private static List<CacheDefinition> discover(ObjectProvider<CacheStrategyDecl> declarations,
+                                                  List<String> packages) {
+        CacheDeclTranslator translator = new CacheDeclTranslator();
+        Map<String, CacheDefinition> merged = new LinkedHashMap<>();
+
+        for (CacheStrategyDecl declaration : declarations) {
+            // 一个枚举类在容器里只占一个 Bean 位，真正的声明是它的全部常量
+            for (CacheCandidate candidate : translator.translate(declaration.getClass(), "组件扫描")) {
+                merged.putIfAbsent(candidate.namespace(), candidate.definition());
+            }
+        }
+        for (Class<?> type : new SpringCacheDeclScanner(ClassUtils.getDefaultClassLoader()).scan(packages)) {
+            for (CacheCandidate candidate : translator.translate(type, "声明的包扫描")) {
+                merged.putIfAbsent(candidate.namespace(), candidate.definition());
+            }
+        }
+        return new ArrayList<>(merged.values());
     }
 
     /**
