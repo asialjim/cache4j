@@ -1,6 +1,5 @@
 package com.asialjim.cache4j.spring;
 
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.FilterType;
@@ -43,16 +42,4 @@ public class Cache4jAutoScanConfiguration {
      * 库的根包。
      */
     public static final String LIBRARY_PACKAGE = "com.asialjim.cache4j";
-
-    /**
-     * 修正声明枚举被组件扫描注册后的实例化方式（详见 {@link Cache4jDeclBeanFactoryPostProcessor}）。
-     *
-     * <p>必须是 {@code static} 方法：{@code BeanFactoryPostProcessor} 要早于配置类本身实例化。</p>
-     *
-     * @return 枚举实例化修正器
-     */
-    @Bean
-    public static Cache4jDeclBeanFactoryPostProcessor cache4jDeclBeanFactoryPostProcessor() {
-        return new Cache4jDeclBeanFactoryPostProcessor();
-    }
 }

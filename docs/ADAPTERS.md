@@ -480,6 +480,10 @@ Bean 名保留，类型改成 `CacheNamespaceDeclarations`（库的注册载体�
 真正消费它的是 `Cache4jDefaultOptionsConfiguration`。业务自己用 `@Bean` 提供的非枚举
 `CacheStrategyDecl` 单例也照样认（走 `ObjectProvider<CacheStrategyDecl>`）。
 
+修正器挂在 `Cache4jSpringConfiguration` 上——它是四条装配路径（`@Import` 本类 /
+`@Import(Cache4jCachingConfiguration)` / `Cache4jAutoScanConfiguration` 的扫描 /
+`META-INF/cache4j-context.xml`）的**共同入口**，挂在这里才不会漏。
+
 **② 配包名让库自己扫**
 
 `cache4j.decl.packages=com.acme.cache`（逗号分隔）。适合没有 `component-scan` 的纯 XML 项目。

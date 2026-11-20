@@ -26,6 +26,22 @@ import org.springframework.context.annotation.Configuration;
 public class Cache4jSpringConfiguration {
 
     /**
+     * 修正"声明枚举被组件扫描注册"之后的 Bean 类型（详见 {@link Cache4jDeclBeanFactoryPostProcessor}）。
+     *
+     * <p>挂在这里而不是 {@link Cache4jAutoScanConfiguration}：本类是四条装配路径的<strong>共同入口</strong>
+     * （{@code @Import} 本类 / {@code @Import(Cache4jCachingConfiguration)} / {@code Cache4jAutoScanConfiguration}
+     * 的扫描 / {@code META-INF/cache4j-context.xml}），挂在这里才不会漏。</p>
+     *
+     * <p>必须 {@code static}：{@code BeanFactoryPostProcessor} 要早于配置类本身实例化。</p>
+     *
+     * @return 声明枚举的 Bean 类型修正器
+     */
+    @Bean
+    public static Cache4jDeclBeanFactoryPostProcessor cache4jDeclBeanFactoryPostProcessor() {
+        return new Cache4jDeclBeanFactoryPostProcessor();
+    }
+
+    /**
      * @param options 配置
      * @return 二级缓存管理器（容器关闭时自动关闭）
      */

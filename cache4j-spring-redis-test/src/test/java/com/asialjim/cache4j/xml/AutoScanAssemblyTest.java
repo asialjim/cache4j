@@ -3,6 +3,9 @@ package com.asialjim.cache4j.xml;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.strategy.CacheNamespace;
 import com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration;
+import com.asialjim.cache4j.spring.Cache4jCachingConfiguration;
+import com.asialjim.cache4j.spring.Cache4jDefaultOptionsConfiguration;
+import com.asialjim.cache4j.spring.redis.Cache4jRedisSpringConfiguration;
 import com.asialjim.cache4j.spring.CacheNamespaceDeclarations;
 import com.asialjim.cache4j.xmlfixture.XmlDemoDecl;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
@@ -80,6 +83,25 @@ class AutoScanAssemblyTest {
             CacheNamespaceDeclarations carrier = context.getBean(CacheNamespaceDeclarations.class);
             assertEquals(XmlDemoDecl.class, carrier.declarationType());
             assertEquals(1, carrier.values().size(), "载体持有枚举的全部常量");
+        }
+    }
+
+    @Test
+    @DisplayName("走「精确控制」路线（只 import Cache4jCachingConfiguration）时，枚举扫描同样不会炸")
+    void cachingConfigurationCarriesTheDeclarationFixer() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.register(Cache4jCachingConfiguration.class,
+                    Cache4jDefaultOptionsConfiguration.class,
+                    Cache4jRedisSpringConfiguration.class,
+                    NamespaceScanConfig.class);
+            context.registerBean(RedisConnectionFactory.class, AutoScanAssemblyTest::fakeFactory);
+            context.getEnvironment().getPropertySources().addFirst(new MapPropertySource(
+                    "test", Map.of("cache4j.decl.packages", "com.asialjim.cache4j.xmlfixture")));
+            context.refresh();
+
+            assertEquals(1, context.getBeansOfType(CacheNamespaceDeclarations.class).size());
+            assertEquals(java.util.Set.of("xml:demo"),
+                    context.getBean(TwoLevelCacheManager.class).names());
         }
     }
 
