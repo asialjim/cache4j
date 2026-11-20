@@ -53,7 +53,9 @@ public interface CacheStrategyRepository {
      * 不改动已有信息（仓库是权威，代码声明不得回写已存在的配置）。跳过是幂等行为，
      * 只记 debug 日志，不告警。</p>
      *
-     * <p>仅当两个<strong>声明</strong>争抢同一个且仓库里还没有的 namespace 时，才抛冲突。</p>
+     * <p>判等只看<strong>策略</strong>：声明只表达"这个 namespace 用哪种本地策略"，参数一律走内建默认，
+     * 所以策略相同 = 同一份声明 = 重复登记，静默跳过。仅当两份声明对同一 namespace
+     * 要了<strong>不同策略</strong>（例如一个 STATIC、一个 DYNAMIC）时才抛冲突——那才是代码自己打架。</p>
      */
     void declare(CacheStrategyDecl decl, DeclSource source);
 
@@ -275,7 +277,11 @@ public sealed interface PolicyLookup {
    （SQL `WHERE … LIMIT`、Redis `SCAN MATCH`），绝不把全量记录拉回内存再切页；
 2. **孤儿一律不装配**："装配它干什么，又不用"——数据源里的任意记录若能创建缓存实例，
    等于把数据源变成远程内存控制面（谁能写数据源，谁就能让所有节点分配内存）；
-3. **`bootstrap()` 的语义**是"对每条声明解析出生效值"，不是"把数据源里的全部记录装进来"。
+3. **`bootstrap()` 的语义**是"对每条声明解析出生效值"，不是"把数据源里的全部记录装进来"；
+   同时它会把**数据源里缺失**的声明**播种**进去（`register`，已存在返 false 绝不覆盖）——
+   运维需要看得见"当前每个策略长什么样"的基线，否则数据源里只剩被改过的那几条，核对得回头翻代码。
+   播种失败不影响启动（照常用声明 + 内建默认跑）。播种后内存快照会重读一次，保证
+   `configVersion` 与数据源一致（否则后续 `change` 的乐观锁会拿 0 去比 1，永远冲突）。
 
 ### 3.3 未经声明的 namespace 被业务使用：告警 + 按内建默认创建
 

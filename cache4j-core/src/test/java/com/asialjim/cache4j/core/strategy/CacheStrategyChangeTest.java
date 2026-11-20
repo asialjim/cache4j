@@ -43,13 +43,15 @@ class CacheStrategyChangeTest {
         NamespacePolicy current = repository.find("user:detail").policyOrNull();
         assertEquals(LocalStrategy.STATIC, current.strategy());
 
+        int writesBefore = dataSource.registerCalls + dataSource.updateCalls;
         NamespacePolicy target = withMaxSize(current, 5_000L);
         ChangeResult result = repository.change(request("req-1", target));
 
         assertEquals(ChangeResult.Outcome.APPLIED, result.outcome(), result.message());
         assertTrue(result.configVersion() > current.configVersion());
         assertEquals(5_000L, repository.find("user:detail").policyOrNull().maxSize());
-        assertEquals(1, dataSource.registerCalls + dataSource.updateCalls);
+        assertEquals(writesBefore + 1, dataSource.registerCalls + dataSource.updateCalls,
+                "变更应当恰好写一次数据源");
         assertEquals("ops:zhangsan", result.current().updatedBy());
         assertEquals("扩容量", result.current().reason());
     }
@@ -57,11 +59,13 @@ class CacheStrategyChangeTest {
     @Test
     @DisplayName("逐字段相同：NO_CHANGE，不写数据源")
     void noChangeWritesNothing() {
+        int writesBefore = dataSource.updateCalls + dataSource.registerCalls;
         NamespacePolicy current = repository.find("user:detail").policyOrNull();
         ChangeResult result = repository.change(request("req-2", current));
 
         assertEquals(ChangeResult.Outcome.NO_CHANGE, result.outcome(), result.message());
-        assertEquals(0, dataSource.updateCalls + dataSource.registerCalls);
+        assertEquals(writesBefore, dataSource.updateCalls + dataSource.registerCalls,
+                "逐字段相同的变更不应写数据源");
         assertEquals(current.configVersion(), result.configVersion());
     }
 
@@ -86,6 +90,7 @@ class CacheStrategyChangeTest {
     @Test
     @DisplayName("校验失败：REJECTED，且不写数据源")
     void rejectsInvalidRequest() {
+        int writesBefore = dataSource.updateCalls + dataSource.registerCalls;
         NamespacePolicy current = repository.find("user:detail").policyOrNull();
 
         assertEquals(ChangeResult.Outcome.REJECTED,
@@ -94,7 +99,8 @@ class CacheStrategyChangeTest {
                 repository.change(new StrategyChange("req-6", "ops", "", 0L, current)).outcome());
         assertEquals(ChangeResult.Outcome.REJECTED,
                 repository.change(new StrategyChange("req-7", "ops", "原因", 0L, null)).outcome());
-        assertEquals(0, dataSource.updateCalls + dataSource.registerCalls);
+        assertEquals(writesBefore, dataSource.updateCalls + dataSource.registerCalls,
+                "被拒绝的变更不应写数据源");
     }
 
     @Test

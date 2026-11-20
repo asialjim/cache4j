@@ -78,12 +78,24 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
         if (previous == null) {
             return;
         }
-        if (previous.origin().equals(origin)) {
-            LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明", origin + " 重复登记，已忽略");
+        // 等价声明再次登记：这是常态，不是冲突。
+        //
+        // 同一份声明会被多条路径登记到同一个仓库里——文件声明、包扫描、显式传入、反复装配，
+        // 甚至装配层把已翻译的定义包成 DefinitionDecl 再登记一次。它们的 origin/类名各不相同，
+        // 但**声明的实质相同**。真正该报冲突的是"两个不同的声明争抢同一 namespace"
+        // （例如一个枚举要 STATIC、另一个要 DYNAMIC），那才说明代码自己打架了。
+        // 判等只看 **策略**：声明只表达"这个 namespace 用哪种本地策略"，参数一律走内建默认，
+        // 所以策略相同 = 解析结果等价 = 同一份声明。用类名判等是错的——同一个枚举里两个常量
+        // 声明同一个 namespace 但策略不同（STATIC vs NONE），那是真的代码打架，必须报出来。
+        if (previous.decl().getStrategy() == decl.getStrategy()) {
+            LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明",
+                    origin + " 重复登记同一份声明，已忽略：namespace=" + namespace);
             return;
         }
         throw new CacheException(CacheResCode.INVALID_SPEC,
-                "namespace 冲突：" + namespace + " 同时声明于 " + previous.origin() + " 与 " + origin);
+                "namespace 冲突：" + namespace + " 同时声明于 "
+                        + previous.origin() + "(" + previous.decl().getClass().getSimpleName() + ")"
+                        + " 与 " + origin + "(" + decl.getClass().getSimpleName() + ")");
     }
 
     @Override
@@ -471,9 +483,15 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
         try {
             Optional<StoredPolicy> loaded = dataSource.load(namespace);
             if (loaded.isEmpty()) {
+                NamespacePolicy seeded = fromDeclaration(decl, NamespacePolicy.Source.DECLARED);
                 LOG.debug(CacheLogger.Subject.ASSEMBLY, "初始化",
-                        namespace + " 数据源无记录，用声明 + 内建默认");
-                return fromDeclaration(decl, NamespacePolicy.Source.DECLARED);
+                        namespace + " 数据源无记录，用声明 + 内建默认，并播种到数据源");
+                seed(namespace, seeded);
+                // 播种成功后重读一次：让内存快照与数据源一致（configVersion 至少为 1，
+                // 否则后续 change 的乐观锁会拿 0 去比 1，永远冲突）
+                return dataSource.load(namespace)
+                        .map(seededStored -> fromStored(decl, seededStored))
+                        .orElse(seeded);
             }
             stored = loaded.get();
         } catch (RuntimeException e) {
@@ -483,6 +501,42 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
             return fromDeclaration(decl, NamespacePolicy.Source.DECLARED);
         }
         return fromStored(decl, stored);
+    }
+
+    /**
+     * 播种：把"代码声明解析出的生效值"写进数据源（仅在该 namespace <strong>没有记录</strong>时）。
+     *
+     * <p>为什么播种：运维需要看得见"当前每个策略长什么样"的基线——否则数据源里只有被改过的那几条，
+     * 想核对得回头翻代码。{@code register} 语义是"已存在返 false、绝不覆盖"，所以播种永远不会
+     * 踩掉运维改过的值；后续改动仍然走 {@code change} 的乐观锁。</p>
+     *
+     * <p>播种失败<strong>不影响启动</strong>：数据源不可用时照常用声明 + 内建默认跑起来。</p>
+     *
+     * @param namespace 命名空间
+     * @param policy    解析结果
+     */
+    private void seed(String namespace, NamespacePolicy policy) {
+        if (dataSource == null) {
+            return;
+        }
+        StoredPolicy stored = new StoredPolicy(
+                policy.namespace(), policy.description(), policy.strategy(),
+                policy.maxSize(), policy.localTtl(), policy.localNullTtlDivisor(),
+                policy.version(), policy.dynamic(),
+                policy.centralTtl(), policy.centralNullTtl(), policy.failOpen(),
+                // 首次登记配置版本至少为 1，便于运营面用 0 表示"从未落库"
+                Math.max(1L, policy.configVersion()), System.currentTimeMillis(),
+                "system", "代码声明播种（bootstrap）");
+        try {
+            if (!dataSource.register(stored)) {
+                LOG.debug(CacheLogger.Subject.STRATEGY_REPO, "播种",
+                        namespace + " 播种时发现记录已存在，以数据源为准");
+            }
+        } catch (RuntimeException e) {
+            LOG.warnThrottled(CacheLogger.Subject.STRATEGY_REPO, "播种", () ->
+                    "声明播种失败，本节点仍按声明 + 内建默认运行：namespace=" + namespace
+                            + "，原因=" + e.getMessage());
+        }
     }
 
     private NamespacePolicy fromDeclaration(CacheStrategyDecl decl, NamespacePolicy.Source ignored) {

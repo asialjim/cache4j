@@ -4,6 +4,7 @@ import com.asialjim.cache4j.core.KeyEncoder;
 import com.asialjim.cache4j.core.KeyEncoders;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
+import com.asialjim.cache4j.core.strategy.CacheStrategyRepository;
 import com.asialjim.cache4j.local.HashMapLocalCacheProvider;
 import com.asialjim.cache4j.local.LocalCacheProvider;
 
@@ -34,6 +35,7 @@ public final class Cache4jSpringOptions {
     private final List<String> declPackages;
     private final List<Class<?>> declEnums;
     private final boolean undeclaredEnabled;
+    private final CacheStrategyRepository strategyRepository;
 
     private Cache4jSpringOptions(Builder builder) {
         this.enabled = builder.enabled;
@@ -46,6 +48,17 @@ public final class Cache4jSpringOptions {
         this.declPackages = List.copyOf(builder.declPackages);
         this.declEnums = List.copyOf(builder.declEnums);
         this.undeclaredEnabled = builder.undeclaredEnabled;
+        this.strategyRepository = builder.strategyRepository;
+    }
+
+    /**
+     * @return 构建器
+     */
+    /**
+     * @return 策略仓库；{@code null} 表示不启用仓库（只按声明 + 内建默认）
+     */
+    public CacheStrategyRepository strategyRepository() {
+        return strategyRepository;
     }
 
     /**
@@ -142,6 +155,8 @@ public final class Cache4jSpringOptions {
         private final List<String> declPackages = new ArrayList<>();
         private final List<Class<?>> declEnums = new ArrayList<>();
         private boolean undeclaredEnabled = true;
+
+        private CacheStrategyRepository strategyRepository;
 
         /**
          * @param value 是否启用
@@ -244,6 +259,17 @@ public final class Cache4jSpringOptions {
          * @param value 未声明的 namespace 是否按内建默认自动创建（默认 true）
          * @return this
          */
+        /**
+         * 启用策略仓库：装配定义改为从仓库取（声明会被登记进仓库）。
+         *
+         * @param value 仓库；{@code null} 表示不启用
+         * @return this
+         */
+        public Builder strategyRepository(CacheStrategyRepository value) {
+            this.strategyRepository = value;
+            return this;
+        }
+
         public Builder undeclaredEnabled(boolean value) {
             this.undeclaredEnabled = value;
             return this;

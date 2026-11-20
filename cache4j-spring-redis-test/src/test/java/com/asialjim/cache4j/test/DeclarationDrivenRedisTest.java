@@ -317,19 +317,19 @@ class DeclarationDrivenRedisTest {
     static class DeclService {
 
         @Cacheable(cacheNames = NS_STATIC, key = "#id")
-        String staticValue(String id) {
+        public String staticValue(String id) {
             STATIC_LOADS.incrementAndGet();
             return "static-" + id;
         }
 
         @Cacheable(cacheNames = NS_NONE, key = "#id")
-        String noneValue(String id) {
+        public String noneValue(String id) {
             NONE_LOADS.incrementAndGet();
             return "none-" + id;
         }
 
         @Cacheable(cacheNames = NS_DYNAMIC, key = "#id")
-        String dynamicValue(String id) {
+        public String dynamicValue(String id) {
             DYNAMIC_LOADS.incrementAndGet();
             return "dynamic-" + id;
         }

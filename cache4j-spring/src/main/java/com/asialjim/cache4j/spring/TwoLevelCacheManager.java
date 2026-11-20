@@ -3,6 +3,8 @@ package com.asialjim.cache4j.spring;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import java.util.concurrent.ConcurrentHashMap;
+import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
+import com.asialjim.cache4j.core.strategy.CacheStrategyRepository;
 import com.asialjim.cache4j.core.strategy.DefaultCacheStrategyRepository;
 import com.asialjim.cache4j.core.strategy.CacheStrategyLoader;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
@@ -150,25 +152,82 @@ public final class TwoLevelCacheManager implements AutoCloseable {
         Map<String, CacheDefinition> merged = new LinkedHashMap<>();
         Map<String, String> origins = new LinkedHashMap<>();
 
+        // ① 程序化定义永远是完整 spec，原样保留（仓库不参与）
         for (CacheDefinition definition : options.definitions()) {
             put(merged, origins, definition, "程序化定义");
         }
-        ClassLoader classLoader = ClassUtils.getDefaultClassLoader();
-        CacheDeclTranslator translator = new CacheDeclTranslator();
-        for (CacheCandidate candidate : new CacheStrategyLoader(classLoader).load()) {
-            put(merged, origins, candidate.definition(), candidate.origin());
-        }
-        for (Class<?> type : new SpringCacheDeclScanner(classLoader).scan(options.declPackages())) {
-            for (CacheCandidate candidate : translator.translate(type, "Spring 扫描")) {
+
+        List<CacheCandidate> declared = declaredCandidates(options);
+        CacheStrategyRepository repository = options.strategyRepository();
+        if (repository == null) {
+            // ② 没有仓库：声明直接按"声明 + 内建默认"生效
+            for (CacheCandidate candidate : declared) {
                 put(merged, origins, candidate.definition(), candidate.origin());
             }
+            return new ArrayList<>(merged.values());
         }
-        for (Class<?> type : options.declEnums()) {
-            for (CacheCandidate candidate : translator.translate(type, "显式传入")) {
-                put(merged, origins, candidate.definition(), candidate.origin());
-            }
+
+        // ② 有仓库：声明登记进仓库（已存在则跳过，绝不覆盖运维改过的值），
+        //    再由仓库给出生效定义——运维的改动因此能覆盖代码里的声明默认值
+        for (CacheCandidate candidate : declared) {
+            repository.declare(new DefinitionDecl(candidate.namespace(),
+                    candidate.definition().local().strategy(), candidate.origin()), candidate.origin());
+        }
+        List<String> failures = repository.bootstrap();
+        if (!failures.isEmpty()) {
+            LOG.warn(CacheLogger.Subject.ASSEMBLY, "装配",
+                    "策略仓库自举有 " + failures.size() + " 个 namespace 失败：" + failures);
+        }
+        for (CacheDefinition definition : repository.definitions()) {
+            merged.putIfAbsent(definition.namespace(), definition);
         }
         return new ArrayList<>(merged.values());
+    }
+
+    /**
+     * 汇总代码里的声明来源（文件 / 包扫描 / 显式传入）。
+     *
+     * @param options 配置
+     * @return 声明候选
+     */
+    private static List<CacheCandidate> declaredCandidates(Cache4jSpringOptions options) {
+        List<CacheCandidate> candidates = new ArrayList<>();
+        ClassLoader classLoader = ClassUtils.getDefaultClassLoader();
+        CacheDeclTranslator translator = new CacheDeclTranslator();
+        candidates.addAll(new CacheStrategyLoader(classLoader).load());
+        for (Class<?> type : new SpringCacheDeclScanner(classLoader).scan(options.declPackages())) {
+            candidates.addAll(translator.translate(type, "Spring 扫描"));
+        }
+        for (Class<?> type : options.declEnums()) {
+            candidates.addAll(translator.translate(type, "显式传入"));
+        }
+        return candidates;
+    }
+
+    /**
+     * 把已翻译好的定义包回声明——登记进策略仓库时用。
+     *
+     * @param namespace   命名空间
+     * @param strategy    本地策略
+     * @param description 说明（这里放来源）
+     */
+    private record DefinitionDecl(String namespace, LocalStrategy strategy, String description)
+            implements CacheStrategyDecl {
+
+        @Override
+        public String getNamespace() {
+            return namespace;
+        }
+
+        @Override
+        public LocalStrategy getStrategy() {
+            return strategy;
+        }
+
+        @Override
+        public String getDescription() {
+            return description;
+        }
     }
 
     private static void put(Map<String, CacheDefinition> merged, Map<String, String> origins,

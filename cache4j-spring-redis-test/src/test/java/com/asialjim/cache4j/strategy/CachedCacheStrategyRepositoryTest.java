@@ -118,14 +118,18 @@ class CachedCacheStrategyRepositoryTest {
     }
 
     @Test
-    @DisplayName("数据源没有记录：find 返回 Absent")
-    void absentWhenDataSourceHasNoRecord() {
+    @DisplayName("从未声明、数据源也没有的 namespace：find 返回 Absent，负缓存生效")
+    void absentWhenNeverDeclared() {
         Fixture fixture = new Fixture();
         fixture.repository.declare(Decls.USER_DETAIL, "声明");
         fixture.repository.bootstrap();
         fixture.repository.selfCache().clear();
 
-        assertInstanceOf(PolicyLookup.Absent.class, fixture.repository.find(NS));
+        // 已声明的 namespace 会被 bootstrap 播种进数据源，所以它不再 Absent
+        assertInstanceOf(PolicyLookup.Found.class, fixture.repository.find(NS));
+
+        // 真正 Absent 的是"谁都没提过"的 namespace
+        assertInstanceOf(PolicyLookup.Absent.class, fixture.repository.find("never:declared"));
     }
 
     @Test
