@@ -1,13 +1,18 @@
 package com.asialjim.cache4j.test;
 
+import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.strategy.CacheNamespace;
+import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
 import com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -36,8 +41,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>需要真实 Redis（{@code 127.0.0.1:6379}），不可达时整组跳过；
  * 可用 {@code -Dcache4j.test.redis.host/port/password} 覆盖。</p>
  *
+ * <p><strong>跑完不清理 Redis。</strong>每个用例开始前会清一次自己的 namespace（保证可重复），
+ * 最后一个用例 {@link #leaveSamplesForInspection()} 会写入三条样本并留在库里，方便直接观察：</p>
+ *
+ * <pre>
+ * redis-cli --scan --pattern 'cache4j:{decl:*'
+ * redis-cli hgetall 'cache4j:{decl:static}:__rev'      # 版本表（field=key，value=rev|expireAt）
+ * redis-cli get    'cache4j:{decl:static}:s4:keep'     # 数据（s4 = 编码后的 key，keep 是 4 字符）
+ * </pre>
+ *
  * @author Asial Jim
  */
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class DeclarationDrivenRedisTest {
 
     private static final String NS_STATIC = "decl:static";
@@ -83,13 +98,23 @@ class DeclarationDrivenRedisTest {
             context = null;
         }
         if (connectionFactory != null) {
-            clearNamespaces();
+            // 刻意不清 Redis：跑完留在库里，方便直接进 redis-cli 观察中央缓存的内容
             connectionFactory.destroy();
             connectionFactory = null;
         }
     }
 
     @Test
+    @Order(1)
+    @DisplayName("测试里的 cacheNames 常量与枚举声明一致（防漂移）")
+    void cacheNamesMatchDeclarations() {
+        assertEquals(Decl.STATIC.getNamespace(), NS_STATIC);
+        assertEquals(Decl.NONE.getNamespace(), NS_NONE);
+        assertEquals(Decl.DYNAMIC.getNamespace(), NS_DYNAMIC);
+    }
+
+    @Test
+    @Order(2)
     @DisplayName("三条声明自动装配成三条缓存，不需要任何程序化定义")
     void declarationsDriveAssembly() {
         TwoLevelCacheManager manager = context.getBean(TwoLevelCacheManager.class);
@@ -97,6 +122,7 @@ class DeclarationDrivenRedisTest {
     }
 
     @Test
+    @Order(3)
     @DisplayName("STATIC：本地有副本，第二次调用不再执行方法体，Redis 里有数据")
     void staticDeclarationServesFromLocal() {
         DeclService service = context.getBean(DeclService.class);
@@ -110,6 +136,7 @@ class DeclarationDrivenRedisTest {
     }
 
     @Test
+    @Order(4)
     @DisplayName("NONE：本地不放副本，靠中央命中，Redis 里有数据")
     void noneDeclarationOnlyUsesCentral() {
         DeclService service = context.getBean(DeclService.class);
@@ -123,6 +150,7 @@ class DeclarationDrivenRedisTest {
     }
 
     @Test
+    @Order(5)
     @DisplayName("DYNAMIC：冷 key 不进本地，但仍能从中央命中")
     void dynamicDeclarationKeepsColdKeyOutOfLocal() {
         DeclService service = context.getBean(DeclService.class);
@@ -136,6 +164,28 @@ class DeclarationDrivenRedisTest {
 
         assertEquals("dynamic-7", service.dynamicValue("7"));
         assertEquals(1, DYNAMIC_LOADS.get(), "第二次应命中中央");
+    }
+
+    /**
+     * 最后跑：三条策略各写一条，<strong>刻意留在 Redis 里</strong>给人工观察。
+     *
+     * <p>它会先把三个 namespace 清空，所以跑完之后库里正好是这三条样本。</p>
+     */
+    @Test
+    @Order(99)
+    @DisplayName("三条策略都写入中央，并把样本留在 Redis 里供观察")
+    void leaveSamplesForInspection() {
+        DeclService service = context.getBean(DeclService.class);
+        assertEquals("static-keep", service.staticValue("keep"));
+        assertEquals("none-keep", service.noneValue("keep"));
+        assertEquals("dynamic-keep", service.dynamicValue("keep"));
+
+        assertTrue(redisHasKey(NS_STATIC), "STATIC 应写入中央：" + NS_STATIC);
+        assertTrue(redisHasKey(NS_NONE), "NONE 应写入中央：" + NS_NONE);
+        assertTrue(redisHasKey(NS_DYNAMIC), "DYNAMIC 应写入中央：" + NS_DYNAMIC);
+
+        System.out.println("[DeclarationDrivenRedisTest] 已保留样本，可用 "
+                + "redis-cli --scan --pattern 'cache4j:{decl:*' 观察");
     }
 
     // ------------------------------------------------------------------ 断言辅助
@@ -174,6 +224,58 @@ class DeclarationDrivenRedisTest {
         DYNAMIC_LOADS.set(0);
     }
 
+    // ------------------------------------------------------------------ 声明
+
+    /**
+     * 缓存策略声明——业务侧要写的就只有这一段。
+     *
+     * <p>三种策略各一条，全部靠 {@link CacheNamespace} 标记 + component-scan 发现，
+     * 不需要程序化 {@code CacheDefinition}，也不需要配 {@code cache4j.decl.packages}。</p>
+     */
+    @CacheNamespace
+    public enum Decl implements CacheStrategyDecl {
+
+        /**
+         * 静态本地缓存。
+         */
+        STATIC("decl:static", LocalStrategy.STATIC, "静态本地缓存（声明驱动测试）"),
+
+        /**
+         * 禁用本地缓存，只走中央。
+         */
+        NONE("decl:none", LocalStrategy.NONE, "只走中央缓存（声明驱动测试）"),
+
+        /**
+         * 动态本地缓存。
+         */
+        DYNAMIC("decl:dynamic", LocalStrategy.DYNAMIC, "动态本地缓存（声明驱动测试）");
+
+        private final String namespace;
+        private final LocalStrategy strategy;
+        private final String description;
+
+        Decl(String namespace, LocalStrategy strategy, String description) {
+            this.namespace = namespace;
+            this.strategy = strategy;
+            this.description = description;
+        }
+
+        @Override
+        public String getNamespace() {
+            return namespace;
+        }
+
+        @Override
+        public LocalStrategy getStrategy() {
+            return strategy;
+        }
+
+        @Override
+        public String getDescription() {
+            return description;
+        }
+    }
+
     // ------------------------------------------------------------------ 装配
 
     /**
@@ -186,7 +288,7 @@ class DeclarationDrivenRedisTest {
     @Configuration(proxyBeanMethods = false)
     @Import(Cache4jAutoScanConfiguration.class)
     @ComponentScan(
-            basePackages = "com.asialjim.cache4j.declfixture",
+            basePackages = "com.asialjim.cache4j.test",
             useDefaultFilters = false,
             includeFilters = @ComponentScan.Filter(
                     type = FilterType.ANNOTATION, classes = CacheNamespace.class))
