@@ -304,7 +304,7 @@ find(ns)
   ├─ 本地副本命中 → 直接返回 Found（到点则顺带做版本对账，最多 5s 一次）
   ├─ 本地未命中 → 中央缓存 → 命中则回填本地
   └─ 中央也未命中 → dataSource.load(ns)
-        ├─ 有值 ⇒ 回填两层 → Found
+        ├─ 有值 ⇒ **putIfAbsent** 回填两层（§4.3.2）→ Found
         ├─ empty ⇒ "该 namespace 没有配置" ⇒ 中央缓存一个空值（5m）→ Absent
         └─ 异常 ⇒ Unavailable（不回填、不缓存失败）
 ```
@@ -320,8 +320,54 @@ change(req)
       该 namespace 此前无记录 ⇒ register(policy)   —— false（已被别人抢先建）⇒ CONFLICT
       已有记录              ⇒ update(policy, expectedConfigVersion) —— empty ⇒ CONFLICT
   → 失败 ⇒ REJECTED / CONFLICT（本机与数据源都不变）
-  → 成功 ⇒ 写穿自己的中央缓存 + 本地副本（putIfNewer）→ 审计
+  → 成功 ⇒ 写穿自己的中央缓存（**无条件 put**）+ 本地副本 → 审计
 ```
+
+#### 4.3.1 三种写入语义，各归其位（这就是不需要缓存层 CAS 的原因）
+
+| 动作 | 语义 | 用哪个 SPI | 为什么 |
+|---|---|---|---|
+| `update` / `register` | **比较后写**（乐观锁） | 数据源自己实现（Lua / DB 条件更新） | `configVersion` 的 CAS 战场在数据源，缓存层不知道它的存在 |
+| **写穿** | **无条件覆盖** | `CentralCache.putAndGetRevision` / `LocalCache.put` | 写穿的是刚从数据源拿到的权威值，必然最新，不需要比较 |
+| **回填** | **条件插入** | `CentralCache.putIfAbsentAndGetRevision` / `LocalCache.putIfAbsent` | 防止"读到旧值的线程"把别人刚写穿的新值覆盖掉 |
+
+> 结论：**缓存层不需要"比较后再写"的第三种语义**，因此不需要 `RedisValueStore.writeIfRevision` 这类扩展。
+
+#### 4.3.2 为什么回填必须用 `putIfAbsent`（而不是 put / putIfNewer）
+
+```text
+线程 A（读，中央 miss）→ 读数据源拿到 v1 ──┐
+线程 B（管理端）→ update 数据源 → v2 → 写穿 v2 ─┤
+线程 A → 回填 v1 ←──────────────────────────────┘
+```
+
+| 顺序 | 回填用 `put` | 回填用 `putIfAbsent` |
+|---|---|---|
+| A 先回填、B 后写穿 | B 覆盖 → v2 ✓ | B 覆盖 → v2 ✓ |
+| B 先写穿、A 后回填 | **A 覆盖成 v1 ✗（旧值滞留到 TTL 过期）** | A 失败 → v2 ✓ |
+
+`putIfNewer` 也挡不住：它比较的是**缓存条目 revision**，而 A 的回填发生在写穿之后，
+若用 `putIfNewer` 会重新生成更大 revision 从而成功覆盖（这正是 D18 回填竞态的同类问题）。
+
+**"只 evict 不写穿"的变体同样挡不住**：evict 让缓存变空，A 的 `putIfAbsent` 反而会成功写入旧值。
+所以必须"**写穿（put）+ 回填（putIfAbsent）**"成对使用。
+
+#### 4.3.3 写穿失败是必须处置的降级，而不是可忽略的抖动
+
+数据源已 `update` 成功、但写穿失败（中央 Redis 抖动）时的后果：
+
+```text
+中央缓存仍是旧值 → 该条目 revision 未变 → 业务端对账发现不了差异
+→ 一直用旧策略，最坏 centralTtl（3 天）后才过期回源
+```
+
+契约要求：
+
+1. 写穿失败必须 **`error` 日志 + `strategyRepoSyncErrorCount` 指标**（不能静默）；
+2. `ChangeResult` 要能区分"已持久化但缓存未同步"（建议 `Outcome.APPLIED_STALE`），
+   否则运维会以为已经全节点生效；
+3. 补偿手段：再执行一次 `change`（幂等且值相同 ⇒ 会重新写穿），或手动 evict 中央条目；
+4. **这一条 `writeIfRevision` 类扩展也堵不住**——它只改变写入方式，不改变失败处置。
 
 - 先持久化、后写穿：数据源失败时管理服务不生效，避免"管理服务看到新值、业务端看不到"；
 - 业务端不写穿，它只会在 5s 内通过对账发现新版本。
@@ -541,9 +587,14 @@ public record StrategyChange(
         NamespacePolicy policy     // 必填，**完整对象**（见下方说明）
 ) { }
 
-/** 变更结果。四态 + 明确的下一步。 */
+/**
+ * 变更结果。五态 + 明确的下一步。
+ *
+ * <p>{@code APPLIED_STALE} = 数据源已写入成功、但写穿缓存失败：**当前节点已生效，
+ * 其他节点可能延迟到 centralTtl 才看到**，必须告警并重试（见 §4.3.3）。</p>
+ */
 public record ChangeResult(
-        Outcome outcome,           // APPLIED / NO_CHANGE / CONFLICT / REJECTED
+        Outcome outcome,           // APPLIED / APPLIED_STALE / NO_CHANGE / CONFLICT / REJECTED
         String namespace,
         long configVersion,        // 变更后的版本（CONFLICT 时为**当前**版本）
         StrategyView current,      // 变更后（或当前）视图，便于调用方直接渲染
@@ -602,7 +653,7 @@ public record ChangeResult(
                      │ 6. 持久化                     │ 无记录→register(否⇒CONFLICT)
                      │    （register 或 update）     │ 有记录→update(空⇒CONFLICT)
                      ├──────────────────────────────┤
-                     │ 7. 原子提交（换引用）         │ 唯一提交点
+                     │ 7. 原子提交（换引用）+ 写穿   │ 写穿失败 ⇒ APPLIED_STALE
                      ├──────────────────────────────┤
                      │ 8. 审计 + 指标（无广播）      │ 其他节点靠 5s 版本对账自行发现
                      └──────────────────────────────┘
@@ -613,7 +664,9 @@ public record ChangeResult(
 - **先持久化（6）后生效（7）**：数据源失败时管理服务不生效，避免"管理端看到新值、业务端看不到"；
 - **第 5 步试装配**：先造出新 Runtime 再提交，确保"提交后不可能因装配失败而空转"；
 - **第 8 步没有广播**：变更写在中央条目里，其他节点在下一次读策略时由版本对账发现（≤5s）；
-  审计/指标写失败只影响可观测性，不回滚已生效的值。
+  审计/指标写失败只影响可观测性，不回滚已生效的值；
+- **写穿失败是唯一的"部分成功"**：`APPLIED_STALE`，当前节点已生效、其他节点可能延迟到
+  `centralTtl` 才看到 → 必须告警 + 可补偿（§4.3.3）。
 
 ## 13. 幂等、乐观锁与并发
 
@@ -622,6 +675,7 @@ public record ChangeResult(
 | **幂等键** | `requestId` 必填；同一 `requestId` 重复提交返回**首次结果**（不重复生效）。**作用域仅本管理服务进程内存**（保留 ≥ 10 分钟）；多实例管理服务之间不共享幂等表，重复请求由乐观锁兜底成 `CONFLICT` |
 | **乐观锁** | 由数据源 `update(policy, expectedConfigVersion)` 裁决；不匹配返回 `CONFLICT` + 当前版本，调用方重新 `find` 后再试 |
 | **注册 vs 更新** | 该 namespace 在数据源里**没有记录** ⇒ `register`（不覆盖）；**已有记录** ⇒ `update`（必带版本）。两者不得混用 |
+| **写穿与回填** | 写穿用无条件 `put`；回填用 `putIfAbsent`。二者不得互换（§4.3.2） |
 | **并发同 key** | 同一 namespace 的 `change` 串行；不同 namespace 并行 |
 | **NO_CHANGE** | 目标配置与当前逐字段相等 ⇒ 不写数据源、不换 Runtime、`configVersion` 不变 |
 | **`configVersion` 生成** | 只能由**数据源**（`register`/`update` 时生成）递增；**门面与调用方都不得自增** |
@@ -698,6 +752,7 @@ long strategyRepoErrorCount();     // 读策略失败次数
 long strategyRepoHitRate();        // 仓库自用缓存的本地命中率（诊断：太低说明策略读得太散）
 long strategyAbsentCount();        // find 返回 Absent 的次数（策略确实没配）
 long strategyUnavailableCount();   // find 返回 Unavailable 的次数（数据源/中央读不到）
+long strategyRepoSyncErrorCount(); // 写穿缓存失败次数（>0 说明有变更可能延迟到 centralTtl 才传播）
 
 > 没有"变更检查次数"这类指标了——传播由版本对账完成，相关观测看仓库自用缓存自身的
 > `versionSyncCount` / `versionInvalidationCount`。
@@ -736,7 +791,9 @@ long strategyUnavailableCount();   // find 返回 Unavailable 的次数（数据
 | 数据源异常 | `load` 抛异常 ⇒ 按未命中继续 + `repoErrorCount++`；**不得**缓存失败结果 |
 | 数据源写入失败 | `register`/`update` 抛异常或返回 empty ⇒ `REJECTED`/`CONFLICT`，两层缓存不变 |
 | 数据源无 CAS（B 级） | `update` 忽略 `expectedConfigVersion` ⇒ 永不 `CONFLICT`，`StrategyView.casSupported=false` |
-| 写穿顺序 | `change` 成功后本机 `find` 立即新值；并发对账不会把旧值回填回来（`putIfNewer` 保护） |
+| 写穿顺序 | `change` 成功后本机 `find` 立即新值；并发"读到旧值的回填"不会覆盖写穿的新值（回填用 `putIfAbsent`） |
+| 回填竞态 | 构造"A 中央 miss 读数据源 v1 → B update+写穿 v2 → A 回填"，断言缓存最终是 v2（两种执行顺序都要过） |
+| 写穿失败 | 中央写穿抛异常 ⇒ `APPLIED_STALE` + error 日志 + `strategyRepoSyncErrorCount++`；再次 `change` 可补偿 |
 | 自举参数 | `maxSize` 默认 1000；改配置需重启；启动日志打印实际生效值 |
 
 ## 19. 模块归属与分期
