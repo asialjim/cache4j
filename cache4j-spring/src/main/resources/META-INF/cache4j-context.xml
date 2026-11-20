@@ -21,14 +21,19 @@
            http://www.springframework.org/schema/context https://www.springframework.org/schema/context/spring-context.xsd">
 
     <!--
-      ~ 关键：纯 XML 容器默认不注册注解处理器。没有这一行，下面那个 @Configuration 类
-      ~ 不会被 ConfigurationClassPostProcessor 解析，@ComponentScan / @Autowired / @Value
-      ~ 全部是死代码（bean 存在，但扫不出任何东西）。
+      ~ 组件扫描：只收 Cache4jAutoScanConfiguration 这一个类，由它再去扫库的整个包。
+      ~
+      ~ 为什么不直接 <context:component-scan base-package="com.asialjim.cache4j"/>：
+      ~ 那样"排除测试类内部类"的过滤规则要在 XML 和 @ComponentScan 里各写一份，必然腐烂。
+      ~ 收在 Cache4jAutoScanConfiguration 一处即可。
+      ~
+      ~ 用 component-scan 而不是 <context:annotation-config/> + <bean>：它隐含注册
+      ~ ConfigurationClassPostProcessor / AutowiredAnnotationBeanPostProcessor 等注解处理器，
+      ~ 少了这些，@Configuration / @ComponentScan / @Autowired 全是死代码。
       -->
-    <context:annotation-config/>
-
-    <!-- 扫描 com.asialjim.cache4j：classpath 上有 cache4j-spring-redis 就自动接上 Redis -->
-    <bean id="innerAsialJimCache4jSpringConfiguration"
-          class="com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration"/>
+    <context:component-scan base-package="com.asialjim.cache4j" use-default-filters="false">
+        <context:include-filter type="assignable"
+                                expression="com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration"/>
+    </context:component-scan>
 
 </beans>

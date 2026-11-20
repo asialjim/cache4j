@@ -408,10 +408,10 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 完整内容在 **`cache4j-spring/src/main/resources/META-INF/cache4j-context.xml`**，全部内容就是：
 
 ```xml
-<context:annotation-config/>
-
-<bean id="innerAsialJimCache4jSpringConfiguration"
-      class="com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration"/>
+<context:component-scan base-package="com.asialjim.cache4j" use-default-filters="false">
+    <context:include-filter type="assignable"
+                            expression="com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration"/>
+</context:component-scan>
 ```
 
 业务侧一行接入：
@@ -424,9 +424,16 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 所以 XML 只负责把扫描配置推进容器，剩下的组件（provider / options / 管理器 / Spring Cache 桥接 /
 序列化器）全部由 `@Configuration` 提供，被 `@ComponentScan` 扫到即生效。
 
-> **`<context:annotation-config/>` 不能省。** 纯 XML 容器默认不注册注解处理器，没有它那个
-> `@Configuration` 类不会被 `ConfigurationClassPostProcessor` 解析——bean 存在，但
-> `@ComponentScan` / `@Autowired` / `@Value` 全是死代码，扫不出任何东西。
+> **注解处理器不能少。** 纯 XML 容器默认不注册它们，没有 `ConfigurationClassPostProcessor`
+> 那个 `@Configuration` 类不会被解析——bean 存在，但 `@ComponentScan` / `@Autowired` / `@Value`
+> 全是死代码，扫不出任何东西。这里用 `<context:component-scan>` 而不是
+> `<context:annotation-config/>` + `<bean>`：component-scan 隐含注册全套注解处理器，一行顶两行。
+
+> **为什么只 include 一个类，而不是直接扫整个包。** 直接
+> `<context:component-scan base-package="com.asialjim.cache4j"/>` 会把"排除测试类内部类"这类
+> 过滤规则逼到 XML 里再写一份，与 `Cache4jAutoScanConfiguration` 上那份必然不同步
+> （实测会扫到测试模块里同名的 `@Configuration`，导致 Bean 冲突）。收在
+> `Cache4jAutoScanConfiguration` 一处即可。
 
 业务侧仍要自己提供的两件事：
 
