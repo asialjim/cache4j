@@ -401,7 +401,8 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 （做 I/O）与 `RedisCentralCache`（版本 / 负缓存 / TTL 抖动 / 对账语义）拼好。不给这个类的话，
 每个使用者都要手抄同样的十行，抄错（时钟、key formatter、序列化）产生的都是隐蔽 bug。
 
-**策略数据源不在其中**：那是业务存储（Redis/DB/配置中心），谁接谁实现 `CacheStrategyDataSource`。
+**策略数据源不在其中**：那是业务存储——生产上通常是业务库（MySQL）、配置中心（Nacos / Apollo）
+或本地文件，**不是**缓存/Redis。库只提供 `CacheStrategyDataSource` SPI，谁接谁实现（决策 S35）。
 
 #### XML 模板（库产物，随 jar 发布）
 

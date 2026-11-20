@@ -20,7 +20,6 @@ import com.asialjim.cache4j.spring.Cache4jSpringOptions;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import com.asialjim.cache4j.spring.redis.RedisKeyFormatter;
 import com.asialjim.cache4j.spring.redis.SpringRedisCentralCacheProvider;
-import com.asialjim.cache4j.spring.redis.SpringRedisStrategyDataSource;
 import com.asialjim.cache4j.spring.redis.SpringRedisValueStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;

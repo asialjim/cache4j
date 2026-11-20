@@ -1,4 +1,4 @@
-package com.asialjim.cache4j.spring.redis;
+package com.asialjim.cache4j.test;
 
 import com.asialjim.cache4j.core.strategy.CacheStrategyDataSource;
 import com.asialjim.cache4j.core.strategy.Page;
@@ -19,7 +19,8 @@ import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
- * 策略数据源的 Redis 实现：一条记录一个 HASH field，value 是 {@link TextPolicyCodec} 的可读文本。
+ * 策略数据源的 Redis 实现（<strong>测试/参考实现</strong>）：一条记录一个 HASH field，
+ * value 是 {@link TextPolicyCodec} 的可读文本。
  *
  * <pre>
  * KEYS[1] = cache4j:strategy          HASH，field = namespace，value = 策略文本
@@ -39,8 +40,15 @@ import java.util.OptionalLong;
  *       新版本号 = 期望版本 + 1，由本类生成（契约要求"数据源生成且单调递增"）。</li>
  * </ul>
  *
- * <p><strong>策略数据源是业务存储</strong>：本类只是"用 Redis 存策略"的现成实现，
- * 不用 Redis 的业务换一个 {@link CacheStrategyDataSource} 实现即可，门面与装配层不需要改。</p>
+ * <h2>为什么它在测试模块里，而不是库里</h2>
+ *
+ * <p><strong>生产环境不会把配置存进 Redis</strong>：配置的落点通常是业务数据库（MySQL）、
+ * 配置中心（Nacos / Apollo）或本地文件。把"策略数据源"做成库的一部分，等于替使用者选定了一个
+ * 错误的存储位置，还要把 ORM / 配置中心 SDK 拖进依赖——这超出了 cache4j 的设计职责。</p>
+ *
+ * <p>所以 {@code CacheStrategyDataSource} 是 SPI，实现归使用方（见 {@code STRATEGY-REPOSITORY.md} §R8）。
+ * 本类放在测试模块，只做两件事：跑通链路、给出一个可以直接抄的实现范例——它确实按生产标准写
+ * （Lua CAS、HSCAN 存储侧过滤），不是玩具。</p>
  *
  * @author Asial Jim
  */

@@ -885,7 +885,7 @@ change(update):
 | `cache4j-core` | `CacheStrategyDecl`、`CacheDefinition`、`CacheStrategyRepository`（门面）/ `CacheStrategyDataSource`（数据源）/ `CacheStrategyAdmin` SPI、`NamespacePolicy` / `StoredPolicy` / `StrategyChange` / `ChangeResult` / `StrategyView`、`InMemoryCacheStrategyRepository`、`CacheStrategyLoader`（文件约定）、`StrategyRuntime` | 无新增 |
 | `cache4j-local` / `cache4j-local-caffeine` / `cache4j-central` / `cache4j-central-redis` | **不改**（只被装配） | 不变 |
 | `cache4j-spring` | `@CacheNamespace` 注解 + 包扫描发现、可选 Actuator 端点 | Spring Framework |
-| `cache4j-spring-redis` | `RedisCacheStrategyDataSource`（数据源实现，HASH + CAS Lua，布局见仓库契约 §20.2） | Spring Data Redis |
+| `cache4j-spring-redis` | **不提供策略数据源实现**（见 S35）：数据源归使用方，本模块只管缓存中央层的 Redis 适配 | Spring Data Redis |
 | `cache4j-starter` | 聚合 + 默认装配（内存仓库 + 可选 Redis Store；管理端点默认关闭） | 全部 |
 
 依赖方向不变：`core` 不依赖任何其他模块。
@@ -945,7 +945,7 @@ change(update):
 |---|---|---|
 | **P1** | `CacheStrategyDecl` + `CacheDefinition` 下沉 + 声明加载器（文件约定 + `getEnumConstants`）+ `InMemoryCacheStrategyRepository` + `StrategyRuntime` 改造（`DefaultTwoLevelCache` 内部按 Runtime 组织） | 声明式初始化可用；**尚无热更**（Runtime 只有一代） |
 | **P2** | `change()` + 迁移矩阵 + 乐观锁 + 审计日志 + 指标 | 单节点热更可用 |
-| **P3** | `CachedCacheStrategyRepository`（门面自举缓存）+ `RedisCacheStrategyDataSource` + 5s 版本对账传播 | 多节点一致（≤5s） |
+| **P3** | `CachedCacheStrategyRepository`（门面自举缓存）+ 5s 版本对账传播（数据源由使用方提供，库不内置） | 多节点一致（≤5s） |
 | **P4** | Spring 扫描 + Actuator 端点 + `cache4j-starter` | 开箱可用 |
 | **P9（暂不排期）** | `RuntimeHintsRegistrar` + 模板生成 + native image 冒烟（可选：生成式零反射入口） | GraalVM 可部署（详见 §12） |
 
@@ -1112,6 +1112,7 @@ GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热
 | S33 | CMS 宽度怎么配 | 格数（4096）/ 位（12） | **用位**：`sketchWidthBits` 默认 12（4096 格），范围 10~16；天然保证 2 的幂，bits 每 +1 即"精度翻倍、内存翻倍"；真实够不够用**候选表饱和度**实测（>80% 说明 width 偏小） |
 | S23 | 未声明 namespace 被业务使用 | 报错 / 自动创建 / 静默返回 null | **告警 + 自动创建**：告警说明"没走声明接口"，创建用数据源策略（有记录）或内建默认；启动期无法穷举，强校验只会把拼写错误变成启动失败 |
 | S24 | 数据源有、代码没声明的孤儿配置 | 预装配 / 不预装配 | **不装配**：预装配集合 = 声明集合（文件 + 扫描），数据源不参与"装什么"；启动不查数据源列表 |
+| S35 | 库要不要内置策略数据源实现（如 `RedisCacheStrategyDataSource`） | 内置 Redis 实现 / 只留 SPI | **只留 SPI**。生产环境不会把配置存 Redis——落点是业务库（MySQL）、配置中心（Nacos / Apollo）或本地文件。内置实现等于替使用者选定一个错误的存储位置，还要把 ORM / 配置中心 SDK 拽进依赖，超出 cache4j 的职责。`CacheStrategyDataSource` 是 SPI，谁接谁实现；测试模块里那份 Redis 实现只是可抄的范例 |
 | S34 | 运维分页查询在哪做 | 全量拉回内存分页 / 数据源存储侧分页 | **存储侧**：`CacheStrategyDataSource.query(keyword, page, size)`，删掉 `loadAll()`。全量拉回在 namespace 上千时等于每次翻页都做一次全量传输 |
 | S25 | 数据源里单条记录损坏 | fail-fast / 跳过 | **跳过 + 标记 `broken`**，不自动修复：一条坏配置不该挡住整站 |
 | S26 | 多应用共享数据源 | namespace 加前缀 / 数据源侧隔离 | **不加前缀**，隔离靠 DB/key 前缀，保持 `@Cacheable("user:detail")` 干净 |
