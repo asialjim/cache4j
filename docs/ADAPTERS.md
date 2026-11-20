@@ -463,9 +463,22 @@ public class AcmeCache4jConfig { }
 扫进来的枚举会被 `Cache4jDeclBeanFactoryPostProcessor` 接管：
 
 > Spring 默认拿枚举的构造器做自动装配（`(String, LocalStrategy, String)`），找不到 `String` Bean
-> 直接启动失败。该后置处理器把实例化改成 `getEnumConstants()[0]`——一个枚举类只占一个 Bean 位，
-> 库再从这个类取**全部**常量（`STATIC` / `NONE` / `DYNAMIC` …）。只碰
-> `CacheStrategyDecl` 的枚举，其他枚举一概不动。
+> 直接启动失败——枚举本来就该取常量，不该被 new。
+
+`Cache4jDeclBeanFactoryPostProcessor` 的做法是**换掉 Bean 定义的类型**，而不是让枚举变得能被 new：
+Bean 名保留，类型改成 `CacheNamespaceDeclarations`（库的注册载体），实例化用 `getEnumConstants()`。
+
+于是：
+
+| 事实 | 结果 |
+|---|---|
+| 容器里没有业务枚举 Bean | 应用不会误注入它 |
+| 载体持有该枚举的**全部**常量 | `STATIC` / `NONE` / `DYNAMIC` 一次性到齐 |
+| 只碰 `CacheStrategyDecl` 的**枚举** | 其他枚举/类的 Bean 定义一概不动 |
+
+`CacheNamespaceDeclarations` 只是"发现结果的载体"，应用不需要、也不应该从容器取它；
+真正消费它的是 `Cache4jDefaultOptionsConfiguration`。业务自己用 `@Bean` 提供的非枚举
+`CacheStrategyDecl` 单例也照样认（走 `ObjectProvider<CacheStrategyDecl>`）。
 
 **② 配包名让库自己扫**
 

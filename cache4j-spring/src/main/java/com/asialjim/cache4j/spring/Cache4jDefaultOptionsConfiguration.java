@@ -3,6 +3,7 @@ package com.asialjim.cache4j.spring;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.strategy.CacheCandidate;
 import com.asialjim.cache4j.core.strategy.CacheDeclTranslator;
+import com.asialjim.cache4j.core.strategy.BuiltinDefaults;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
 import org.springframework.beans.factory.ObjectProvider;
@@ -61,13 +62,14 @@ public class Cache4jDefaultOptionsConfiguration {
     public Cache4jSpringOptions cache4jOptions(
             CentralCacheProvider centralProvider,
             Environment environment,
+            ObjectProvider<CacheNamespaceDeclarations> discovered,
             ObjectProvider<CacheStrategyDecl> declarations,
             @Value("${cache4j.decl.packages:}") String declPackages,
             @Value("${cache4j.stats.enabled:}") String statsEnabled,
             @Value("${cache4j.undeclared.enabled:}") String undeclaredEnabled) {
         return Cache4jSpringOptions.builder()
                 .centralProvider(centralProvider, false)
-                .caches(discover(declarations,
+                .caches(discover(discovered, declarations,
                         packages(value(declPackages, KEY_DECL_PACKAGES, environment))))
                 .statsEnabled(flag(value(statsEnabled, KEY_STATS_ENABLED, environment), false))
                 .undeclaredEnabled(flag(value(undeclaredEnabled, KEY_UNDECLARED_ENABLED, environment), true))
@@ -82,16 +84,22 @@ public class Cache4jDefaultOptionsConfiguration {
      * @param packages     按包名扫描的范围
      * @return 去重后的缓存定义
      */
-    private static List<CacheDefinition> discover(ObjectProvider<CacheStrategyDecl> declarations,
+    private static List<CacheDefinition> discover(ObjectProvider<CacheNamespaceDeclarations> discovered,
+                                                  ObjectProvider<CacheStrategyDecl> declarations,
                                                   List<String> packages) {
         CacheDeclTranslator translator = new CacheDeclTranslator();
         Map<String, CacheDefinition> merged = new LinkedHashMap<>();
 
-        for (CacheStrategyDecl declaration : declarations) {
-            // 一个枚举类在容器里只占一个 Bean 位，真正的声明是它的全部常量
-            for (CacheCandidate candidate : translator.translate(declaration.getClass(), "组件扫描")) {
-                merged.putIfAbsent(candidate.namespace(), candidate.definition());
+        // 组件扫描命中并已被包装成载体的枚举
+        for (CacheNamespaceDeclarations carrier : discovered) {
+            for (CacheDefinition definition : carrier.definitions()) {
+                merged.putIfAbsent(definition.namespace(), definition);
             }
+        }
+        // 业务自己以 @Bean 提供的单条声明（非枚举形态）
+        for (CacheStrategyDecl declaration : declarations) {
+            merged.putIfAbsent(declaration.getNamespace(),
+                    BuiltinDefaults.definitionOf(declaration.getNamespace(), declaration.getStrategy()));
         }
         for (Class<?> type : new SpringCacheDeclScanner(ClassUtils.getDefaultClassLoader()).scan(packages)) {
             for (CacheCandidate candidate : translator.translate(type, "声明的包扫描")) {

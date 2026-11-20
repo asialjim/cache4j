@@ -3,6 +3,8 @@ package com.asialjim.cache4j.xml;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.strategy.CacheNamespace;
 import com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration;
+import com.asialjim.cache4j.spring.CacheNamespaceDeclarations;
+import com.asialjim.cache4j.xmlfixture.XmlDemoDecl;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -69,6 +71,15 @@ class AutoScanAssemblyTest {
             TwoLevelCacheManager manager = context.getBean(TwoLevelCacheManager.class);
             assertEquals(java.util.Set.of("xml:demo"), manager.names(),
                     "枚举被扫进容器后应当自动成为缓存定义，不需要额外配包名");
+
+            // 容器里注册的是载体，不是业务枚举本身
+            assertEquals(0, context.getBeansOfType(com.asialjim.cache4j.core.strategy.CacheStrategyDecl.class).size(),
+                    "业务枚举不应作为 Bean 暴露给应用");
+            assertEquals(1, context.getBeansOfType(CacheNamespaceDeclarations.class).size(),
+                    "应当有一个声明载体持有该枚举的 values()");
+            CacheNamespaceDeclarations carrier = context.getBean(CacheNamespaceDeclarations.class);
+            assertEquals(XmlDemoDecl.class, carrier.declarationType());
+            assertEquals(1, carrier.values().size(), "载体持有枚举的全部常量");
         }
     }
 
