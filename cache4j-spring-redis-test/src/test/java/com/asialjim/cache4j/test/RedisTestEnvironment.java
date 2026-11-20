@@ -99,39 +99,43 @@ public final class RedisTestEnvironment {
     }
 
     /**
-     * 热 key 测试用的中央阈值：窗口 1s、升热 6、冷阈 4、一个窗口低活动即降热。
+     * 热 key 测试用的中央阈值：窗口 1s、升热 6 QPS、冷阈 4 QPS、一个窗口低活动即降热。
+     *
+     * <p>QPS 口径：{@code hotCount = hotQps × 窗口秒数}，窗口 1s 时两者相等。</p>
      *
      * @return 中央阈值
      */
     public static LocalCacheSpec.GlobalSpec hotGlobalSpec() {
         return new LocalCacheSpec.GlobalSpec(
                 Duration.ofSeconds(1),   // window
-                6L,                      // hotThreshold
-                4L,                      // coolThreshold
+                6L,                      // hotQps
+                4L,                      // coolQps
                 1,                       // demoteWindows
                 100,                     // staleWindows（本用例不走"长时间无上报"路径）
                 1);                      // clientEstimate
     }
 
     /**
-     * 热 key 测试用的 DYNAMIC 参数：本地阈值 3、同步 200ms、冷却 2s（≥ demoteWindows × window）。
+     * 热 key 测试用的 DYNAMIC 参数：本地阈值 3 QPS、窗口 1s／16 片、同步 200ms、
+     * 冷却 2s（≥ demoteWindows × window）。
      *
      * @return 热度参数
      */
     public static LocalCacheSpec.DynamicSpec hotDynamicSpec() {
         return new LocalCacheSpec.DynamicSpec(
-                3,                        // localHotThreshold
+                3,                        // hotThresholdQps
+                1,                        // coolQps
                 Duration.ofSeconds(1),    // window
+                16,                       // windowSlices
                 100,                      // maxHotKeys
-                Duration.ofSeconds(60),   // hotTtl
                 Duration.ofMillis(200),   // syncInterval
                 Duration.ofSeconds(2),    // cooldown
                 LocalCacheSpec.Coordination.GLOBAL,
                 hotGlobalSpec(),
-                4_096,                    // sketchWidth
+                12,                       // sketchWidthBits
                 4,                        // sketchDepth
                 16,                       // hotReportPartitions
-                64,                       // hotReportBatchMax
+                16,                       // hotReportBatchMax
                 100);                     // candidateCapacity
     }
 

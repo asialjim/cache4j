@@ -33,11 +33,12 @@ import java.util.function.LongSupplier;
  *
  * <h2>四条规则</h2>
  * <ol>
- *   <li>本地升热立即生效：本地窗口频次达到 {@code localHotThreshold} 直接升热，不等中央；</li>
+ *   <li>本地升热立即生效：本地窗口频次达到 {@code hotThresholdCount()}（= {@code hotThresholdQps × 窗口秒数}）
+ *       直接升热，不等中央；</li>
  *   <li>本地不升热 ≠ 不热：到点的热同步事件里按<strong>分区</strong>批量上报，由中央裁决；</li>
  *   <li>降热只认中央 {@code COOLING}；</li>
- *   <li>预选阈值 {@code U} 严格小于 {@code localHotThreshold}（派生值，见
- *       {@link LocalCacheSpec.DynamicSpec#candidateThreshold()}）。</li>
+ *   <li>预选阈值严格小于升热阈值（派生值，见 {@link LocalCacheSpec.DynamicSpec#candidateCount()}）；
+ *       候选阶段"宁多勿少"，高估是安全方向。</li>
  * </ol>
  *
  * <p><strong>频次只统计读</strong>：{@code put} / {@code evict} / {@code clear} / 对账 / 上报都不计频。
@@ -142,12 +143,12 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         }
 
         boolean cooling = isCooling(key, now);
-        if (cooling && freq >= dynamic.localHotThreshold()) {
+        if (cooling && freq >= dynamic.hotThresholdCount()) {
             // 冷却期：频次够了也不许升热（抑制"降热→立刻又升热"的抖动）
             LOG.read(CacheLogger.Subject.DYNAMIC_LOCAL, key, () -> "冷却期内拒绝升热，估计频次=" + freq
                     + "，剩余冷却=" + cooldownRemainingMillis(key, now) + "ms");
         }
-        if (!cooling && freq >= dynamic.localHotThreshold()) {
+        if (!cooling && freq >= dynamic.hotThresholdCount()) {
             addDelta(key);
             promote(key, freq, now);
             counters.increment(CacheCounters.Counter.PROMOTION);
@@ -157,7 +158,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             return true;
         }
 
-        long threshold = dynamic.candidateThreshold();
+        long threshold = dynamic.candidateCount();
         if (useCandidates() && freq >= threshold) {
             upsertCandidate(partitionOf(key), key, freq);
             pendingDeltaFor(key).increment();
@@ -268,7 +269,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             counters.increment(CacheCounters.Counter.DYNAMIC_PUT_DISCARDED);
             return;
         }
-        Duration effective = min(ttl, dynamic.hotTtl());
+        Duration effective = ttl;
         delegate.put(key, value, effective);
     }
 
@@ -278,7 +279,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             counters.increment(CacheCounters.Counter.DYNAMIC_PUT_DISCARDED);
             return false;
         }
-        return delegate.putIfAbsent(key, value, min(ttl, dynamic.hotTtl()));
+        return delegate.putIfAbsent(key, value, ttl);
     }
 
     @Override
@@ -305,7 +306,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             counters.increment(CacheCounters.Counter.DYNAMIC_PUT_DISCARDED);
             return false;
         }
-        return delegate.putIfNewer(key, value, min(ttl, dynamic.hotTtl()));
+        return delegate.putIfNewer(key, value, ttl);
     }
 
     @Override

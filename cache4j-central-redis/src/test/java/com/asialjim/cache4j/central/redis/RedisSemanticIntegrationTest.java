@@ -112,22 +112,27 @@ class RedisSemanticIntegrationTest {
     @Test
     @DisplayName("热 key：中央判 HOT 后，各节点补偿升热（集群口径闭环）")
     void globalPromotionAcrossNodes() {
-        // G = 100 / 窗口，clientEstimate = 1 → 单节点上报 120 即触发 HOT
-        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
+        // QPS 口径：窗口 1s，全局 2 QPS → hotCount = 2 次；本地 2 QPS × 1s 窗口 = 2 次即升热
+        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(1), 2L, 1);
         InMemoryValueStore<Object> store = store(global);
         HotKeyCoordinator coordinator = new RedisHotKeyCoordinator(store,
                 namespace -> NS.equals(namespace) ? global : null);
 
-        LocalCacheSpec.DynamicSpec dynamic = LocalCacheSpec.DynamicSpec.defaults()
-                .withGlobal(new LocalCacheSpec.GlobalSpec(Duration.ofSeconds(10), 100L, 25L, 3, 3, 1));
+        LocalCacheSpec.DynamicSpec base = LocalCacheSpec.DynamicSpec.defaults();
+        LocalCacheSpec.DynamicSpec dynamic = new LocalCacheSpec.DynamicSpec(
+                2, 1, Duration.ofSeconds(1), 16, 1_000, base.syncInterval(), base.cooldown(),
+                LocalCacheSpec.Coordination.GLOBAL,
+                new LocalCacheSpec.GlobalSpec(Duration.ofSeconds(1), 2L, 1L, 3, 3, 1),
+                base.sketchWidthBits(), base.sketchDepth(), base.hotReportPartitions(),
+                base.hotReportBatchMax(), base.candidateCapacity());
         AtomicReference<LocalCacheSpec> holder = new AtomicReference<>(
                 LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic));
 
         TwoLevelCache<String, String> nodeA = node(store, holder.get(), coordinator);
         nodeA.put("42", "u42");
 
-        // 达到本地升热阈值（默认 5）→ 升热；随后到点上报，中央合计达阈值
-        for (int i = 0; i < 6; i++) {
+        // 达到本地升热阈值（2 次）→ 升热；随后到点上报，中央合计达阈值
+        for (int i = 0; i < 3; i++) {
             nodeA.lookup("42");
         }
         clock.advance(Duration.ofSeconds(2));

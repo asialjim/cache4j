@@ -43,19 +43,35 @@ class LocalCacheSpecTest {
     @Test
     @DisplayName("DYNAMIC 越界参数报错")
     void dynamicBoundaries() {
-        LocalCacheSpec.DynamicSpec defaults = LocalCacheSpec.DynamicSpec.defaults();
-        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 100,
+        LocalCacheSpec.DynamicSpec d = LocalCacheSpec.DynamicSpec.defaults();
+        // hotThresholdQps = 0 非法
+        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 1_000,
                 Duration.ofSeconds(60), new LocalCacheSpec.DynamicSpec(
-                0, defaults.window(), 100, defaults.hotTtl(), defaults.syncInterval(),
-                defaults.cooldown(), defaults.coordination(), null, defaults.sketchWidth(),
-                defaults.sketchDepth(), defaults.hotReportPartitions(), defaults.hotReportBatchMax(),
-                defaults.candidateCapacity())).validate());
-        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 100,
+                0, d.coolQps(), d.window(), d.windowSlices(), 100, d.syncInterval(),
+                d.cooldown(), d.coordination(), null, d.sketchWidthBits(),
+                d.sketchDepth(), d.hotReportPartitions(), d.hotReportBatchMax(),
+                d.candidateCapacity())).validate());
+        // coolQps 必须严格小于 hotThresholdQps
+        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 1_000,
                 Duration.ofSeconds(60), new LocalCacheSpec.DynamicSpec(
-                5, defaults.window(), 100, defaults.hotTtl(), defaults.syncInterval(),
-                defaults.cooldown(), defaults.coordination(), null, 1_000,
-                defaults.sketchDepth(), defaults.hotReportPartitions(), defaults.hotReportBatchMax(),
-                defaults.candidateCapacity())).validate());
+                100, 100, d.window(), d.windowSlices(), 100, d.syncInterval(),
+                d.cooldown(), d.coordination(), null, d.sketchWidthBits(),
+                d.sketchDepth(), d.hotReportPartitions(), d.hotReportBatchMax(),
+                d.candidateCapacity())).validate());
+        // sketchWidthBits 越界（< 10）
+        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 1_000,
+                Duration.ofSeconds(60), new LocalCacheSpec.DynamicSpec(
+                100, 25, d.window(), d.windowSlices(), 100, d.syncInterval(),
+                d.cooldown(), d.coordination(), null, 9,
+                d.sketchDepth(), d.hotReportPartitions(), d.hotReportBatchMax(),
+                d.candidateCapacity())).validate());
+        // windowSlices < 2
+        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 1_000,
+                Duration.ofSeconds(60), new LocalCacheSpec.DynamicSpec(
+                100, 25, d.window(), 1, 100, d.syncInterval(),
+                d.cooldown(), d.coordination(), null, d.sketchWidthBits(),
+                d.sketchDepth(), d.hotReportPartitions(), d.hotReportBatchMax(),
+                d.candidateCapacity())).validate());
     }
 
     @Test
@@ -82,35 +98,48 @@ class LocalCacheSpecTest {
     }
 
     @Test
-    @DisplayName("预选阈值严格小于本地升热阈值，且不超过按客户端数摊薄后的份额")
-    void candidateThreshold() {
+    @DisplayName("预选阈值（QPS）：单机取 hotThresholdQps-1；GLOBAL 取全局份额")
+    void candidateQps() {
         LocalCacheSpec.DynamicSpec defaults = LocalCacheSpec.DynamicSpec.defaults();
-        // 单机：clamp 到 L-1
-        assertEquals(4L, defaults.candidateThreshold());
+        // 单机：clamp 到 L-1（100-1=99）
+        assertEquals(99L, defaults.candidateQps());
 
-        // GLOBAL：G=100k、50 客户端 → 2k 份额，被 L-1=4 夹住
-        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100_000L, 50);
+        // GLOBAL：globalHotQps=1000、50 客户端 → 20 QPS 份额，被 L-1=99 夹住后取 20
+        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 1_000L, 50);
         LocalCacheSpec.DynamicSpec withGlobal = defaults.withGlobal(global);
-        assertTrue(withGlobal.candidateThreshold() < withGlobal.localHotThreshold());
+        assertEquals(20L, withGlobal.candidateQps());
+        assertTrue(withGlobal.candidateQps() < withGlobal.hotThresholdQps());
 
-        // 把 L 调大后，份额才能真正决定阈值
-        LocalCacheSpec.DynamicSpec large = new LocalCacheSpec.DynamicSpec(
-                10_000, Duration.ofSeconds(10), 10_000, Duration.ofSeconds(60), Duration.ofSeconds(1),
+        // 份额大于本地阈值时被 L-1 夹住
+        LocalCacheSpec.DynamicSpec small = new LocalCacheSpec.DynamicSpec(
+                10, 2, Duration.ofSeconds(5), 16, 100, Duration.ofSeconds(1),
                 Duration.ofSeconds(30), LocalCacheSpec.Coordination.GLOBAL,
                 LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100_000L, 50),
-                4_096, 4, 16, 64, 10_000);
-        assertEquals(2_000L, large.candidateThreshold());
+                12, 4, 16, 16, 1_000);
+        assertEquals(9L, small.candidateQps(), "份额 2000 应被 L-1=9 夹住");
     }
 
     @Test
-    @DisplayName("窗口口径不一致时按比例换算预选阈值")
-    void candidateThresholdScalesWithWindow() {
-        // 本地窗口 5s、中央窗口 10s：份额要减半
-        LocalCacheSpec.DynamicSpec spec = new LocalCacheSpec.DynamicSpec(
-                10_000, Duration.ofSeconds(5), 10_000, Duration.ofSeconds(60), Duration.ofSeconds(1),
-                Duration.ofSeconds(30), LocalCacheSpec.Coordination.GLOBAL,
-                LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100_000L, 50),
-                4_096, 4, 16, 64, 10_000);
-        assertEquals(1_000L, spec.candidateThreshold());
+    @DisplayName("QPS 阈值换算成窗口累计次数：hot = qps × 窗口秒数")
+    void qpsConvertsToWindowCount() {
+        LocalCacheSpec.DynamicSpec defaults = LocalCacheSpec.DynamicSpec.defaults();
+        // 默认 100 QPS × 5s = 500 次
+        assertEquals(500L, defaults.hotThresholdCount());
+        assertEquals(defaults.candidateQps() * 5L, defaults.candidateCount());
+
+        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 4);
+        assertEquals(1_000L, global.hotCount(), "全局 100 QPS × 10s");
+        assertEquals(25L, global.coolQps(), "冷阈值取热阈值 1/4");
+        assertEquals(250L, global.coolCount());
+    }
+
+    @Test
+    @DisplayName("sketchWidth() 由位数换算成格数")
+    void sketchWidthFromBits() {
+        LocalCacheSpec.DynamicSpec defaults = LocalCacheSpec.DynamicSpec.defaults();
+        assertEquals(12, defaults.sketchWidthBits());
+        assertEquals(4_096, defaults.sketchWidth());
+        assertEquals(Duration.ofNanos(312_500_000L), defaults.windowSliceLength(),
+                "5s / 16 片 = 312.5ms");
     }
 }

@@ -103,7 +103,8 @@ class SpringRedisValueStoreTest {
             lettuce.afterPropertiesSet();
             this.factory = lettuce;
 
-            LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
+            // QPS 口径：窗口 10s、10 QPS → hotCount = 100 次（与上报量 120 匹配）
+            LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 10L, 1);
             this.store = new SpringRedisValueStore<>(factory, RedisKeyFormatter.defaults(),
                     new StringRedisSerializer(), System::currentTimeMillis)
                     .globalSpecs(namespace -> NS.equals(namespace) ? global : null);

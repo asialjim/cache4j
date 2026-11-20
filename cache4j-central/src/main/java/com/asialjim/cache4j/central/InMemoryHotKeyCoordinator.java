@@ -50,6 +50,7 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
 
     @Override
     public HotKeyReport reportAndStatus(String namespace, CacheKey key, long delta) {
+        // 中央窗口计数与 QPS 阈值的换算：hotCount()/coolCount() = QPS × 窗口秒数
         LocalCacheSpec.GlobalSpec globalSpec = globalSpecs.apply(namespace);
         if (globalSpec == null || globalSpec.window() == null || globalSpec.window().isZero()) {
             LOG.warnThrottled(CacheLogger.Subject.HOT_KEY, "热key", () -> "namespace 未配置 dynamic.global，"
@@ -77,11 +78,11 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
                     && windowId - window.lastActiveWindow >= globalSpec.staleWindows()) {
                 status = HotKeyStatus.COOLING;
                 window.lowSince = -1L;
-            } else if (total >= globalSpec.hotThreshold()) {
+            } else if (total >= globalSpec.hotCount()) {
                 status = HotKeyStatus.HOT;
                 window.lastHotWindow = windowId;
                 window.lowSince = -1L;
-            } else if (total < globalSpec.coolThreshold()) {
+            } else if (total < globalSpec.coolCount()) {
                 if (window.lowSince < 0L) {
                     window.lowSince = windowId;
                 }

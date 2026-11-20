@@ -38,6 +38,46 @@ class DynamicLocalCacheTest {
         return new CacheKey(NS, "s" + value.length() + ":" + value);
     }
 
+    /**
+     * 测试用低阈值参数：1 QPS × 1s 窗口 = 1 次即升热，等价于旧语义的"几次访问就热"。
+     *
+     * @return 参数
+     */
+    private static LocalCacheSpec.DynamicSpec lowThreshold() {
+        LocalCacheSpec.DynamicSpec d = LocalCacheSpec.DynamicSpec.defaults();
+        return new LocalCacheSpec.DynamicSpec(1, 0, Duration.ofSeconds(1), 16, 1_000,
+                d.syncInterval(), d.cooldown(), d.coordination(), d.global(),
+                d.sketchWidthBits(), d.sketchDepth(), d.hotReportPartitions(),
+                d.hotReportBatchMax(), d.candidateCapacity());
+    }
+
+    /**
+     * 测试用高阈值参数：100 QPS × 1s 窗口 = 100 次才升热，用于验证"少量访问不升热"。
+     *
+     * @return 参数
+     */
+    private static LocalCacheSpec.DynamicSpec highThreshold() {
+        LocalCacheSpec.DynamicSpec d = LocalCacheSpec.DynamicSpec.defaults();
+        return new LocalCacheSpec.DynamicSpec(100, 25, Duration.ofSeconds(1), 16, 1_000,
+                d.syncInterval(), d.cooldown(), d.coordination(), d.global(),
+                d.sketchWidthBits(), d.sketchDepth(), d.hotReportPartitions(),
+                d.hotReportBatchMax(), d.candidateCapacity());
+    }
+
+    /**
+     * 测试用 GLOBAL 低阈值参数：2 QPS × 1s 窗口 = 2 次即升热（GLOBAL 要求 hotThresholdQps >= 2）。
+     *
+     * @param global 中央阈值
+     * @return 参数
+     */
+    private static LocalCacheSpec.DynamicSpec globalThreshold(LocalCacheSpec.GlobalSpec global) {
+        LocalCacheSpec.DynamicSpec d = LocalCacheSpec.DynamicSpec.defaults();
+        return new LocalCacheSpec.DynamicSpec(2, 1, Duration.ofSeconds(1), 16, 1_000,
+                d.syncInterval(), d.cooldown(), LocalCacheSpec.Coordination.GLOBAL, global,
+                d.sketchWidthBits(), d.sketchDepth(), d.hotReportPartitions(),
+                d.hotReportBatchMax(), d.candidateCapacity());
+    }
+
     private LocalCache<String> dynamic(LocalCacheSpec.DynamicSpec dynamic, HotKeyCoordinator coordinator) {
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
         return LocalCaches.create(spec, coordinator, clock::nanos);
@@ -68,7 +108,7 @@ class DynamicLocalCacheTest {
     @Test
     @DisplayName("本地频次达到阈值立即升热，写入被接受")
     void localPromotionAcceptsPut() {
-        LocalCache<String> cache = dynamic(LocalCacheSpec.DynamicSpec.defaults(), null);
+        LocalCache<String> cache = dynamic(lowThreshold(), null);
         CacheKey key = key("hot");
 
         cache.put(key, LocalEntry.hit("v", 1L), Duration.ofSeconds(10));
@@ -87,7 +127,7 @@ class DynamicLocalCacheTest {
     @Test
     @DisplayName("accepts：只有已升热的 key 才会被本地接受写入")
     void acceptsOnlyHotKeys() {
-        LocalCache<String> cache = dynamic(LocalCacheSpec.DynamicSpec.defaults(), null);
+        LocalCache<String> cache = dynamic(lowThreshold(), null);
         CacheKey hot = key("hot");
 
         assertFalse(cache.accepts(hot), "冷 key 不应被接受");
@@ -100,7 +140,7 @@ class DynamicLocalCacheTest {
     @Test
     @DisplayName("未达阈值的 key 不落本地")
     void coldKeysStayOut() {
-        LocalCache<String> cache = dynamic(LocalCacheSpec.DynamicSpec.defaults(), null);
+        LocalCache<String> cache = dynamic(highThreshold(), null);
         for (int i = 0; i < 4; i++) {
             assertFalse(cache.access(key("cold")));
         }
@@ -114,13 +154,15 @@ class DynamicLocalCacheTest {
     void candidateBucket() {
         LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 1_000L, 10);
         LocalCacheSpec.DynamicSpec dynamic = new LocalCacheSpec.DynamicSpec(
-                200, Duration.ofSeconds(10), 1_000, Duration.ofSeconds(60), Duration.ofSeconds(1),
+                200, 50, Duration.ofSeconds(10), 16, 1_000, Duration.ofSeconds(1),
                 Duration.ofSeconds(30), LocalCacheSpec.Coordination.GLOBAL, global,
-                4_096, 4, 16, 64, 1_000);
+                12, 4, 16, 16, 1_000);
         LocalCache<String> cache = dynamic(dynamic, stub());
 
-        // U = ceil(1000/10) = 100 < L = 200
-        for (int i = 0; i < 120; i++) {
+        // 候选阈值 = ceil(globalHotQps / clientEstimate)，被 hotThresholdQps-1 夹住
+        // 预选阈值 = min(ceil(globalHotQps/10), 200-1) = 100 QPS → 10s 窗口内 1000 次；
+        // 这里远低于升热阈值（200 QPS → 2000 次）
+        for (int i = 0; i < 1_200; i++) {
             cache.access(key("warm"));
         }
         assertEquals(0L, cache.stats().hotKeyCount(), "未达本地阈值不应升热");
@@ -130,7 +172,7 @@ class DynamicLocalCacheTest {
     @Test
     @DisplayName("LOCAL 模式不维护候选桶")
     void localModeHasNoCandidates() {
-        LocalCache<String> cache = dynamic(LocalCacheSpec.DynamicSpec.defaults(), null);
+        LocalCache<String> cache = dynamic(lowThreshold(), null);
         for (int i = 0; i < 4; i++) {
             cache.access(key("warm"));
         }
@@ -141,7 +183,7 @@ class DynamicLocalCacheTest {
     @DisplayName("一次到点的访问上报整批（当前分区）key，而不是单个 key")
     void hotSyncReportsWholePartition() {
         LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
-        LocalCacheSpec.DynamicSpec dynamic = LocalCacheSpec.DynamicSpec.defaults().withGlobal(global);
+        LocalCacheSpec.DynamicSpec dynamic = globalThreshold(global);
         LocalCache<String> cache = dynamic(dynamic, stub());
 
         // 先把三个 key 升热
@@ -166,7 +208,7 @@ class DynamicLocalCacheTest {
     @DisplayName("中央判定 COOLING 后降热，并进入冷却期阻止立即重新升热")
     void demotionStartsCooldown() {
         LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
-        LocalCacheSpec.DynamicSpec dynamic = LocalCacheSpec.DynamicSpec.defaults().withGlobal(global);
+        LocalCacheSpec.DynamicSpec dynamic = globalThreshold(global);
         LocalCache<String> cache = dynamic(dynamic, stub());
         CacheKey key = key("a");
 
@@ -195,7 +237,7 @@ class DynamicLocalCacheTest {
     @DisplayName("GLOBAL 模式缺少协调器时工厂直接报错（不静默退化）")
     void globalWithoutCoordinatorFails() {
         LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
-        LocalCacheSpec.DynamicSpec dynamic = LocalCacheSpec.DynamicSpec.defaults().withGlobal(global);
+        LocalCacheSpec.DynamicSpec dynamic = globalThreshold(global);
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
         assertThrows(com.asialjim.cache4j.core.CacheException.class,
                 () -> LocalCaches.create(spec, null, clock::nanos));

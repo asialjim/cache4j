@@ -22,6 +22,12 @@ class InMemoryHotKeyCoordinatorTest {
     private static final String NS = "product:hot";
     private static final Duration WINDOW = Duration.ofSeconds(10);
 
+    /**
+     * 测试用阈值：QPS 口径，{@code hotCount = hotQps × 窗口秒数}。
+     * 取 {@code hotQps=10} 使 10s 窗口内的阈值落在 100 次，便于构造上报量。
+     */
+    private static final long HOT_QPS = 10L;
+
     private final InMemoryCentralCacheTest.MutableClock clock = new InMemoryCentralCacheTest.MutableClock();
 
     private InMemoryHotKeyCoordinator coordinator(LocalCacheSpec.GlobalSpec global) {
@@ -37,7 +43,7 @@ class InMemoryHotKeyCoordinatorTest {
     @DisplayName("达到全局阈值判 HOT")
     void shouldBecomeHot() {
         InMemoryHotKeyCoordinator coordinator = coordinator(
-                LocalCacheSpec.GlobalSpec.of(WINDOW, 100L, 1));
+                LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
         HotKeyReport report = coordinator.reportAndStatus(NS, key("a"), 120L);
         assertEquals(HotKeyStatus.HOT, report.status());
         assertEquals(120L, report.windowCount());
@@ -47,7 +53,7 @@ class InMemoryHotKeyCoordinatorTest {
     @DisplayName("有上报但未达阈值判 ACTIVE")
     void shouldStayActive() {
         InMemoryHotKeyCoordinator coordinator = coordinator(
-                LocalCacheSpec.GlobalSpec.of(WINDOW, 100L, 1));
+                LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
         HotKeyReport report = coordinator.reportAndStatus(NS, key("a"), 10L);
         assertEquals(HotKeyStatus.ACTIVE, report.status());
     }
@@ -56,14 +62,14 @@ class InMemoryHotKeyCoordinatorTest {
     @DisplayName("从未上报且本次 delta=0 → UNKNOWN")
     void unknownWhenNeverSeen() {
         InMemoryHotKeyCoordinator coordinator = coordinator(
-                LocalCacheSpec.GlobalSpec.of(WINDOW, 100L, 1));
+                LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
         assertEquals(HotKeyStatus.UNKNOWN, coordinator.reportAndStatus(NS, key("a"), 0L).status());
     }
 
     @Test
     @DisplayName("长时间无上报判 COOLING")
     void staleShouldCool() {
-        LocalCacheSpec.GlobalSpec global = new LocalCacheSpec.GlobalSpec(WINDOW, 100L, 25L, 3, 2, 1);
+        LocalCacheSpec.GlobalSpec global = new LocalCacheSpec.GlobalSpec(WINDOW, 10L, 3L, 3, 2, 1);
         InMemoryHotKeyCoordinator coordinator = coordinator(global);
         assertEquals(HotKeyStatus.HOT, coordinator.reportAndStatus(NS, key("a"), 200L).status());
 
@@ -75,7 +81,7 @@ class InMemoryHotKeyCoordinatorTest {
     @Test
     @DisplayName("连续低活动达 demoteWindows 判 COOLING（带滞回）")
     void lowActivityShouldCoolAfterDemoteWindows() {
-        LocalCacheSpec.GlobalSpec global = new LocalCacheSpec.GlobalSpec(WINDOW, 100L, 10L, 2, 100, 1);
+        LocalCacheSpec.GlobalSpec global = new LocalCacheSpec.GlobalSpec(WINDOW, 10L, 1L, 2, 100, 1);
         InMemoryHotKeyCoordinator coordinator = coordinator(global);
         assertEquals(HotKeyStatus.HOT, coordinator.reportAndStatus(NS, key("a"), 200L).status());
 
@@ -96,7 +102,7 @@ class InMemoryHotKeyCoordinatorTest {
     @DisplayName("批量上报逐 key 返回结果")
     void batchReport() {
         InMemoryHotKeyCoordinator coordinator = coordinator(
-                LocalCacheSpec.GlobalSpec.of(WINDOW, 100L, 1));
+                LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
         Map<CacheKey, HotKeyReport> reports = coordinator.reportAndStatusAll(NS,
                 Map.of(key("hot"), 120L, key("cold"), 1L));
         assertEquals(HotKeyStatus.HOT, reports.get(key("hot")).status());
@@ -107,7 +113,7 @@ class InMemoryHotKeyCoordinatorTest {
     @DisplayName("未配置 global 的 namespace 不猜阈值，返回 UNKNOWN")
     void missingGlobalSpecIsUnknown() {
         InMemoryHotKeyCoordinator coordinator = coordinator(
-                LocalCacheSpec.GlobalSpec.of(WINDOW, 100L, 1));
+                LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
         assertEquals(HotKeyStatus.UNKNOWN,
                 coordinator.reportAndStatus("other:ns", new CacheKey("other:ns", "s1:a"), 999L).status());
     }

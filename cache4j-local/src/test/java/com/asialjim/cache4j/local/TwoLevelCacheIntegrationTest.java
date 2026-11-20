@@ -101,19 +101,21 @@ class TwoLevelCacheIntegrationTest {
     @Test
     @DisplayName("DYNAMIC：冷 key 不落本地，达到阈值后才升热并命中本地")
     void dynamicPromotesAfterThreshold() {
+        // 低阈值：1 QPS × 1s 窗口 = 1 次即升热（默认 100 QPS / 5s 需要 500 次）
+        LocalCacheSpec.DynamicSpec low = new LocalCacheSpec.DynamicSpec(1, 0,
+                Duration.ofSeconds(1), 16, 1_000, Duration.ofSeconds(1), Duration.ofSeconds(30),
+                LocalCacheSpec.Coordination.LOCAL, null, 12, 4, 16, 16, 1_000);
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1),
-                fastVersion(), LocalCacheSpec.DynamicSpec.defaults());
+                fastVersion(), low);
         TwoLevelCache<String, String> cache = build(spec, central(Duration.ZERO));
         cache.put("42", "u42");
 
-        // 前 5 次（阈值）都回中央
-        for (int i = 0; i < 5; i++) {
-            cache.lookup("42");
-        }
-        assertEquals(5L, cache.stats().centralHitCount());
+        // 第 1 次访问：冷 key 不落本地，回中央
+        cache.lookup("42");
+        assertEquals(1L, cache.stats().centralHitCount());
         assertEquals(0L, cache.stats().localHitCount());
 
-        // 第 6 次已经是热点，本地命中
+        // 后续访问：已达到 1 QPS 阈值，本地命中
         cache.lookup("42");
         assertTrue(cache.stats().localHitCount() >= 1L);
     }

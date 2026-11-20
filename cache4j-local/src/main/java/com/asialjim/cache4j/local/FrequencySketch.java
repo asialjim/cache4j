@@ -12,17 +12,29 @@ import java.util.function.LongSupplier;
  *   <li>两个桶 {@code current} / {@code previous}，每 {@code window} 旋转一次
  *       （{@code previous = current}，{@code current = new}）；</li>
  *   <li>估计值 = {@code current.estimate + previous.estimate}；</li>
- *   <li>每格 8 位计数器（0–255），宽度为 2 的幂，深度 ≥ 2，取多行最小值降低碰撞高估。</li>
+ *   <li>每格 <strong>16 位</strong>计数器（0–65 535），宽度为 2 的幂（由 {@code sketchWidthBits} 配置），
+ *       深度 ≥ 2，取多行最小值降低碰撞高估。</li>
  * </ul>
  *
- * <p>内存固定：{@code 2 * width * depth} 字节，不随 key 基数增长。Count-Min 只会
- * <strong>高估</strong>，后果是少量冷 key 被误判为候选/热点，不会返回错误数据。</p>
+ * <p>内存固定：{@code 2 * width * depth * 2} 字节（16 位；width=4096、depth=4 → 64KB），
+ * 不随 key 基数增长。Count-Min 只会<strong>高估</strong>——在本库里这是<strong>安全方向</strong>：
+ * 它只用于"候选预选"，候选阶段宁可多进几个，也不能漏掉热点。</p>
+ *
+ * <p><strong>它不参与升热判定</strong>：升热由每 key 的滑动窗口精确计数决定（8 位饱和与
+ * "只会高估"这两点在升热阶段都会出问题）。</p>
  *
  * @author Asial Jim
  */
 final class FrequencySketch {
 
-    private static final int MAX_COUNT = 255;
+    /**
+     * 单格计数上限（16 位无符号）。
+     *
+     * <p>8 位（255）在"候选阈值 = 25 QPS × 5s = 125 次"时看似够用，但阈值一调高就饱和，
+     * 饱和后无法区分"刚过阈值"和"远超阈值"；32 位则内存翻四倍、工作集挤出 L2 舒适区，
+     * 换来的上限永远用不到。16 位（65 535 次/窗口 ≈ 13 107 QPS）是甜点。</p>
+     */
+    private static final int MAX_COUNT = 65_535;
 
     private final int width;
     private final int mask;
@@ -30,8 +42,8 @@ final class FrequencySketch {
     private final long windowNanos;
     private final LongSupplier nanoClock;
 
-    private byte[][] current;
-    private byte[][] previous;
+    private short[][] current;
+    private short[][] previous;
     private long nextRotateAtNanos;
 
     FrequencySketch(int width, int depth, long windowNanos, long now, LongSupplier nanoClock) {
@@ -45,10 +57,10 @@ final class FrequencySketch {
         this.nextRotateAtNanos = now + windowNanos;
     }
 
-    private byte[][] allocate() {
-        byte[][] table = new byte[depth][];
+    private short[][] allocate() {
+        short[][] table = new short[depth][];
         for (int i = 0; i < depth; i++) {
-            table[i] = new byte[width];
+            table[i] = new short[width];
         }
         return table;
     }
@@ -97,16 +109,16 @@ final class FrequencySketch {
     private void increment(int hash) {
         for (int row = 0; row < depth; row++) {
             int index = index(hash, row);
-            if (current[row][index] < MAX_COUNT) {
+            if ((current[row][index] & 0xFFFF) < MAX_COUNT) {
                 current[row][index]++;
             }
         }
     }
 
-    private int estimate(byte[][] table, int hash) {
+    private int estimate(short[][] table, int hash) {
         int min = MAX_COUNT;
         for (int row = 0; row < depth; row++) {
-            int value = table[row][index(hash, row)] & 0xFF;
+            int value = table[row][index(hash, row)] & 0xFFFF;
             if (value < min) {
                 min = value;
             }
