@@ -57,7 +57,13 @@ public interface CacheStrategyRepository {
      */
     void declare(CacheStrategyDecl decl, DeclSource source);
 
-    /** 登记完毕，解析并冻结初始生效值。返回被解析出的 namespace 列表（保序）。 */
+    /**
+     * 登记完毕，对**每条声明**解析并冻结生效值（预装配集合 = 声明集合，§3.1）。
+     *
+     * <p>不遍历数据源：数据源里有、声明里没有的记录不参与装配（孤儿，§3.2）。</p>
+     *
+     * @return 被解析出的 namespace 列表（保序）
+     */
     List<String> bootstrap();
 
     // ---------- 读取（业务端唯一会用到的部分；幂等、无副作用） ----------
@@ -233,26 +239,68 @@ public sealed interface PolicyLookup {
 4. 解析结果必须**冻结**为不可变对象，`find` 返回的是同一份快照（同一 `configVersion` 内 identity 稳定，
    便于上层做 `==` 快速判断"换没换过"）。
 
-### 3.1 三类"对不上"的配置怎么处置
+### 3.1 预装配集合的边界（声明决定装什么）
 
-声明（代码）、数据源（运维配置）、业务使用（运行期）三者天然会对不齐，逐类定死：
+**预装配集合 = 声明集合**，没有别的来源：
 
-| 情形 | 判定时机 | 处置 | 可见性 |
-|---|---|---|---|
-| **业务用了未声明的 namespace**<br>（`@Cacheable("order:detail")`，无枚举、数据源也无记录） | 运行期（`getCache(name)` 时） | **按内建默认自动创建**，不报错 | `warn`（每个 namespace 一次，限流）+ 指标 `undeclaredNamespaceCount` + 视图标 `undeclared=true` |
-| **数据源有、代码没声明**（可能连带业务也没用） | 启动期不装配（不预创建实例）；**运行期若被业务用到，则按数据源策略生效** | 不预装配；**始终没被用到的**在视图里标 `orphan=true`，启动 `warn` 一次 | `orphanPolicyCount` |
-| **数据源里某条记录损坏**（解码失败 / schema 不认识） | 启动期解析时 | **跳过该条**（用声明 + 内建默认继续），**不自动修复**（不覆盖数据源） | `error` + `brokenPolicyCount` + 视图标 `broken=true` |
+```text
+预装配的 namespace = META-INF/services/** 扫到的枚举常量
+                   ∪ Spring 包扫描（@CacheNamespace）到的枚举常量
+```
 
-**为什么"未声明"不报错**：启动期**无法穷举**业务会用哪些缓存名——`@Cacheable` 的 name 可以是
-SpEL、`cacheManager.getCache(name)` 的名字来自运行时数据。强行在启动期校验只能覆盖静态字面量，
-反而把"拼写错误"变成运行期 500。所以选择"能跑 + 必须可见"：自动按默认策略创建，
-但每个未声明的 namespace 都要在日志、指标、运维视图里露出来，避免策略治理悄悄失效。
+数据源**不参与**"装什么"的决定，它只回答"某个已确定要装的 namespace，策略参数是什么"。
 
-**为什么"孤儿"不预装配**：数据源里的任意记录若都能在进程里创建缓存实例，等于把数据源变成
-远程控制面（谁能写数据源就能让所有节点分配内存）。孤儿只在运行时被业务真正用到时才实例化。
+### 3.2 声明 / 数据源 / 业务使用 三者关系的全矩阵
 
-**为什么"损坏记录"不 fail-fast**：一条运维写坏的记录不该让全站起不来；但也不自动修复
-（避免把错误配置"修"成静默默认值）。损坏条目在视图里长期可见，直到有人改掉。
+| 声明 | 数据源有记录 | 业务用到 | 结果 |
+|---|:---:|:---:|---|
+| ✅ | ✅ | — | **预装配**，用数据源策略 |
+| ✅ | ❌ | — | **预装配**，用声明（策略）+ 内建默认（参数） |
+| ❌ | ✅ | ✅ | 运行期按需创建，用数据源策略；**告警**（未经声明，见 §3.3） |
+| ❌ | ✅ | ❌ | **不装配**（孤儿）；仅在运维视图里可见，`orphanPolicyCount` 计数 |
+| ❌ | ❌ | ✅ | 运行期按需创建，用内建默认；**告警**（未经声明） |
+| ❌ | ❌ | ❌ | 什么都不发生 |
+
+推论（对契约有直接影响）：
+
+1. **启动不依赖 `CacheStrategyDataSource.loadAll()`**：预装配只需要对"声明里的每个 namespace"
+   调 `find(ns)`，`loadAll()` 降级为**运维视图专用**（罗列数据源全部记录，识别孤儿与损坏）；
+2. **孤儿一律不装配**："装配它干什么，又不用"——数据源里的任意记录若能创建缓存实例，
+   等于把数据源变成远程内存控制面（谁能写数据源，谁就能让所有节点分配内存）；
+3. **`bootstrap()` 的语义**是"对每条声明解析出生效值"，不是"把数据源里的全部记录装进来"。
+
+### 3.3 未经声明的 namespace 被业务使用：告警 + 按内建默认创建
+
+**判定**：`getCache(name)` 时该 namespace 既不在声明集合里、也没有装配 → 说明它**没有走
+缓存策略声明接口**（漏声明或拼写错误）。
+
+**处置**：
+
+```text
+[缓存装配]-声明-<ns> 未经 CacheStrategyDecl 声明，按内建默认创建，
+                    请补充到声明枚举（undeclaredNamespaceCount=1）
+```
+
+- **告警**（每个 namespace 一次，按 namespace 限流）+ `undeclaredNamespaceCount++` + 视图标 `undeclared`；
+- **不报错、照常创建**：启动期无法穷举业务会用哪些缓存名（`@Cacheable` 的 name 可为 SpEL、
+  `getCache(name)` 的名字来自运行时数据），强校验只能覆盖静态字面量，
+  反而把"拼写错误"从运行期 500 变成"启动失败"这种更难定位的问题；
+- 若该 namespace 在数据源里有记录（运维已经配过），**用数据源的策略**，只是告警"代码里没声明"；
+- 若数据源也没有，用内建默认。
+
+**为什么必须告警而不是静默**：漏声明意味着这个缓存的策略不受运维治理（运维列表里看不到它，
+也不知道它从哪来）。能跑是底线，可见才是治理。
+
+### 3.4 数据源里某条记录损坏
+
+| 项 | 处置 |
+|---|---|
+| 判定 | 启动/读取时 `PolicyCodec.decode` 失败，或 `schema` 版本不认识 |
+| 处置 | **跳过该条**，用声明 + 内建默认继续；**不自动修复**（不覆盖数据源） |
+| 可见性 | `error` 日志 + `brokenPolicyCount++` + 视图标 `broken=true` |
+
+理由：一条运维写坏的记录不该让全站起不来；但也不能"猜"一个值写回去——那会把错误配置
+变成静默默认值，问题更难查。损坏条目在视图里长期可见，直到有人改掉。
 
 ## 4. 两层结构：仓库门面 + 仓库数据源
 
@@ -287,7 +335,10 @@ public interface CacheStrategyDataSource {
     /** @return 该 namespace 的记录；不存在返回 empty（不是错误） */
     Optional<StoredPolicy> load(String namespace);
 
-    /** @return 全部记录；启动枚举与运维分页查询用。返回空列表表示"一条都没有" */
+    /**
+     * @return 全部记录。**仅供运维视图**（列孤儿/损坏）；启动装配不依赖它——
+     *         预装配集合由声明决定（§3.1）。返回空列表表示"一条都没有"。
+     */
     List<StoredPolicy> loadAll();
 
     /**
@@ -321,7 +372,7 @@ public interface CacheStrategyDataSource {
 ### 4.2 读路径（门面）
 
 ```text
-find(ns)
+find(ns)                     # ns 一定来自声明集合或 §3.3 的按需创建
   ├─ 本地副本命中 → 直接返回 Found（到点则顺带做版本对账，最多 5s 一次）
   ├─ 本地未命中 → 中央缓存 → 命中则回填本地
   └─ 中央也未命中 → dataSource.load(ns)
@@ -854,8 +905,10 @@ long brokenPolicyCount();              // 数据源里解析失败的记录数
 | 写穿失败 → clear 兜底 | 中央写穿失败 ⇒ evict 成功 ⇒ `APPLIED` + `strategyRepoClearFallbackCount++`；业务端对账"中央缺字段"清本地 → 下次读回源拿到新值 |
 | 写穿与 clear 都失败 | ⇒ `APPLIED_STALE` + error + `strategyRepoStaleCount++`；再次 `change` 可补偿 |
 | `PolicyCodec` 往返 | 编码→解码等价；编码损坏 ⇒ `CODEC_DECODE_FAILED` 且按 `Unavailable` 处理（不缓存坏值） |
-| 未声明 namespace | `getCache("nobody:declared")` ⇒ 按内建默认创建成功；warn 只打一次；`undeclaredNamespaceCount=1`；视图标 `undeclared` |
-| 孤儿配置 | 数据源有 `x:y` 但没声明也没被用 ⇒ 不创建实例；`orphanPolicyCount=1`；被业务 `getCache("x:y")` 使用后转为正常（用数据源策略） |
+| 未声明 namespace（无数据源记录） | `getCache("nobody:declared")` ⇒ 按内建默认创建成功；warn 只打一次；`undeclaredNamespaceCount=1`；视图标 `undeclared` |
+| 未声明 namespace（数据源有记录） | 同上，但**用数据源策略**而非内建默认；仍告警"未经声明" |
+| 孤儿配置 | 数据源有 `x:y`、声明没有、业务没用 ⇒ **不创建实例**（`names()` 里不含它）；`orphanPolicyCount=1`；被业务 `getCache("x:y")` 使用后转为正常（用数据源策略） |
+| 预装配集合 | 只有声明集合被预装配；`loadAll()` 不被启动流程调用（可用假数据源断言"零调用"） |
 | 损坏记录 | 数据源某条解码失败 ⇒ 跳过该条（其余正常装配）+ `brokenPolicyCount=1` + 视图标 `broken`；**不覆盖数据源** |
 | `dynamic` 保留 | STATIC 策略下视图保留上次的 `DynamicSpec` 且 `dynamicActive=false`；切回 DYNAMIC 后参数沿用 |
 | 自举参数 | `maxSize` 默认 1000；改配置需重启；启动日志打印实际生效值 |
@@ -960,8 +1013,8 @@ return next
 
 | # | 问题 | 结论 |
 |---|---|---|
-| Q1 | 业务用了未声明的 namespace | **按内建默认自动创建，不报错**；每个未声明的 namespace `warn` 一次 + `undeclaredNamespaceCount` + 视图标 `undeclared`。理由：启动期无法穷举（`@Cacheable` 的 name 可为 SpEL、`getCache` 的名字来自运行时），强校验只能覆盖字面量，反而把拼写错误变成运行期 500 —— 选择"能跑但必须可见" |
-| Q2 | 数据源有、代码没声明（孤儿配置） | **不预装配**（避免数据源变成远程内存控制面）；运行期若被业务用到则按数据源策略生效；始终没用到的在视图标 `orphan` + 启动 warn 一次 |
+| Q1 | 业务用了未声明的 namespace | **告警 + 按内建默认创建**（§3.3）：该 namespace 证明没走声明接口；告警一次（限流）+ `undeclaredNamespaceCount` + 视图标 `undeclared`。不报错的理由：启动期无法穷举（`@Cacheable` 的 name 可为 SpEL、`getCache` 名字来自运行时），强校验只会把拼写错误变成更难定位的启动失败 |
+| Q2 | 数据源有、代码没声明（孤儿配置） | **不装配**：预装配集合 = 声明集合（§3.1），"装配它干什么，又不用"。运行期若被业务用到则按数据源策略生效；始终没用到的只在运维视图标 `orphan`；启动不调用 `loadAll()` |
 | Q3 | 多应用共享数据源的 namespace 重名 | **namespace 不加应用前缀**；隔离靠数据源实现的 DB / key 前缀。让 `@Cacheable("user:detail")` 保持干净，也不阻止跨应用共享同一缓存 |
 | Q4 | 数据源里一条损坏记录 | **跳过该条**（声明 + 内建默认继续），不自动修复也不 fail-fast；`brokenPolicyCount` + 视图标 `broken` |
 | Q5 | 变更历史查询 API | **不提供**（R4 已定）：审计持久化与历史回看归管理服务 |
