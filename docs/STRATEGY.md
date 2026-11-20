@@ -16,7 +16,7 @@
 
 目标：
 
-- **声明式**：用户写一个枚举（实现 `CacheDecl`），库自己发现、翻译、校验、注册、装配；
+- **声明式**：用户写一个枚举（实现 `CacheStrategyDecl`），库自己发现、翻译、校验、注册、装配；
 - **可热更**：运维通过库提供的 SPI 把某个 namespace 的策略从任意值改到任意值，**不停机**，
   且在途请求不打补丁、不与新状态混合；
 - **可多节点一致**：一次变更对所有节点生效（持久化在中央，节点感知）；
@@ -33,7 +33,8 @@
 | 术语 | 含义 |
 |---|---|
 | **声明（Decl）** | 用户写的枚举，描述一个 namespace 想要什么策略 |
-| **定义（Definition）** | 声明翻译出的 `(LocalCacheSpec, CentralCacheSpec)` 对，即现有 `CacheDefinition` |
+| **定义（Definition）** | 仓库补全后的 `(LocalCacheSpec, CentralCacheSpec)` 对，即 `CacheDefinition` |
+| **声明值 / 生效值** | 声明值 = 枚举里写的（`declaredStrategy`）；生效值 = 仓库判定后真正装配的（`activeStrategy`）。**运维只能改生效值** |
 | **注册表（Registry）** | 进程内的"namespace → 当前生效定义"登记处，是热更的落点 |
 | **运行时（Runtime）** | 一次定义所对应的全部可变对象：本地缓存实例、分区索引、对账信号量、生效 `partitions` |
 | **epoch** | 策略版本号，单调递增；用于乐观锁、脏检查与日志对齐 |
@@ -46,7 +47,7 @@
 ┌──────────────┐   ServiceLoader  ┌────────────────────┐   change()  ┌─────────────┐
 │ enum UserCache│ ───────────────► │ CacheStrategyLoader│ ──────────► │ 注册表       │
 │ implements    │                  └─────────┬──────────┘             │ Registry    │
-│ CacheDecl     │                            │ 翻译 + 校验            └──────┬──────┘
+│ CacheStrategyDecl     │                            │ 翻译 + 校验            └──────┬──────┘
 └──────────────┘                            ▼                              │
                                   ┌────────────────────┐                    │ set(runtime)
                                   │ 定义 CacheDefinition│                    ▼
@@ -68,85 +69,69 @@
 
 ## 4. 一、声明式初始化
 
-### 4.1 声明形态：枚举 + `CacheDecl`
+### 4.1 声明形态：枚举 + `CacheStrategyDecl`（三个成员，全部必需）
 
-用户只写枚举：
+用户只写枚举，接口只规定"**怎么定义一个缓存策略**"：
 
 ```java
-@CacheNamespace            // 供 Spring 包扫描发现；core 用 ServiceLoader，不依赖它
-public enum CacheDecls implements CacheDecl {
+@CacheNamespace            // 供 Spring 包扫描发现；core 侧走 META-INF/services，不依赖它
+public enum UserCacheDecls implements CacheStrategyDecl {
 
-    USER_DETAIL("user:detail", LocalStrategy.STATIC),
-    USER_PROFILE("user:profile", LocalStrategy.DYNAMIC),
-    ORDER_SNAPSHOT("order:snapshot", LocalStrategy.NONE);
+    USER_DETAIL("user:detail", LocalStrategy.STATIC, "用户详情，读多写少"),
+    USER_PROFILE("user:profile", LocalStrategy.DYNAMIC, "用户档案，存在热点"),
+    ORDER_SNAPSHOT("order:snapshot", LocalStrategy.NONE, "订单快照，仅中央，不强求本地");
 
     private final String namespace;
     private final LocalStrategy strategy;
+    private final String description;
 
-    CacheDecls(String namespace, LocalStrategy strategy) {
+    UserCacheDecls(String namespace, LocalStrategy strategy, String description) {
         this.namespace = namespace;
         this.strategy = strategy;
+        this.description = description;
     }
 
     @Override public String namespace() { return namespace; }
     @Override public LocalStrategy strategy() { return strategy; }
+    @Override public String description() { return description; }
 }
 ```
 
-`CacheDecl` 是 core 的接口，**所有参数都有默认值**，只把必须显式决定的留空：
-
 ```java
-public interface CacheDecl {
+public interface CacheStrategyDecl {
 
+    /** ① 缓存命名空间 */
     String namespace();
 
+    /** ② 初始本地策略（<strong>声明值</strong>，可被仓库覆盖） */
     LocalStrategy strategy();
 
-    /** 本地条目上限；NONE 忽略。默认 10_000。 */
-    default long maxSize() { return 10_000L; }
-
-    /** 本地副本最长存活；NONE 忽略。默认 5 分钟。 */
-    default Duration localTtl() { return Duration.ofMinutes(5); }
-
-    /** 版本对账参数；NONE 忽略。默认 VersionSpec.defaults()。 */
-    default LocalCacheSpec.VersionSpec version() { return LocalCacheSpec.VersionSpec.defaults(); }
-
-    /** DYNAMIC 专属参数；非 DYNAMIC 忽略。默认 DynamicSpec.defaults()。 */
-    default LocalCacheSpec.DynamicSpec dynamic() { return LocalCacheSpec.DynamicSpec.defaults(); }
-
-    /** 中央 TTL。默认 30 分钟。 */
-    default Duration centralTtl() { return Duration.ofMinutes(30); }
-
-    /** 空值缓存 TTL；ZERO 表示不缓存空值。默认 1 分钟。 */
-    default Duration nullTtl() { return Duration.ofMinutes(1); }
-
-    /** 中央不可用时是否降级为"只读本地"。默认 true。 */
-    default boolean failOpen() { return true; }
-
-    /** 用途说明，出现在启动日志与运维视图里。 */
-    default String description() { return ""; }
-
-    /** 翻译成装配定义；库保证只在注册前调用一次。 */
-    default CacheDefinition toDefinition() {
-        return CacheDefinition.of(
-                LocalCacheSpec.of(namespace(), strategy(), maxSize(), localTtl(), version(), dynamic()),
-                CentralCacheSpec.builder(namespace()).ttl(centralTtl()).nullTtl(nullTtl()).failOpen(failOpen()).build());
-    }
+    /** ③ 命名空间描述信息；<strong>必须非空</strong>，否则运维无从判断这个缓存干什么用 */
+    String description();
 }
 ```
 
 要点：
 
-- `CacheDecl` **不是** `CacheDefinition` 的替代，而是它的"人话版本"；`CacheDefinition` 仍是装配层的
-  事实类型（现有 Spring 模块已用它，直接下沉到 `core.strategy` 包）。
-- 枚举天然单例、有 `name()`，适合做声明与审计（日志里可以直接写枚举常量名）。
-- `toDefinition()` 有默认实现，用户只在需要偏离默认时才覆写。
+- **三个成员全部必需，没有默认值、没有可选参数**。容量、时长、版本对账、热升降阈值等
+  一律不在这里——它们属于**仓库**（§5），由运维按 namespace 独立配置；
+- `description` **必须非空**（`trim()` 后为空 ⇒ 启动失败）。它是运维视图与启动日志里唯一的人话，
+  宁可启动时报错，也不要出现"这个 namespace 是干什么的？"的运维事故；
+- 枚举天然单例、有 `name()`，适合审计（日志直接写 `UserCacheDecls#USER_DETAIL`）；
+- 一个枚举可声明多个 namespace；不同枚举声明同一 namespace 属于冲突，启动失败（§4.4）。
+
+**为什么把参数都推给仓库**：同一个 `user:detail` 在不同业务、不同时期需要不同容量与 TTL，
+写在代码里就要发版；而"改一个 namespace 的容量"是运维动作，不是代码变更。枚举只表达
+"**我想要一个叫 X 的缓存，起初用 STATIC 策略，用途是 Y**"，剩下的由仓库补全并可在运行时调整。
+
+**不开档位**：早期不考虑 `SMALL/LARGE` 之类的档位枚举。未配置仓库时用**唯一一套内建默认**
+（见 §4.3），够用且心智负担最小；真要调优就去仓库里按 namespace 配。
 
 ### 4.2 发现机制：三选一，结论是"两条腿"
 
 | 方案 | 优点 | 缺点 | 结论 |
 |---|---|---|---|
-| **按 `ServiceLoader` 约定读文件**（`META-INF/services/...CacheDecl`） | 零依赖、可预测；文件格式是通用约定，工具都认识 | 需要一行 `resources` 文件 | **core 默认**（加载逻辑自研，见 4.2.1） |
+| **按 `ServiceLoader` 约定读文件**（`META-INF/services/...CacheStrategyDecl`） | 零依赖、可预测；文件格式是通用约定，工具都认识 | 需要一行 `resources` 文件 | **core 默认**（加载逻辑自研，见 4.2.1） |
 | **包扫描**（`@CacheNamespace` + 扫描器） | 用户零配置，贴注解即可 | 自研扫描要处理 jar/目录/模块路径/类加载器，易错；启动耗时 | **Spring 适配层**（用 Spring 自带扫描能力），core 不做 |
 | **多态自注册**（枚举静态块调 `Registry.register`） | 用户零配置 | 类不被加载就不会注册，**漏注册是静默的** | 不作主路径，见 §4.2.4 |
 
@@ -157,7 +142,7 @@ public interface CacheDecl {
 - `cache4j-spring` 额外提供注解扫描（`@CacheNamespace` 标注的枚举），把扫到的实例一并交给同一个注册表。
   多条路径幂等合并，冲突检测见 4.4。
 
-### 4.2.1 为什么不能直接用 `ServiceLoader.load(CacheDecl.class)`
+### 4.2.1 为什么不能直接用 `ServiceLoader.load(CacheStrategyDecl.class)`
 
 `ServiceLoader` 创建 provider 的唯一方式是**反射调用无参构造器**：
 
@@ -173,7 +158,7 @@ IllegalArgumentException: Cannot reflectively create enum objects
 ```
 
 枚举常量由 JVM 在类初始化时创建，反射新建会破坏单例语义，JDK 明确禁止。所以
-`ServiceLoader.load(CacheDecl.class)` 遇到枚举必然抛 `ServiceConfigurationError`。
+`ServiceLoader.load(CacheStrategyDecl.class)` 遇到枚举必然抛 `ServiceConfigurationError`。
 
 **结论：文件格式、路径、每行一个类名的约定全部沿用，但加载逻辑自研**：
 
@@ -181,15 +166,15 @@ IllegalArgumentException: Cannot reflectively create enum objects
 // CacheStrategyLoader 内部（简化）
 for (String line : lines(entry)) {                       // 跳过空行与 # 注释
     Class<?> type = Class.forName(line, false, loader);
-    if (!CacheDecl.class.isAssignableFrom(type)) {
-        throw invalid(entry + " 第 " + lineNo + " 行：" + line + " 不是 CacheDecl 实现");
+    if (!CacheStrategyDecl.class.isAssignableFrom(type)) {
+        throw invalid(entry + " 第 " + lineNo + " 行：" + line + " 不是 CacheStrategyDecl 实现");
     }
     if (type.isEnum()) {
         for (Object constant : type.getEnumConstants()) { // ← 枚举走这里，不反射构造
-            decls.add((CacheDecl) constant);
+            decls.add((CacheStrategyDecl) constant);
         }
     } else {
-        decls.add((CacheDecl) type.getDeclaredConstructor().newInstance());  // 兼容非枚举写法
+        decls.add((CacheStrategyDecl) type.getDeclaredConstructor().newInstance());  // 兼容非枚举写法
     }
 }
 ```
@@ -197,7 +182,7 @@ for (String line : lines(entry)) {                       // 跳过空行与 # �
 用户体感：**一个枚举 + 一行 resources 文件**。
 
 ```text
-src/main/resources/META-INF/services/com.asialjim.cache4j.core.strategy.CacheDecl
+src/main/resources/META-INF/services/com.asialjim.cache4j.core.strategy.CacheStrategyDecl
 ────────────────────────────────────────────────────────────────────────────
 # 每行一个全限定类名，支持 # 注释与空行
 com.acme.cache.UserCacheDecls
@@ -231,7 +216,7 @@ native image 下按三档处理，由易到难：
 
 | 档 | 做法 | 反射 | native image 成本 |
 |---|---|---|---|
-| **1. 声明文件**（默认） | `META-INF/services/...CacheDecl` 一行一个枚举 | `Class.forName` + `getEnumConstants` | 需要 hints，但清单是静态的，**可由库自动生成** |
+| **1. 声明文件**（默认） | `META-INF/services/...CacheStrategyDecl` 一行一个枚举 | `Class.forName` + `getEnumConstants` | 需要 hints，但清单是静态的，**可由库自动生成** |
 | **2. 显式传入**（兜底） | `options.declEnums(UserCacheDecls.class)` | 同上 | 同上 |
 | **3. 生成的注册代码**（真零反射） | 由编译期/AOT 生成 `Cache4jDecls.register(registry)`，内部直接 `UserCacheDecls.values()` | **无** | **零配置** |
 
@@ -272,7 +257,7 @@ public final class Cache4jRuntimeHints implements RuntimeHintsRegistrar {
 |---|---|---|---|---|---|
 | **A. 静态块自注册**<br>`static { Registry.global().register(values()); }` | 只写枚举 | ❌ **不确定**（类不加载就漏） | ❌ 全局单例污染测试 | ❌ 类被裁则静默失效 | 只能当糖，不能当主路径 |
 | **B. 显式 install**<br>`Cache4j.install(UserCacheDecls.values())` | 枚举 + 一行代码 | ✅ 确定 | ✅ 无全局状态 | ✅ 静态可达 | **纯 Java 主路径（P1）** |
-| **C. 生成式清单（APT）**<br>注解处理器生成 `META-INF/services/...CacheDecl` | **只写枚举** | ✅ 确定 | ✅ | ✅ 清单静态 | **零配置首选（P2）** |
+| **C. 生成式清单（APT）**<br>注解处理器生成 `META-INF/services/...CacheStrategyDecl` | **只写枚举** | ✅ 确定 | ✅ | ✅ 清单静态 | **零配置首选（P2）** |
 | **D. Spring 包扫描** | 枚举 + `@CacheNamespace` | ✅ 确定 | ✅ | ⚠️ 需 hints | **Spring 零配置（P4）** |
 
 #### A 的三个坑（为什么不能当主路径）
@@ -300,10 +285,10 @@ public final class Cache4jRuntimeHints implements RuntimeHintsRegistrar {
 ```java
 /** 静态块只能往这里塞，不直接生效，避免"注册早于 registry 创建"和"顺序不确定"。 */
 final class PendingDecls {
-    private static final Set<CacheDecl> PENDING = ConcurrentHashMap.newKeySet();
-    static void offer(Collection<CacheDecl> decls) { PENDING.addAll(decls); }
-    static List<CacheDecl> drain() {                      // registry 创建时调用一次
-        List<CacheDecl> out = new ArrayList<>(PENDING);
+    private static final Set<CacheStrategyDecl> PENDING = ConcurrentHashMap.newKeySet();
+    static void offer(Collection<CacheStrategyDecl> decls) { PENDING.addAll(decls); }
+    static List<CacheStrategyDecl> drain() {                      // registry 创建时调用一次
+        List<CacheStrategyDecl> out = new ArrayList<>(PENDING);
         PENDING.clear();
         return out;
     }
@@ -337,7 +322,7 @@ final class PendingDecls {
 
 | 写法 | 结论 |
 |---|---|
-| `type.asSubclass(CacheDecl.class).getEnumConstants()` | ✅ **采用**。`Class` 内建能力，返回全部常量（`CacheDecl[]`，类型安全），**不是反射构造**——读的是 JVM 已建好的常量数组，因此不受"枚举禁止反射实例化"的限制 |
+| `type.asSubclass(CacheStrategyDecl.class).getEnumConstants()` | ✅ **采用**。`Class` 内建能力，返回全部常量（`CacheStrategyDecl[]`，类型安全），**不是反射构造**——读的是 JVM 已建好的常量数组，因此不受"枚举禁止反射实例化"的限制 |
 | `type.getMethod("values").invoke(null)` | ❌ 不采用。需要额外注册方法 hints（native image 更重）、要拆 `InvocationTargetException`、语义绕 |
 | `type.getDeclaredConstructor().newInstance()` | ❌ 不可行。对枚举直接抛 `IllegalArgumentException: Cannot reflectively create enum objects` |
 
@@ -347,8 +332,8 @@ final class PendingDecls {
 
 ```java
 // ① 类型校验：顺序固定，报错才有信息量
-if (!CacheDecl.class.isAssignableFrom(type)) {
-    throw invalid(where + "：" + type.getName() + " 未实现 CacheDecl，实际接口="
+if (!CacheStrategyDecl.class.isAssignableFrom(type)) {
+    throw invalid(where + "：" + type.getName() + " 未实现 CacheStrategyDecl，实际接口="
             + Arrays.toString(type.getInterfaces()));
 }
 if (!type.isEnum()) {
@@ -356,7 +341,7 @@ if (!type.isEnum()) {
 }
 
 // ② 取全部常量：一次拿全，类型安全
-CacheDecl[] constants = type.asSubclass(CacheDecl.class).getEnumConstants();
+CacheStrategyDecl[] constants = type.asSubclass(CacheStrategyDecl.class).getEnumConstants();
 if (constants == null) {                       // 防御：isEnum() 已挡，理论上不可达
     throw invalid(where + "：" + type.getName() + " 无法读取枚举常量");
 }
@@ -367,7 +352,7 @@ if (constants.length == 0) {                   // 空枚举合法：没有任何
 
 // ③ 逐个翻译：纯函数；错误信息必须能定位到具体常量
 List<Candidate> out = new ArrayList<>(constants.length);
-for (CacheDecl decl : constants) {
+for (CacheStrategyDecl decl : constants) {
     String origin = type.getName() + "#" + ((Enum<?>) decl).name();
     try {
         CacheDefinition def = decl.toDefinition();
@@ -409,7 +394,7 @@ for (Candidate candidate : candidates) {
 3. **标识用 `((Enum<?>) c).name()`，绝不用 `toString()`**。`toString` 可被用户覆写（用于展示）；
    `ordinal()` 同样禁止用于排序或持久化（常量顺序变化会漂移）。
 4. **`getEnumConstants()` 会触发枚举类初始化**（`static` 块执行）。因此契约要求：
-   **`CacheDecl` 枚举的静态块必须无副作用**（不得在其中注册、读外部配置），
+   **`CacheStrategyDecl` 枚举的静态块必须无副作用**（不得在其中注册、读外部配置），
    否则 §4.2.4 的"注册顺序不确定"问题会从后门回来。
 5. **Spring 扫描默认不加载类**：`ClassPathScanningCandidateComponentProvider` 基于 ASM 读元数据判候选，
    产出的是 `BeanDefinition` / 类名字符串，必须补一步加载才能取常量：
@@ -422,29 +407,60 @@ for (Candidate candidate : candidates) {
 
 #### 4.2.5.4 转换只发生一次
 
-- `toDefinition()` 只在**注册时**调用一次，结果存进 registry；
-- **不要**在枚举里缓存 `CacheDefinition`（枚举应无状态）；
-- 热更时**不复用**枚举的 definition：热更后的值来自中央/运维 update，与代码声明无关；
-  声明值只在 `reset(namespace)` 时用于"回到初始状态"。
+- 翻译只在**注册时**执行一次（取常量 → 交给仓库补全），结果存进 registry；
+- **不要**在枚举里缓存任何派生对象（枚举必须无状态）；
+- 热更时**不复用**声明值：生效配置来自仓库。声明值只用于审计与启动比对
+  （"运维改过，与代码声明不一致"会打一条 warn，见 §4.5）。
 
-### 4.3 翻译与校验
+### 4.3 仓库补全与校验（枚举只管策略，参数由仓库给）
 
-翻译是一次性的纯函数：`CacheDecl → CacheDefinition`。校验复用现有规则，不新增第二套：
+枚举只给三个值；把它变成可用的 `CacheDefinition` 是**仓库**的事：
 
-1. `LocalCacheSpec` 紧凑构造器 + `validate()`：`STATIC/DYNAMIC` 必须有 `version`、`maxSize>0`、
+```java
+// 仓库内部：materialize(decl) —— 枚举不参与参数决策
+CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
+    LocalStrategy strategy = policy != null ? policy.activeStrategy() : decl.strategy();
+    LocalCacheSpec local = switch (strategy) {
+        case NONE    -> LocalCacheSpec.noLocal(decl.namespace());
+        case STATIC  -> LocalCacheSpec.staticCache(decl.namespace(), p.maxSize(), p.localTtl(), p.version());
+        case DYNAMIC -> LocalCacheSpec.dynamicCache(decl.namespace(), p.maxSize(), p.localTtl(),
+                                                    p.version(), p.dynamic());
+    };
+    return CacheDefinition.of(local, p.central(decl.namespace()));
+}
+```
+
+`p` 的取值规则（三层，见 §4.5）：**仓库里该 namespace 的配置 → 都没有则用内建默认**。
+
+**内建默认（唯一一套，不开档位）**：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `maxSize` | `10_000` | 本地条目上限 |
+| `localTtl`（非空副本） | `5m` | 本地副本最长存活 |
+| 本地空值副本 | **不单独配置** | 由中央 `nullTtl` 决定（见 §9 不变量） |
+| `version` | `checkInterval=1s, jitter=0.1, retryBackoff=200ms, reconcileBatchSize=1000, reconcilePartitions=16` | 沿用 `VersionSpec.defaults()` |
+| `dynamic` | `localHotThreshold=5, window=10s, maxHotKeys=1000, hotTtl=60s, syncInterval=1s, cooldown=30s, hotReportPartitions=4, hotReportBatchMax=16, candidateCapacity=1000` | 沿用 `DynamicSpec.defaults()` |
+| `centralTtl`（非空） | `30m` | 中央数据存活 |
+| `centralNullTtl`（空值） | `1m`；`ZERO` 表示不缓存空值 | 同时决定本地负副本的上限 |
+| `failOpen` | `true` | 中央不可用时降级为只读本地 |
+
+**校验**（顺序：先声明后配置，错误信息都能定位到来源）：
+
+1. 声明侧：`namespace` 非空且符合 `CacheKey` 的字符规则、`strategy` 非空、**`description` 非空**；
+2. `LocalCacheSpec` 紧凑构造器 + `validate()`：`STATIC/DYNAMIC` 必须有 `version`、`maxSize>0`、
    `ttl>0`、`DYNAMIC` 必须有 `DynamicSpec`；
-2. `LocalCacheSpec.VersionSpec`：批大小正、分区数为 2 的幂；
-3. `CentralCacheSpec`：TTL 为正、`nullTtl` 为零表示不缓存空值；
-4. **跨字段校验**（新增，集中在注册表）：
-   - `DYNAMIC + coordination=GLOBAL` ⇒ 必须存在 `HotKeyCoordinator`（否则启动失败，沿用现有规则）；
-   - `coordination=GLOBAL` 但中央实现不支持协调 ⇒ 失败并提示改 `LOCAL`；
-   - `nullTtl > localTtl` ⇒ 警告（负副本会比正副本活得久，通常不是本意）。
+3. `VersionSpec`：批大小正、分区数为 2 的幂；
+4. `CentralCacheSpec`：TTL 为正；
+5. **跨字段校验**（集中在仓库）：
+   - `DYNAMIC + coordination=GLOBAL` ⇒ 必须存在 `HotKeyCoordinator`；中央实现不支持协调 ⇒ 失败并提示改 `LOCAL`；
+   - `centralNullTtl > centralTtl` ⇒ 警告（负副本比真值活得久，通常不是本意）。
 
 ### 4.4 启动流程与 fail-fast
 
 ```
-1. 加载声明：按约定读 `META-INF/services`（+ Spring 注解扫描 + 显式传入）→ List<CacheDecl>
-2. 翻译：CacheDecl → CacheDefinition（一次性）
+1. 加载声明：按约定读 `META-INF/services`（+ Spring 注解扫描 + 显式传入）→ List<CacheStrategyDecl>
+2. 补全：仓库按 namespace 取配置（缺失则用内建默认）→ `CacheDefinition`（一次性）
 3. 冲突检测：同一 namespace 出现多条声明 → 启动失败（报出全部冲突来源）
 4. 中央覆盖：读中央策略存储，命中则以中央为准（运维改过的值优先于代码声明）
 5. 校验：逐条 validate，任何一条失败 ⇒ 整个启动失败（不静默跳过）
@@ -463,12 +479,20 @@ for (Candidate candidate : candidates) {
 > 主题必须是**组件名**（`缓存装配` / `策略仓库` / `统一中央缓存`），不得用 namespace 当主题；
 > namespace 放在"具体信息"里，如上。
 
-### 4.5 优先级
+### 4.5 优先级与"兜底"语义
 
-`中央（运维改过） > 代码声明 > 内建默认`
+```
+生效策略 = 仓库里该 namespace 的配置
+        ?? 枚举声明（策略类型）
+        ?? 内建默认（参数）
+```
 
-重启后仍是运维改过的值 —— 这是热更的前提，否则一重启就回到代码里的旧值。要"回到声明值"
-必须显式调用 `reset(namespace)`（见 7）。
+- **没有仓库不是错误**：开发者不实现仓库时，枚举声明 + 内建默认即可正常工作，只是不能热更；
+- **有仓库但该 namespace 没配**：回落到枚举声明；
+- **有仓库且配了**：仓库生效，枚举的 `strategy` 降级为 `declaredStrategy`（审计用）；
+- **重启后仍是运维改过的值** —— 这是热更的前提。本设计**不提供 `reset`**：要回到声明值，
+  运维自己再改一次（审计留痕比"一键还原"更重要，也避免误操作把线上配置打回代码旧值）；
+- 启动时若发现"生效值 ≠ 声明值"，打一条 info/warn：`[缓存装配]-初始化-<ns>-生效策略=DYNAMIC，代码声明=STATIC，来源=仓库`。
 
 ## 5. 二、策略仓库 SPI
 
@@ -478,8 +502,8 @@ for (Candidate candidate : candidates) {
 /** 注册表：进程内唯一权威，热更落点。 */
 public interface CacheStrategyRegistry {
 
-    /** 注册一条声明（启动期用）。冲突或校验失败抛 CacheException。 */
-    void register(CacheDecl decl);
+    /** 注册一批候选声明（启动期用）。同来源幂等、跨来源同 namespace 冲突即失败。 */
+    void registerAll(List<CacheCandidate> candidates);
 
     /** @return 当前生效定义（含 epoch），未注册返回 empty */
     Optional<CacheStrategyView> find(String namespace);
@@ -489,9 +513,6 @@ public interface CacheStrategyRegistry {
 
     /** 提交变更：校验 → 构建 → 原子切换 → 广播。失败不改动任何状态。 */
     StrategyChangeResult change(StrategyUpdate update);
-
-    /** 回到声明值。 */
-    StrategyChangeResult reset(String namespace, String operator);
 
     /** @return 若中央 epoch 已前进则返回新定义，否则 empty（访问驱动检查用） */
     Optional<CacheStrategyView> refresh(String namespace);
@@ -511,13 +532,35 @@ public interface CacheStrategyStore {
 
 public record CacheStrategyView(
         String namespace,
+        String description,               // 来自仓库；仓库没配时取枚举声明
         CacheDefinition definition,
-        LocalStrategy declaredStrategy,   // 代码声明值，reset() 用
+        LocalStrategy declaredStrategy,   // 代码声明值（审计与启动比对；不提供 reset）
         long epoch,
         long updatedAtMillis,
         String updatedBy,
         String reason,
         Source source                      // DECLARED / CENTRAL / DEFAULT
+        // activeStrategy 即 definition.local().strategy()；declaredStrategy 恒等于枚举里的值
+        // 注：没有 reset —— declaredStrategy 只用于审计与启动比对
+) { }
+
+/** 每 namespace 的独立配置载体：仓库里存的就是它。 */
+public record NamespacePolicy(
+        String namespace,
+        String description,
+        LocalStrategy strategy,           // 生效策略
+        long maxSize,
+        Duration localTtl,                // 本地非空副本存活（空值副本由 centralNullTtl 决定）
+        LocalCacheSpec.VersionSpec version,
+        LocalCacheSpec.DynamicSpec dynamic,   // 仅 DYNAMIC 有意义
+        Duration centralTtl,              // 中央非空 TTL
+        Duration centralNullTtl,          // 中央空值 TTL；ZERO = 不缓存空值
+        boolean failOpen,
+        long epoch,
+        long updatedAtMillis,
+        String updatedBy,
+        String reason,
+        LocalStrategy declaredStrategy    // 枚举声明值，审计用
 ) { }
 ```
 
@@ -530,8 +573,10 @@ __strategy:<namespace>   HASH
     localTtlMs  300000
     version     check=1000;partitions=16;batch=1000;backoff=200;jitter=0.1
     dynamic     hotThreshold=...;candidate=...;partitions=16;...
-    centralTtlMs 1800000
-    nullTtlMs    60000
+    centralTtlMs     1800000
+    centralNullTtlMs 60000        # 空值 TTL；同时决定本地负副本上限
+    description      用户详情，读多写少
+    declaredStrategy STATIC       # 代码声明值，仅审计
     failOpen     1
     epoch        7
     updatedAt    1758278400000
@@ -542,6 +587,17 @@ __strategy:<namespace>   HASH
 - 与数据/版本表分开命名空间（`__strategy:` 前缀），`clear(namespace)` **不得**删它；
 - 只存"与默认/声明不同"的字段也可以，但为了审计与可读性，建议**存全量**；
 - `epoch` 由中央生成（`HINCRBY`），天然单调且多节点一致。
+
+### 5.2.1 每 namespace 都能独立配什么（与"不能配"的边界）
+
+| 能配（仓库里按 namespace） | 不能配（本设计的边界） |
+|---|---|
+| 本地策略类型 `NONE/STATIC/DYNAMIC` | 命名空间本身（改名等于换缓存） |
+| `maxSize`、本地非空 `localTtl` | **本地空值 TTL**（由 `centralNullTtl` 决定） |
+| 版本对账 `version`（间隔/抖动/退避/批大小/分区数） | 档位（本设计不开档位） |
+| DYNAMIC 热升热降全套（`localHotThreshold`、`hotTtl`、`cooldown`、`candidateCapacity`、上报分区/批量） | `version.reconcilePartitions` 必须是 2 的幂（校验而非配置自由度） |
+| 中央 `centralTtl`（非空）、`centralNullTtl`（空值）、`failOpen` | 中央连接/序列化/key 格式（基础设施，需重新装配） |
+| `description`（运维可改写得更清楚） | — |
 
 ### 5.3 变更传播：访问驱动检查（不引后台线程）
 
@@ -708,7 +764,9 @@ long strategyEpoch();             // 当前生效 epoch（gauge 语义，快照�
 | `strategy`（NONE/STATIC/DYNAMIC） | ✅ | 本设计核心场景 |
 | `maxSize` / `localTtl` / `version` | ✅ | 需要重建 Runtime（索引重建） |
 | `dynamic.*`（阈值、冷却、分区） | ✅ | 重建 Runtime，热点集合重置 |
-| `nullTtl` / `failOpen` | ✅ | 只影响后续写入/降级行为 |
+| `centralNullTtl` / `failOpen` | ✅ | 只影响后续写入/降级行为；空值 TTL 同时是本地负副本的上限 |
+| `description` | ✅ | 运维可改写得更准确（声明值仍在审计里） |
+| **本地空值 TTL** | ❌ | 本设计不提供独立旋钮，一律由 `centralNullTtl` 决定 |
 | `central.ttl` / `ttlJitter` | ⚠️ 允许但需谨慎 | 只影响**后续写入**，已写入的 key 保留旧 TTL；不做 retro 修正 |
 | 中央连接 / 序列化 / key 格式 | ❌ | 属于基础设施，必须重新装配并接受数据不兼容 |
 | `namespace` 本身 | ❌ | 改名等于换缓存 |
@@ -732,8 +790,6 @@ public interface CacheStrategyAdmin {
      */
     StrategyChangeResult change(StrategyUpdate update);
 
-    /** 回到代码声明的值。 */
-    StrategyChangeResult reset(String namespace, long expectedEpoch, String operator, String reason);
 }
 
 public record StrategyUpdate(
@@ -741,13 +797,12 @@ public record StrategyUpdate(
         Map<String, String> patch,     // 例：strategy=DYNAMIC, maxSize=5000
         long expectedEpoch,
         String operator,
-        String reason,
-        Duration ttlOfChange              // 可空：临时策略（到期自动回到声明值）
+        String reason
 ) { }
 ```
 
-`ttlOfChange` 是给大促场景准备的：改完 2 小时后自动恢复声明值（由**访问驱动检查**发现过期 →
-调 `reset`），不需要额外线程。
+**不提供 `reset`**：需要恢复时运维再执行一次 `change`（把值改回去），审计里能看出完整链条。
+这样避免"一键还原把线上配置打回代码旧值"这类误操作，也让"谁在什么时候改了什么"始终有记录。
 
 安全：`operator` 只是审计字段，**鉴权由使用方在 HTTP 层做**；文档与启动日志都要提示这一点。
 
@@ -755,7 +810,7 @@ public record StrategyUpdate(
 
 | 模块 | 新增内容 | 依赖 |
 |---|---|---|
-| `cache4j-core` | `CacheDecl`、`CacheDefinition`（下沉）、`CacheStrategyRegistry`/`Store` SPI、`StrategyRuntime`、`CacheStrategyLoader`（ServiceLoader）、`CacheStrategyAdmin` | 无新增 |
+| `cache4j-core` | `CacheStrategyDecl`、`CacheDefinition`（下沉）、`CacheStrategyRegistry`/`Store` SPI、`StrategyRuntime`、`CacheStrategyLoader`（ServiceLoader）、`CacheStrategyAdmin` | 无新增 |
 | `cache4j-local` / `cache4j-local-caffeine` / `cache4j-central` / `cache4j-central-redis` | **不改**（只被装配） | 不变 |
 | `cache4j-spring` | `@CacheNamespace` 注解 + 包扫描发现、可选 Actuator 端点 | Spring Framework |
 | `cache4j-spring-redis` | `RedisStrategyStore`（HASH 读写 + epoch 自增） | Spring Data Redis |
@@ -773,7 +828,13 @@ public record StrategyUpdate(
 6. **版本对账不变量不变**：`version` 变化时分区索引必须重建，否则"分区号表"与"每分区 key 数"不一致
    （现有实现依赖 `partitions` 固定）；
 7. **`clear(namespace)` 不得删 `__strategy:` 前缀**（否则清缓存会把策略一起清掉）；
-8. **统计口径**：切换不清零计数器，`strategyEpoch` 作为 gauge 暴露。
+8. **统计口径**：切换不清零计数器，`strategyEpoch` 作为 gauge 暴露；
+9. **本地负副本的存活由中央空值 TTL 决定**：本地层**没有**独立的"空值 TTL"旋钮，
+   负副本的本地有效期 = `min(central.nullTtl, local.ttl)`；`central.nullTtl = ZERO` 表示不缓存空值，
+   此时负副本不落本地也不落中央；
+10. **枚举只声明策略，不声明参数**：`CacheStrategyDecl` 恒为三个成员
+    （`namespace` / `strategy` / `description`），不开档位、不加可选参数；
+11. **`description` 非空**：空白即启动失败（运维视角的唯一说明）。
 
 ## 10. 七、测试计划
 
@@ -783,7 +844,7 @@ public record StrategyUpdate(
 | 声明发现：Spring 扫描 | 注解枚举被发现，与 ServiceLoader 结果幂等合并 |
 | 声明冲突 | 同 namespace 两条声明 → 启动失败，报出全部来源 |
 | 校验失败 | `DYNAMIC` 无 `DynamicSpec`、`GLOBAL` 无 coordinator → 启动失败 |
-| 中央覆盖 | 中央有值 ⇒ 启动用中央值；`reset` 后回到声明值 |
+| 中央覆盖 | 中央有值 ⇒ 启动用中央值；枚举值降级为 `declaredStrategy`，并打一条不一致日志 |
 | **迁移矩阵** | 6.4 的 7 条逐条验证：副本/热点/索引的期望状态 |
 | **切换并发** | 8 线程持续读写 + 切换 100 次，无异常、无"读得到写不进"、索引与副本一致 |
 | 幂等 | 同定义 `change` ⇒ `NO_CHANGE`，Runtime 实例不变（可用 identity 断言） |
@@ -791,15 +852,18 @@ public record StrategyUpdate(
 | 持久化失败 | Store 抛异常 ⇒ 本地策略不变，返回 `REJECTED` |
 | 检查节流 | 5s 内多次读只发一次 epoch 检查 |
 | 中央损坏 | 字段解析失败 ⇒ 继续用旧策略 + 计数 + 告警 |
-| 临时策略 | `ttlOfChange` 到期后自动回到声明值 |
+| 无临时策略 | 变更不会自动过期（随 `reset` 一并取消，需要恢复就再改一次） |
 | `clear` 保护 | `clear(namespace)` 后 `__strategy:` 仍在 |
+| `description` 非空 | 空白描述 ⇒ 启动失败，报出 `枚举#常量` |
+| 无仓库可用 | 不实现仓库时：枚举 + 内建默认即可装配成功，且不报错 |
+| 本地空值副本 | `centralNullTtl=ZERO` ⇒ 负副本两层都不落；`centralNullTtl=200ms < localTtl` ⇒ 本地负副本 200ms 后消失 |
 | **native image 冒烟** | 三档各一个最小程序，`native-image` 构建后能加载声明并装配缓存（回填实测的 hints 模板） |
 
 ## 11. 八、分期实施
 
 | 期 | 范围 | 产出 |
 |---|---|---|
-| **P1** | `CacheDecl` + `CacheDefinition` 下沉 + 声明加载器（文件约定 + `getEnumConstants`）+ `InMemoryRegistry` + `StrategyRuntime` 改造（`DefaultTwoLevelCache` 内部按 Runtime 组织） | 声明式初始化可用；**尚无热更**（Runtime 只有一代） |
+| **P1** | `CacheStrategyDecl` + `CacheDefinition` 下沉 + 声明加载器（文件约定 + `getEnumConstants`）+ `InMemoryRegistry` + `StrategyRuntime` 改造（`DefaultTwoLevelCache` 内部按 Runtime 组织） | 声明式初始化可用；**尚无热更**（Runtime 只有一代） |
 | **P2** | `change()` + 迁移矩阵 + 乐观锁 + 审计日志 + 指标 | 单节点热更可用 |
 | **P3** | `RedisStrategyStore` + 访问驱动 epoch 检查 + 临时策略 | 多节点一致 |
 | **P4** | Spring 扫描 + Actuator 端点 + `cache4j-starter` | 开箱可用 |
@@ -852,7 +916,7 @@ public final class Cache4jRuntimeHints implements RuntimeHintsRegistrar {
     public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
         // ① 声明文件本身必须作为资源留住
         hints.resources().registerPattern(
-                "META-INF/services/com.asialjim.cache4j.core.strategy.CacheDecl");
+                "META-INF/services/com.asialjim.cache4j.core.strategy.CacheStrategyDecl");
         hints.resources().registerPattern(
                 "META-INF/services/com.asialjim.cache4j.core.strategy.CacheDeclProvider");
 
@@ -890,7 +954,7 @@ A 的模板由库提供生成能力（不是让人手写）：
 
 # resource-config.json
 { "resources": { "includes": [
-    { "pattern": "\\QMETA-INF/services/com.asialjim.cache4j.core.strategy.CacheDecl\\E" }
+    { "pattern": "\\QMETA-INF/services/com.asialjim.cache4j.core.strategy.CacheStrategyDecl\\E" }
 ] } }
 ```
 
@@ -948,11 +1012,15 @@ GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热
 |---|---|---|---|
 | S1 | 变更传播机制 | 访问驱动 / 后台轮询 / pub-sub | **访问驱动**（零线程，与对账同构）；pub-sub 留给适配层加速 |
 | S2 | `STATIC → DYNAMIC` 是否清空本地副本 | 清空 / 转成热点 | **清空**（否则"读得到写不进"）；配预热缓解 |
+| S13 | 枚举契约的成员数 | 三个必需 / 三必需 + 可选档位 / 三必需 + 参数默认方法 | **三个必需**（`namespace`/`strategy`/`description`），参数全归仓库 |
+| S14 | 是否开档位（SMALL/STANDARD/LARGE） | 开 / 不开 | **不开**：未配仓库时用唯一一套内建默认，减小心智负担 |
+| S15 | 是否提供 `reset` | 提供 / 不提供 | **不提供**：要恢复就再 `change` 一次，审计留痕更重要；临时策略一并取消 |
+| S16 | 本地空值副本的存活 | 独立旋钮 / 由中央 `nullTtl` 决定 | **由中央 `nullTtl` 决定**（= `min(central.nullTtl, local.ttl)`），`LocalCacheSpec` 不加字段 |
 | S3 | `DYNAMIC → STATIC` 是否保留副本 | 保留 / 清空 | **保留**（无冲突且避免回源高峰） |
 | S4 | 声明发现方式 | 文件约定（类 ServiceLoader 但不实例化枚举）/ 自研包扫描 / 注解自注册 | **文件约定为主 + Spring 扫描为辅 + 显式传入兜底**；core 不自研包扫描 |
 | S5 | 多节点一致性是否 P1 必需 | 是 / 否（先单节点） | 单节点先上（P1–P2），P3 补中央存储 |
 | S6 | 是否允许热更中央 TTL | 允许 / 禁止 | **允许但标注"只影响后续写入"**；连接类参数禁止 |
-| S7 | 临时策略（`ttlOfChange`）是否要做 | 做 / 不做 | 做（大促场景刚需，实现成本低：访问驱动检查即可发现过期） |
+| S7 | 临时策略（`ttlOfChange`） | 做 / 不做 | **不做**（与 `reset` 一起取消：没有"还原目标"就没有过期语义，需要恢复就再改一次） |
 | S8 | `CacheDefinition` 是否从 `cache4j-spring` 下沉到 `core.strategy` | 下沉 / 保留双份 | **下沉**，Spring 侧保留同名兼容别名 |
 | S9 | 是否提供「真零反射」的生成式入口（APT / AOT 生成 `register(...)`） | 提供 / 不提供 | 先不提供（P1–P3 用文件清单 + 库自带 hints），等有明确 native image 需求再加 |
 | S10 | GraalVM 支持的交付深度 | 只出 hints + 模板 / 再加 CI 冒烟 / 再加生成式入口 | **hints + 模板 + 一次实测冒烟**；CI job 与生成式入口按需再加 |
