@@ -18,3 +18,6 @@ buildNumber.properties
 
 # 本地可写 Maven 仓库（仅本机沙箱用，见构建说明）
 .mvnrepo/
+
+# 测试用的本地文件策略数据源（跑 FileStrategyRepositoryTest 时生成）
+cache4j-spring-redis-test/db/

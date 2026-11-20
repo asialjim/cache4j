@@ -48,19 +48,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 策略仓库落本地文件：枚举声明 → {@link CachedCacheStrategyRepository} 门面 →
- * {@code ~/data/github/db/strategy.dat}，并且装配层的缓存定义**确实来自仓库**。
+ * {@code cache4j-spring-redis-test/db/strategy.dat}，并且装配层的缓存定义**确实来自仓库**。
  *
  * <p>两样东西分开看：</p>
  * <ol>
  *   <li><strong>策略数据源</strong>（{@link FileStrategyDataSource}）：本地文件
- *       {@code ~/data/github/db/strategy.dat}，一策略一段可读文本；</li>
+ *       {@code db/strategy.dat}（模块目录下），一策略一段可读文本；</li>
  *   <li><strong>门面自缓存</strong>的中央层：{@code CachedCacheStrategyRepository} 自己是 STATIC
  *       二级缓存，namespace {@code cache4j.strategy}，仍走 Redis。</li>
  * </ol>
  *
  * <p><strong>跑完不删文件、不清 Redis</strong>，方便直接观察：</p>
  * <pre>
- * cat ~/data/github/db/strategy.dat                      # 策略记录（key=value 文本）
+ * cat cache4j-spring-redis-test/db/strategy.dat          # 策略记录（key=value 文本）
  * redis-cli --scan --pattern 'cache4j:{cache4j.strategy}:*'   # 门面自缓存
  * </pre>
  *

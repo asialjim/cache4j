@@ -29,7 +29,7 @@ import java.util.OptionalLong;
  * <h2>存储形态</h2>
  *
  * <pre>
- * ~/data/github/db/strategy.dat
+ * cache4j-spring-redis-test/db/strategy.dat
  * ------------------------------------------------------------------
  * schema=1
  * namespace=decl:static
@@ -60,10 +60,12 @@ import java.util.OptionalLong;
 public class FileStrategyDataSource implements CacheStrategyDataSource {
 
     /**
-     * 默认目录：{@code ~/data/github/db}。
+     * 默认目录：模块下的 {@code db}（相对进程工作目录）。
+     *
+     * <p>Maven Surefire 与 IDEA 跑测试时工作目录都是模块根，所以实际落在
+     * {@code cache4j-spring-redis-test/db/}。该目录已在 {@code .gitignore} 里忽略。</p>
      */
-    public static final Path DEFAULT_DIRECTORY =
-            Path.of(System.getProperty("user.home"), "data", "github", "db");
+    public static final Path DEFAULT_DIRECTORY = Path.of("db");
 
     /**
      * 文件名。
@@ -80,7 +82,7 @@ public class FileStrategyDataSource implements CacheStrategyDataSource {
     private final TextPolicyCodec codec = new TextPolicyCodec();
 
     /**
-     * 用默认目录 {@code ~/data/github/db}（不存在则创建）。
+     * 用默认目录 {@code db}（相对工作目录，不存在则创建）。
      */
     public FileStrategyDataSource() {
         this(DEFAULT_DIRECTORY);
