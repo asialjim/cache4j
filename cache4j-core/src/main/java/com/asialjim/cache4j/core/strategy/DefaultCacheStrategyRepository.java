@@ -421,6 +421,40 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
     }
 
     /**
+     * 取某 namespace 的声明（自举缓存门面重新解析时要用）。
+     *
+     * @param namespace 命名空间
+     * @return 声明；数据源有、代码里没声明时返回 empty
+     */
+    public Optional<CacheStrategyDecl> declarationOf(String namespace) {
+        DeclEntry entry = declarations.get(namespace);
+        return entry == null ? Optional.empty() : Optional.of(entry.decl());
+    }
+
+    /**
+     * 用已解析好的配置更新快照（自举缓存门面在发现远端变更时调用）。
+     *
+     * <p>CAS 替换，读路径无锁。</p>
+     *
+     * @param policy 解析结果
+     */
+    public void applyResolved(NamespacePolicy policy) {
+        while (true) {
+            Map<String, NamespacePolicy> current = snapshot.get();
+            NamespacePolicy existing = current.get(policy.namespace());
+            if (existing != null && existing.configVersion() > policy.configVersion()) {
+                // 本地已有更新的版本（并发写穿），不倒退
+                return;
+            }
+            Map<String, NamespacePolicy> next = new LinkedHashMap<>(current);
+            next.put(policy.namespace(), policy);
+            if (snapshot.compareAndSet(current, Map.copyOf(next))) {
+                return;
+            }
+        }
+    }
+
+    /**
      * 三层解析：数据源 → 声明 → 内建默认。
      *
      * @param namespace 命名空间
