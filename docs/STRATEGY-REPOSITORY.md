@@ -81,7 +81,7 @@ public interface CacheStrategyRepository {
 - `find` / `all` **必须无副作用**（不得因读而创建、修复或写回任何状态）；
 - `declare` / `bootstrap` / `change` **必须线程安全**；同一 namespace 的变更串行生效；
 - 所有方法**不得抛受检异常**；失败一律 `CacheException`；
-- **没有 `epochs` / `refresh` / 广播**：变更传播完全由仓库自用缓存的版本对账承担（§2.4）；
+- **没有批量版本接口 / `refresh` / 广播**：变更传播完全由仓库自用缓存的版本对账承担（§2.4）；
 - 中央不可用时 `find` 走缓存的降级路径（返回本地副本或未命中），**不得**改动生效值（见 §6）。
 
 ## 2. 数据模型
@@ -102,7 +102,7 @@ public interface CacheStrategyRepository {
 | `centralNullTtl` | `Duration` | ≥ 0；`ZERO` = 不缓存空值 | 内建默认 30s |
 | `failOpen` | `boolean` | — | 内建默认 `true` |
 | `declaredStrategy` | `LocalStrategy` | 声明值，**只读**，审计用 | 声明 |
-| `epoch` | `long` | ≥ 1，单调递增 | 中央生成 |
+| `configVersion` | `long` | ≥ 1，单调递增 | **数据源**生成（不是缓存层） |
 | `updatedAtMillis` / `updatedBy` / `reason` | — | 审计元数据 | 变更时写入 |
 | `source` | `Source` | `DECLARED` / `REPOSITORY` / `DEFAULT` | 解析结果 |
 
@@ -166,12 +166,12 @@ public interface CacheStrategyRepository {
 |---|---|
 | 缓存 key | 目标 namespace 字符串（经 `KeyEncoders.canonical()` 编码） |
 | 缓存 value | `StoredPolicy`（只含生效参数；**不含** `declaredStrategy`——那是代码里的事实） |
-| 版本号 = `epoch` | **就是缓存条目的 revision**（中央时钟时间戳，`max(now, cur+1)`，天然单调） |
-| 乐观锁 | 中央写入时比对 revision（`expectedEpoch`），不匹配则不写 |
+| 缓存 key 版本号 | **就是缓存体系既有的 key revision**（中央时钟时间戳，`max(now, cur+1)`）；只用于副本对账，**与运维乐观锁无关** |
+| 配置版本号 | `configVersion`，由**数据源**生成并递增；运维 `change` 的乐观锁用它（见 §4.4.1） |
 | 编码 | 由适配层提供（`RedisSerializer<StoredPolicy>`）；**core 依旧不碰字节** |
 
-于是原设计里那套自定义 HASH 布局、`HINCRBY` 自增、`epochs()` 批量脏检查**全部不需要了**——
-它们本来就是缓存条目版本号要做的事。
+于是"自定义 HASH 布局 + `HINCRBY` 自增 + 批量版本脏检查"这套东西不需要了——
+副本是否落后、何时回源，缓存层自己的 key revision 已经全包了。
 
 ### 2.4.3 为什么禁止 `NONE` / `DYNAMIC`
 
@@ -216,7 +216,7 @@ public interface CacheStrategyRepository {
 2. 仓库只要**存在**该 namespace 的记录，就整条生效（不做字段级合并）——
    避免"仓库改了 TTL、声明又偷偷把策略改回去"这类不可推理的混合态；
 3. 内建默认只有**一套**（表见 §2.1–§2.3），不提供档位；
-4. 解析结果必须**冻结**为不可变对象，`find` 返回的是同一份快照（同一 epoch 内 identity 稳定，
+4. 解析结果必须**冻结**为不可变对象，`find` 返回的是同一份快照（同一 `configVersion` 内 identity 稳定，
    便于上层做 `==` 快速判断"换没换过"）。
 
 ## 4. 两层结构：仓库门面 + 仓库数据源
@@ -230,7 +230,7 @@ public interface CacheStrategyRepository {
         ├─ 中央缓存：TTL 3d（非空）/ 5m（空值），版本窗口 5s          ← 本套缓存体系
         └─ 回源 / 写穿↓
               CacheStrategyDataSource（数据源 SPI，开发者实现，纯 KV）
-                    load(namespace) / loadAll() / save(policy, expectedRevision)
+                    load(namespace) / loadAll() / save(policy, expectedConfigVersion)
 ```
 
 **分工必须严格切开**：
@@ -256,14 +256,14 @@ public interface CacheStrategyDataSource {
     List<StoredPolicy> loadAll();
 
     /**
-     * 写入并返回新 revision（必须单调递增）。
+     * 写入并返回新的**配置版本号**（必须单调递增）。
      *
      * <p><strong>乐观锁是尽力而为</strong>：能 CAS 的实现（Redis Lua、DB 条件更新）
-     * 应在 {@code expectedRevision} 不匹配时返回 empty；实在不支持的实现可以退化为
+     * 应在 {@code expectedConfigVersion} 不匹配时返回 empty；实在不支持的实现可以退化为
      * last-write-wins 并照常返回新 revision——此时门面会在 {@link StrategyView} 里标注
      * {@code casSupported=false}，运维知道"并发覆盖不会报冲突"。</p>
      */
-    OptionalLong save(StoredPolicy policy, long expectedRevision);
+    OptionalLong save(StoredPolicy policy, long expectedConfigVersion);
 }
 ```
 
@@ -292,8 +292,8 @@ find(ns)
 
 ```text
 change(req)
-  → 校验 → 与当前比对 → 读当前 revision 作为 expectedRevision
-  → dataSource.save(policy, expectedRevision)          // 数据源负责持久化与版本递增
+  → 校验 → 与当前比对 → 从当前 policy 取 configVersion 作为 expectedConfigVersion
+  → dataSource.save(policy, expectedConfigVersion)     // 数据源负责持久化与版本递增
   → 失败/冲突 ⇒ REJECTED / CONFLICT（本机不变更）
   → 成功 ⇒ 用返回的新 revision 写穿两层缓存             // 读己之写
   → 审计 + 指标
@@ -311,26 +311,37 @@ change(req)
 | **B（够用）** | 普通 KV `set` / DB upsert | last-write-wins | 永不冲突，`StrategyView.casSupported=false`，运维自行避免并发改同一 namespace |
 | **C（单节点）** | 不提供数据源 | 进程内 `AtomicLong` | 重启回到声明值 |
 
-### 4.4.1 两个版本号，别混用
+### 4.4.1 两个版本号，是两个完全不同的东西
 
-分层之后版本号有两个，**职责不同、不得互换**：
-
-| 版本号 | 归属 | 谁生成 | 用途 |
-|---|---|---|---|
-| **缓存副本 revision** | 门面中央缓存条目（`__rev:cache4j.strategy`） | 缓存体系 Lua：`max(now, cur+1)` | 判断本地/中央**副本是否落后**，驱动 5s 对账 |
-| **`policy.epoch`（数据源 revision）** | 数据源记录（`StoredPolicy.revision`） | 数据源 `save` 时递增 | **运维乐观锁**（`expectedEpoch`）、审计、`StrategyView.epoch` |
+| | **缓存 key 版本号**（`revision`） | **缓存策略配置版本号**（`configVersion`） |
+|---|---|---|
+| 一句话 | 这个**缓存条目**的新旧 | 这套**策略配置**的新旧 |
+| 归属层 | 缓存体系（本地副本 + `__rev:cache4j.strategy`） | 数据源记录（`StoredPolicy`） |
+| 谁生成 | 缓存层 Lua：`max(now, cur+1)` | 数据源 `save` 时递增 |
+| 类型/语义 | 中央时钟时间戳，**只比相等/不等** | 单调递增序号（时间戳或自增），**可比大小** |
+| 用途 | 判断本地副本是否落后 → 触发 5s 对账 → 决定是否回源 | **运维乐观锁**（`expectedConfigVersion`）、审计、`StrategyView.configVersion` |
+| 谁看得见 | 只有缓存层内部（日志/指标） | 运维（视图、审计、变更请求） |
+| 数值可比性 | **跨节点不可比**（各自时钟打的时间戳） | **跨节点可比**（同一份数据源记录上的序号） |
 
 关系与传播：
 
 ```text
-节点 A： save(dataSource) → dataSource.revision 前进 → 写穿中央缓存（缓存 revision 同时前进）
-节点 B： 对账发现「缓存 revision」变了 → 本地副本作废 → 回源中央缓存（命中，不碰数据源）
-        → 拿到新的 StoredPolicy → policy.epoch 前进 → 触发运行时切换
+节点 A： save(dataSource)                      → configVersion 7 → 8
+       写穿中央缓存（新 policy + 缓存层自增的 revision）
+节点 B： 对账发现「缓存 revision」变了          → 本地副本作废
+       回源中央缓存（命中，不碰数据源）        → 拿到 configVersion=8 的 policy
+       → configVersion 变了 ⇒ 触发运行时切换
 数据源： 只在中央缓存未命中/过期（3 天）时被访问
 ```
 
-**禁止**：把缓存副本 revision 当 `expectedEpoch`（它是缓存内部时间戳，与数据源版本无关，
-跨节点数值不可比）；也禁止把 `policy.epoch` 用于对账（那是缓存层的活）。
+**两条禁令**：
+
+1. **不得把缓存 key revision 当 `expectedConfigVersion`**：它是缓存层内部时间戳，
+   跨节点数值不可比，运维从视图里也读不到它——用它做乐观锁等于没有锁；
+2. **不得把 `configVersion` 用于副本对账**：配置版本前进不代表"这个节点读过的副本"该作废，
+   副本失效是缓存层的事（例如中央缓存条目被其他节点写穿后，靠 revision 判断落后）。
+
+> 一句话记法：**`revision` 管"副本旧不旧"，`configVersion` 管"配置新不新"。**
 
 ### 4.5 `StoredPolicy` 与 `NamespacePolicy`
 
@@ -367,8 +378,8 @@ change(req)
 |---|---|
 | **读己之写** | `change` 成功返回后，同进程内 `find` 必须立即返回新值 |
 | **最终一致** | 其他节点在仓库自用缓存的 `version.checkInterval`（固定 5s）内看到新值 |
-| **epoch 单调** | 同一 namespace 的 epoch 只增不减；不同 namespace 的 epoch 相互独立 |
-| **无部分应用** | 任何失败路径下，生效值与 epoch 都不前进 |
+| **`configVersion` 单调** | 同一 namespace 的配置版本只增不减；不同 namespace 相互独立 |
+| **无部分应用** | 任何失败路径下，生效值与 `configVersion` 都不前进 |
 | **不可变快照** | 解析结果不就地修改；变更 = 换引用 |
 
 ### 5.2 并发
@@ -440,12 +451,12 @@ change(req)
 
 ## 9. 仓库契约的不变量清单
 
-1. `find` / `all` / `epochs` 无副作用；
-2. 同一 epoch 内 `find` 返回同一实例（identity 稳定）；
+1. `find` / `all` 无副作用；
+2. 同一 `configVersion` 内 `find` 返回同一实例（identity 稳定）；
 3. 解析不做字段级合并（整条生效）；
 4. 变更 = 换引用，不就地改对象；
-5. 同一 namespace 的变更串行，epoch 单调；
-6. 任何失败不改生效值、不推进 epoch；
+5. 同一 namespace 的变更串行，`configVersion` 单调；
+6. 任何失败不改生效值、不推进 `configVersion`；
 7. 读策略失败（中央不可达且本地无副本）不回落到声明值，而是 `find` 返回 empty 由装配层兜底；
 8. 仓库不创建线程；
 9. 无 Store 时仍能装配（单节点模式）；
@@ -463,7 +474,7 @@ change(req)
 /** 运维管理入口。库只提供动作，不暴露 HTTP 端点、不做鉴权。 */
 public interface CacheStrategyAdmin {
 
-    /** @return 全部 namespace 的视图（含声明值、生效值、epoch、来源、审计元数据） */
+    /** @return 全部 namespace 的视图（含声明值、生效值、配置版本、来源、审计元数据） */
     List<StrategyView> list();
 
     /** @return 单个 namespace 的视图 */
@@ -480,7 +491,7 @@ public record StrategyChange(
         String requestId,          // 幂等键，必填，全局唯一（建议 UUID 或 业务流水号）
         String namespace,          // 必填
         Map<String, String> patch, // 必填，只允许 §15 表中「可热更」的键；未出现的键保持不变
-        long expectedEpoch,        // 必填，乐观锁；不知道当前值时必须先 find()
+        long expectedConfigVersion,        // 必填：运维视角的**配置版本号**乐观锁；不知道当前值必须先 find()
         String operator,           // 必填，审计；鉴权在调用方完成
         String reason,             // 必填，审计
         long requestedAtMillis     // 必填，服务端可校验"过期请求"（如超过 5 分钟拒绝）
@@ -489,7 +500,7 @@ public record StrategyChange(
 /** 变更结果。三态 + 明确的下一步。 */
 public record ChangeResult(
         Outcome outcome,           // APPLIED / NO_CHANGE / CONFLICT / REJECTED
-        long epoch,                // 变更后的 epoch（CONFLICT 时为**当前** epoch）
+        long configVersion,        // 变更后的配置版本（CONFLICT 时为**当前**版本）
         String namespace,
         StrategyView current,       // 变更后（或当前）视图，便于调用方直接渲染
         String message,             // 人话；REJECTED 时必须含具体字段与原因
@@ -515,7 +526,7 @@ public record StrategyView(
         Duration centralNullTtl,
         boolean failOpen,
         Source source,                  // DECLARED / REPOSITORY / DEFAULT
-        long epoch,
+        long configVersion,
         long updatedAtMillis,
         String updatedBy,
         String reason,
@@ -551,7 +562,7 @@ public record StrategyView(
                      ├──────────────────────────────┤
                      │ 3. 与当前逐字段比较           │ 全等 → NO_CHANGE（不重建、不写存储）
                      ├──────────────────────────────┤
-                     │ 4. 乐观锁检查（expectedEpoch）│ 不匹配 → CONFLICT（返回当前 epoch）
+                     │ 4. 乐观锁检查（expectedConfigVersion）│ 不匹配 → CONFLICT（返回当前 configVersion）
                      ├──────────────────────────────┤
                      │ 5. 试装配（构建新 Runtime）   │ 失败 → REJECTED（生效值不变）
                      ├──────────────────────────────┤
@@ -575,10 +586,10 @@ public record StrategyView(
 | 机制 | 契约 |
 |---|---|
 | **幂等键** | `requestId` 必填；同一 `requestId` 重复提交返回**首次结果**（不重复生效）；保留窗口由实现决定（建议 ≥ 10 分钟） |
-| **乐观锁** | `expectedEpoch` 必填且必须等于当前 epoch；不匹配返回 `CONFLICT` + 当前 epoch，调用方重新 `find` 后再试 |
+| **乐观锁** | `expectedConfigVersion` 必填且必须等于当前 `configVersion`；不匹配返回 `CONFLICT` + 当前值，调用方重新 `find` 后再试 |
 | **并发同 key** | 同一 namespace 的 `change` 串行；不同 namespace 并行 |
-| **NO_CHANGE** | 目标配置与当前逐字段相等 ⇒ 不写存储、不换 Runtime、epoch 不变 |
-| **epoch 生成** | 只能由 Store（多节点）或进程内 `AtomicLong`（单节点）生成；**调用方不得指定** |
+| **NO_CHANGE** | 目标配置与当前逐字段相等 ⇒ 不写数据源、不换 Runtime、`configVersion` 不变 |
+| **`configVersion` 生成** | 只能由**数据源**（`save` 时递增）或进程内 `AtomicLong`（无数据源的单节点）生成；**门面与调用方都不得自增** |
 | **过期请求** | 建议服务端拒绝 `requestedAtMillis` 超过阈值（如 5 分钟）的请求，避免陈旧意图覆盖新配置 |
 
 **不提供 `reset`**：没有"回到声明值"的动作。要回退就再 `change` 一次（把值写回去），
@@ -611,16 +622,16 @@ public record StrategyView(
 | `operator` | 请求 |
 | `reason` | 请求 |
 | `requestedAtMillis` / `appliedAtMillis` | 请求 / 服务端 |
-| `fromEpoch` → `toEpoch` | 提交前后 |
+| `fromConfigVersion` → `toConfigVersion` | 提交前后 |
 | `diff` | 逐字段 diff（只记变化的键，值做脱敏？——参数无敏感数据，直接记） |
 | `outcome` + `message` | 结果 |
 
 **日志格式**（沿用全项目约定 `[主题]-子过程-具体信息`）：
 
 ```
-[策略仓库]-变更-user:detail-APPLIED，epoch 7→8，strategy STATIC→DYNAMIC，maxSize 1000→5000，操作人=ops:zhangsan，原因=大促热点，requestId=9f2c…
-[策略仓库]-变更-user:detail-REJECTED，DYNAMIC+coordination=GLOBAL 缺少 HotKeyCoordinator，epoch 仍为 8，操作人=ops:zhangsan
-[策略仓库]-变更-user:detail-CONFLICT，期望 epoch=7，当前=8，操作人=ops:lisi
+[策略仓库]-变更-user:detail-APPLIED，configVersion 7→8，strategy STATIC→DYNAMIC，maxSize 1000→5000，操作人=ops:zhangsan，原因=大促热点，requestId=9f2c…
+[策略仓库]-变更-user:detail-REJECTED，DYNAMIC+coordination=GLOBAL 缺少 HotKeyCoordinator，configVersion 仍为 8，操作人=ops:zhangsan
+[策略仓库]-变更-user:detail-CONFLICT，期望 configVersion=7，当前=8，操作人=ops:lisi
 ```
 
 审计日志级别：`APPLIED` 用 `info`，其余用 `warn`。**不写业务 key 与值**（策略参数不包含业务数据）。
@@ -638,7 +649,7 @@ public record StrategyView(
 新增指标（归"控制层"，不参与 `hitRate`）：
 
 ```java
-long strategyEpoch();              // 当前生效 epoch（gauge 语义，= 该条目的 revision）
+long strategyConfigVersion();              // 当前生效的**配置版本号**（gauge；不是缓存 key 的 revision）
 long strategySwitchCount();        // 成功切换次数（读到新配置并完成 Runtime 替换）
 long strategySwitchRejected();     // 装配被拒次数（本机装不出他人提交的配置）
 long strategyChangeConflict();     // 乐观锁冲突次数
@@ -654,7 +665,7 @@ long strategyRepoHitRate();        // 仓库自用缓存的本地命中率（诊
 
 1. 这个 namespace 现在是什么策略、什么参数？（生效值）
 2. 代码里声明的是什么？与生效值是否一致？（`declaredXxx` + `consistentWithDeclared`）
-3. 谁在什么时候因为什么改的？（`updatedBy` / `updatedAtMillis` / `reason` / `epoch`）
+3. 谁在什么时候因为什么改的？（`updatedBy` / `updatedAtMillis` / `reason` / `configVersion`）
 
 ## 18. 测试矩阵
 
@@ -664,9 +675,9 @@ long strategyRepoHitRate();        // 仓库自用缓存的本地命中率（诊
 | 无 Store 模式 | 装配成功、日志标注、重启回到声明值 |
 | 中央不可达 | 启动期降级成功；运行期读本地副本继续服务、计数 + 告警 |
 | 幂等 | 同一 `requestId` 重复提交只生效一次、返回同一结果 |
-| 乐观锁 | 两个 `change` 同 `expectedEpoch` ⇒ 一个 APPLIED 一个 CONFLICT |
-| NO_CHANGE | 逐字段相同 ⇒ 不写存储、不换 Runtime（identity 断言）、epoch 不变 |
-| 试装配失败 | 缺 coordinator ⇒ REJECTED，生效值与 epoch 不变 |
+| 乐观锁 | 两个 `change` 同 `expectedConfigVersion` ⇒ 一个 APPLIED 一个 CONFLICT |
+| NO_CHANGE | 逐字段相同 ⇒ 不写数据源、不换 Runtime（identity 断言）、`configVersion` 不变 |
+| 试装配失败 | 缺 coordinator ⇒ REJECTED，生效值与 `configVersion` 不变 |
 | 持久化失败 | Store 抛异常 ⇒ REJECTED，本机不生效 |
 | 未知 patch 键 | 拼写错误 ⇒ REJECTED（不静默忽略） |
 | 派生值 | 改 `centralNullTtl` 或 `localNullTtlDivisor` ⇒ `localNullTtl` 按 `min(localTtl, c/N)` 变化 |
@@ -680,7 +691,7 @@ long strategyRepoHitRate();        // 仓库自用缓存的本地命中率（诊
 | 数据源未命中 | 本地/中央/数据源都没有 ⇒ 用声明 + 内建默认装配；"不存在"结论被中央空值 TTL 缓存 5m |
 | 数据源异常 | `load` 抛异常 ⇒ 按未命中继续 + `repoErrorCount++`；**不得**缓存失败结果 |
 | 数据源写入失败 | `save` 抛异常/返回 empty ⇒ `REJECTED`/`CONFLICT`，两层缓存不变 |
-| 数据源无 CAS（B 级） | `save` 忽略 `expectedRevision` ⇒ 永不 `CONFLICT`，`StrategyView.casSupported=false` |
+| 数据源无 CAS（B 级） | `save` 忽略 `expectedConfigVersion` ⇒ 永不 `CONFLICT`，`StrategyView.casSupported=false` |
 | 写穿顺序 | `change` 成功后本机 `find` 立即新值；并发对账不会把旧值回填回来（`putIfNewer` 保护） |
 | 自举参数 | `maxSize` 默认 1000；改配置需重启；启动日志打印实际生效值 |
 
@@ -717,7 +728,8 @@ __rev:cache4j.strategy
 ```
 
 - TTL：**3 天**（非空）/ **5 分钟**（空值，即"该 namespace 没有策略"的负缓存）；
-- revision 由既有 Lua 生成（`max(now, cur+1)`），"版本前进 + 值生效"原子完成；
+- `revision` 是**缓存 key 版本号**（由既有 Lua 生成，`max(now, cur+1)`，"版本前进 + 值生效"原子完成），
+  只用于副本对账；**它和运维看到的 `configVersion` 是两回事**（§4.4.1）；
 - **可以丢**：丢了只是要回源数据源一次，不影响正确性。
 
 ### 20.2 数据源（权威值，不可丢）
@@ -727,20 +739,20 @@ __rev:cache4j.strategy
 ```text
 cache4j.policy:<namespace>   HASH
     data      StoredPolicy 的编码字节
-    revision  <long>，单调递增
+    configVersion <long>，单调递增（运维乐观锁用）
     updatedAt <millis>          # 排障用，不参与判定
 ```
 
 写用 Lua（`cache4j.policy:cas`）：
 
 ```lua
--- KEYS[1]=policy key, ARGV[1]=expectedRevision, ARGV[2]=newData, ARGV[3]=nowMillis
-local cur = tonumber(redis.call('HGET', KEYS[1], 'revision') or '0')
+-- KEYS[1]=policy key, ARGV[1]=expectedConfigVersion, ARGV[2]=newData, ARGV[3]=nowMillis
+local cur = tonumber(redis.call('HGET', KEYS[1], 'configVersion') or '0')
 if tonumber(ARGV[1]) >= 0 and cur ~= tonumber(ARGV[1]) then
   return nil                                   -- 版本冲突
 end
 local next = math.max(tonumber(ARGV[3]), cur + 1)
-redis.call('HSET', KEYS[1], 'data', ARGV[2], 'revision', next, 'updatedAt', ARGV[3])
+redis.call('HSET', KEYS[1], 'data', ARGV[2], 'configVersion', next, 'updatedAt', ARGV[3])
 return next
 ```
 
@@ -749,8 +761,8 @@ return next
 1. **两套前缀不得重叠**：`cache4j.strategy`（缓存）与 `cache4j.policy:`（数据源）互不相干；
    `clear(<业务 namespace>)` 两者都不得波及；
 2. **数据源不做缓存**：它只回答"当前权威值是什么"，不要在其中再加 LRU/TTL；
-3. **revision 单调**：`max(now, cur+1)` 或自增，二者都行，但必须单调；
-4. **`expectedRevision = -1` 表示"无条件下写"**（首次写入/迁移时用），仅限运维脚本，
+3. **`configVersion` 单调**：`max(now, cur+1)` 或自增，二者都行，但必须在同一 namespace 上单调；
+4. **`expectedConfigVersion = -1` 表示"无条件下写"**（首次写入/迁移时用），仅限运维脚本，
    门面自身**不得**用它绕过乐观锁；
 5. **不做自动修复**：条目解析失败时不得回写，返回错误让门面按未命中处理。
 
@@ -761,8 +773,8 @@ return next
 | R1 | `change` 的 `patch` 用扁平 `Map<String,String>` 还是强类型对象 | 扁平字符串 / 每种变更一个强类型 record | **扁平 + 白名单键**（运维脚本友好），但要求键名稳定并进契约 |
 | R2 | 单节点模式下是否也要落本地文件（重启不丢） | 不落 / 落一个 properties | 不落（单节点就是开发/测试用），多节点用中央自用缓存 |
 | R3 | `cache4j.strategy.admin.enabled` 默认值 | 默认开 / 默认关 | **默认关**（生产要显式开启管理端点），但需在 starter 里方便打开 |
-| R4 | 审计是否也要落 Store（持久化审计） | 只打日志 / 也存一份 | 只打日志（日志系统负责留存），Store 只存当前值 |
+| R4 | 审计是否也要持久化（如写数据源） | 只打日志 / 也存一份 | 只打日志（日志系统负责留存），数据源只存当前值 |
 | R5 | `StrategyView.consistentWithDeclared` 不一致时是否告警 | 只展示 / 启动 + 每次检查告警 | 启动 `warn` 一次 + 视图展示，**不**每轮检查刷日志 |
-| R6 | 数据源 `save` 的返回语义 | 成功返回新 revision / 冲突返回 empty | 返回 `OptionalLong`：`empty` = 版本冲突 → 门面直接映射为 `CONFLICT` |
+| R6 | 数据源 `save` 的返回语义 | 成功返回新 `configVersion` / 冲突返回 empty | 返回 `OptionalLong`：`empty` = 版本冲突 → 门面直接映射为 `CONFLICT` |
 | R7 | 是否强制数据源支持 CAS | 强制 / 尽力而为 | **尽力而为**（§4.4 分级 A/B/C），并让 `StrategyView.casSupported` 暴露能力，避免为了强一致把小团队挡在门外 |
 | R8 | 是否提供开箱即用的数据源 | 只给 SPI / 给 Redis 与 JDBC 两个实现 | 先给 `RedisCacheStrategyDataSource`（spring-redis 模块），JDBC 等有需求再加 |

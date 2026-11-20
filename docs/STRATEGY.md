@@ -37,7 +37,8 @@
 | **声明值 / 生效值** | 声明值 = 枚举里写的（`declaredStrategy`）；生效值 = 仓库判定后真正装配的（`activeStrategy`）。**运维只能改生效值** |
 | **仓库（Repository）** | 进程内"namespace → 当前生效配置"的唯一权威，是热更的落点；契约见 `STRATEGY-REPOSITORY.md` |
 | **运行时（Runtime）** | 一次定义所对应的全部可变对象：本地缓存实例、分区索引、对账信号量、生效 `partitions` |
-| **epoch** | 策略版本号，单调递增；用于乐观锁、脏检查与日志对齐 |
+| **`configVersion`** | **缓存策略配置版本号**（运维视角，单调递增），用于乐观锁、审计与视图；**不是**缓存 key 的 `revision` |
+| **`revision`** | **缓存 key 版本号**（缓存体系既有机制），只用于判断副本是否落后、驱动对账 |
 | **句柄（Handle）** | 业务持有的 `TwoLevelCache` 引用。**始终不变**，内部指向当前 `Runtime` |
 
 ## 3. 总体架构
@@ -58,7 +59,7 @@
                                   │ 门面 TwoLevelCache │◄─── 读写全程用 r ─┘
                                   └────────────────────┘
                                             ▲
-                    多节点同步：中央策略存储（Redis HASH + epoch），访问驱动检查
+                    多节点同步：门面自身是 STATIC 缓存，靠 key revision 对账传播（≤5s）
 ```
 
 三层职责：
@@ -490,15 +491,15 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
 3. 冲突检测：同一 namespace 出现多条声明 → 启动失败（报出全部冲突来源）
 4. 中央覆盖：读中央策略存储，命中则以中央为准（运维改过的值优先于代码声明）
 5. 校验：逐条 validate，任何一条失败 ⇒ 整个启动失败（不静默跳过）
-6. 登记：声明写入仓库（`declare`），`bootstrap()` 解析出生效配置与 epoch
+6. 登记：声明写入仓库（`declare`，仓库已有则跳过），`bootstrap()` 解析出生效配置
 7. 装配：按生效配置构建 Runtime（**懒装配**，见 6.2）并把句柄交给业务
 ```
 
 日志（沿用既有格式 `[主题]-子过程-具体信息`）：
 
 ```
-[缓存装配]-初始化-user:detail-策略=STATIC，maxSize=10000，localTtl=PT5M，version(check=1s,partitions=16)，epoch=3，来源=中央
-[缓存装配]-初始化-订单快照-策略=NONE，仅中央，epoch=1，来源=声明
+[缓存装配]-初始化-user:detail-策略=STATIC，maxSize=10000，localTtl=PT5M，version(check=1s,partitions=16)，configVersion=3，来源=中央
+[缓存装配]-初始化-订单快照-策略=NONE，仅中央，configVersion=1，来源=声明
 [缓存装配]-初始化-冲突-user:detail-声明来源=USER_DETAIL 与 USER_DETAIL_V2，启动中止
 ```
 
@@ -663,7 +664,7 @@ final class StrategyRuntime<V> {
     final Map<CacheKey, Integer> keyPartitions;
     final Map<Integer, Set<CacheKey>> localPartitions;
     volatile long nextCheckAtNanos;
-    final long epoch;
+    final long configVersion;
     // 构造器完成：建实例 + 注册 onEntryRemoved + 初始化分区索引
 }
 
@@ -689,13 +690,13 @@ public Lookup<V> lookup(K key) {
 
 ```
 change(update):
-  1. 取当前 view；epoch 不匹配 expectedEpoch → CONFLICT（带上当前 epoch）
+  1. 取当前 view；configVersion 不匹配 expectedConfigVersion → CONFLICT（带上当前 configVersion）
   2. 合并 update 到目标 definition（只允许改本地策略/参数，见 6.9）
   3. 校验：definition.validate() + 跨字段规则（4.3）
   4. 构建新 Runtime（新建本地实例；按需预热；失败则整个操作放弃）
-  5. 若配置了 Store：save(view, expectedEpoch)（乐观锁；失败 → CONFLICT）
+  5. 数据源 save(policy, expectedConfigVersion)（乐观锁；失败 → CONFLICT）
   6. runtime.set(newRuntime)                    ← 唯一的原子提交点
-  7. 记录：日志 + 指标 + 审计（operator / reason / from → to / epoch）
+  7. 记录：日志 + 指标 + 审计（operator / reason / from → to / configVersion）
 ```
 
 - **顺序是"先持久化、后生效"**：持久化失败时本地不切（避免"节点自己变了、其他节点没变"）；
@@ -740,11 +741,11 @@ change(update):
 |---|---|
 | 变更流程 | 幂等 → 参数校验 → 逐字段比较 → 乐观锁 → **试装配** → 持久化 → 原子提交 → 审计（无广播）；任何一步失败生效值不变 |
 | 幂等 | `requestId` 必填，重复提交返回首次结果 |
-| 乐观锁 | `expectedEpoch` 必填，不匹配返回 `CONFLICT` + 当前 epoch |
+| 乐观锁 | `expectedConfigVersion` 必填，不匹配返回 `CONFLICT` + 当前 `configVersion` |
 | 无 reset | 要回退就再 `change` 一次，审计留痕优先 |
-| 审计 | APPLIED 用 info、REJECTED/CONFLICT 用 warn；字段含 requestId/operator/reason/diff/epoch |
+| 审计 | APPLIED 用 info、REJECTED/CONFLICT 用 warn；字段含 requestId/operator/reason/diff/configVersion |
 | 变更边界 | 策略、容量、TTL、version、dynamic、description 可改；本地空值 TTL 绝对值、档位、namespace、中央连接不可改 |
-| 观测 | `strategyEpoch` / `switchCount` / `switchRejected` / `changeConflict` / `repoReadCount` / `repoErrorCount` / `repoHitRate` |
+| 观测 | `strategyConfigVersion` / `switchCount` / `switchRejected` / `changeConflict` / `repoReadCount` / `repoErrorCount` / `repoHitRate` |
 
 ## 7. 四、运维 API（契约见 `STRATEGY-REPOSITORY.md` 第二部分）
 
@@ -753,8 +754,8 @@ change(update):
 
 | 动作 | 语义 |
 |---|---|
-| `list()` / `find(namespace)` | 读视图：生效值 + 声明值 + 是否一致 + epoch + 谁在何时因何而改 |
-| `change(StrategyChange)` | 幂等键 + 乐观锁（`expectedEpoch`）+ 原因；结果 `APPLIED` / `NO_CHANGE` / `CONFLICT` / `REJECTED` |
+| `list()` / `find(namespace)` | 读视图：生效值 + 声明值 + 是否一致 + `configVersion` + 谁在何时因何而改 |
+| `change(StrategyChange)` | 幂等键 + 乐观锁（`expectedConfigVersion`）+ 原因；结果 `APPLIED` / `NO_CHANGE` / `CONFLICT` / `REJECTED` |
 | **无 `reset`** | 要回退就再 `change` 一次，审计链比"一键还原"重要 |
 
 建议默认关闭管理端点（`cache4j.strategy.admin.enabled=false`），生产显式开启；
@@ -767,7 +768,7 @@ change(update):
 | `cache4j-core` | `CacheStrategyDecl`、`CacheDefinition`、`CacheStrategyRepository`（门面）/ `CacheStrategyDataSource`（数据源）/ `CacheStrategyAdmin` SPI、`NamespacePolicy` / `StoredPolicy` / `StrategyChange` / `ChangeResult` / `StrategyView`、`InMemoryCacheStrategyRepository`、`CacheStrategyLoader`（文件约定）、`StrategyRuntime` | 无新增 |
 | `cache4j-local` / `cache4j-local-caffeine` / `cache4j-central` / `cache4j-central-redis` | **不改**（只被装配） | 不变 |
 | `cache4j-spring` | `@CacheNamespace` 注解 + 包扫描发现、可选 Actuator 端点 | Spring Framework |
-| `cache4j-spring-redis` | `RedisPolicyStore`（HASH 读写 + epoch 自增 + 乐观锁，布局见仓库契约 §20） | Spring Data Redis |
+| `cache4j-spring-redis` | `RedisCacheStrategyDataSource`（数据源实现，HASH + CAS Lua，布局见仓库契约 §20.2） | Spring Data Redis |
 | `cache4j-starter` | 聚合 + 默认装配（内存仓库 + 可选 Redis Store；管理端点默认关闭） | 全部 |
 
 依赖方向不变：`core` 不依赖任何其他模块。
@@ -782,7 +783,7 @@ change(update):
 6. **版本对账不变量不变**：`version` 变化时分区索引必须重建，否则"分区号表"与"每分区 key 数"不一致
    （现有实现依赖 `partitions` 固定）；
 7. **`clear(namespace)` 不得删 `__strategy:` 前缀**（否则清缓存会把策略一起清掉）；
-8. **统计口径**：切换不清零计数器，`strategyEpoch` 作为 gauge 暴露；
+8. **统计口径**：切换不清零计数器，`strategyConfigVersion` 作为 gauge 暴露；
 9. **本地负副本的存活由中央空值 TTL 按比例派生**：本地层**没有**独立的"空值 TTL"旋钮，
    `localNullTtl = min(localTtl, centralNullTtl / N)`，`N` 由仓库按 namespace 配（默认 10）；
    `centralNullTtl = ZERO` 表示不缓存空值，此时负副本不落本地也不落中央；
@@ -808,9 +809,9 @@ change(update):
 | **迁移矩阵** | 6.4 的 7 条逐条验证：副本/热点/索引的期望状态 |
 | **切换并发** | 8 线程持续读写 + 切换 100 次，无异常、无"读得到写不进"、索引与副本一致 |
 | 幂等 | 同定义 `change` ⇒ `NO_CHANGE`，Runtime 实例不变（可用 identity 断言） |
-| 乐观锁 | 两个 `change` 带同一 `expectedEpoch` ⇒ 一个成功一个 `CONFLICT` |
+| 乐观锁 | 两个 `change` 带同一 `expectedConfigVersion` ⇒ 一个成功一个 `CONFLICT` |
 | 持久化失败 | Store 抛异常 ⇒ 本地策略不变，返回 `REJECTED` |
-| 检查节流 | 5s 内多次读只发一次 epoch 检查 |
+| 副本对账 | 5s 窗口内同名 namespace 只做一次版本对账 |
 | 中央损坏 | 字段解析失败 ⇒ 继续用旧策略 + 计数 + 告警 |
 | 无临时策略 | 变更不会自动过期（随 `reset` 一并取消，需要恢复就再改一次） |
 | `clear` 保护 | `clear(namespace)` 后 `__strategy:` 仍在 |
@@ -827,7 +828,7 @@ change(update):
 |---|---|---|
 | **P1** | `CacheStrategyDecl` + `CacheDefinition` 下沉 + 声明加载器（文件约定 + `getEnumConstants`）+ `InMemoryCacheStrategyRepository` + `StrategyRuntime` 改造（`DefaultTwoLevelCache` 内部按 Runtime 组织） | 声明式初始化可用；**尚无热更**（Runtime 只有一代） |
 | **P2** | `change()` + 迁移矩阵 + 乐观锁 + 审计日志 + 指标 | 单节点热更可用 |
-| **P3** | `RedisStrategyStore` + 访问驱动 epoch 检查 + 临时策略 | 多节点一致 |
+| **P3** | `CachedCacheStrategyRepository`（门面自举缓存）+ `RedisCacheStrategyDataSource` + 5s 版本对账传播 | 多节点一致（≤5s） |
 | **P4** | Spring 扫描 + Actuator 端点 + `cache4j-starter` | 开箱可用 |
 | **P9（暂不排期）** | `RuntimeHintsRegistrar` + 模板生成 + native image 冒烟（可选：生成式零反射入口） | GraalVM 可部署（详见 §12） |
 
