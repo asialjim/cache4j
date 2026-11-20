@@ -258,6 +258,8 @@ public final class Cache4jRuntimeHints implements RuntimeHintsRegistrar {
 > 常量数组标注）随 GraalVM 版本变化，文档不写死结论——测试计划里列了 native image 冒烟用例，
 > 以实测结果回填本节的配置模板。
 
+完整方案（障碍清单、库自带 hints、三档交付方式、使用方需配合的部分、验证与不承诺范围）见 **§12**。
+
 ### 4.3 翻译与校验
 
 翻译是一次性的纯函数：`CacheDecl → CacheDefinition`。校验复用现有规则，不新增第二套：
@@ -634,10 +636,139 @@ public record StrategyUpdate(
 | **P2** | `change()` + 迁移矩阵 + 乐观锁 + 审计日志 + 指标 | 单节点热更可用 |
 | **P3** | `RedisStrategyStore` + 访问驱动 epoch 检查 + 临时策略 | 多节点一致 |
 | **P4** | Spring 扫描 + Actuator 端点 + `cache4j-starter` | 开箱可用 |
+| **P5** | `RuntimeHintsRegistrar` + 模板生成 + native image 冒烟（可选：生成式零反射入口） | GraalVM 可部署（详见 §12） |
 
 > P1 的 Runtime 改造是纯重构（行为不变），可以先独立合入，把风险与热更解耦。
 
-## 12. 九、待决策（需要拍板）
+## 12. 九、GraalVM / native image 支持方案
+
+### 12.1 障碍清单（谁的问题、怎么解）
+
+先看清一件事：**本库主体几乎没有反射**。全仓 `src/main` 里与 native image 相关的点只有：
+
+```text
+KeyEncoders.java:  java.lang.reflect.Array.get / getLength   ← 不需要注册（Array 反射无 hints）
+Cache4jKeyGenerator.java:  java.lang.reflect.Method          ← 框架传入的 Method，本身不需注册
+SpringRedisValueStore.java: RedisSerializer<V>               ← 业务提供，库不持有值类型
+```
+
+真正的障碍集中在**声明发现**和**第三方依赖**：
+
+| # | 障碍 | 位置 | 责任方 | 解法 |
+|---|---|---|---|---|
+| 1 | `META-INF/services` 资源**默认不打包**进 native image | 声明发现（§4.2） | 本库 | `hints.resources().registerPattern(...)` |
+| 2 | `Class.forName` 的目标被裁掉 | 声明发现 | 本库 | 按静态清单逐类注册反射 |
+| 3 | `getEnumConstants()` 需要枚举类可达 | 声明发现 | 本库 | 同上（只需类型可达） |
+| 4 | 非枚举 provider 的无参构造器 | 声明发现的兼容分支 | 本库 | `MemberCategory.INVOKE_DECLARED_CONSTRUCTORS` |
+| 5 | SLF4J 绑定发现（`ServiceLoader`） | `CacheLogger` | 使用方 | 选有 native 支持的绑定（logback 官方支持）；SLF4J 2.x 自身有 provider hints |
+| 6 | 值序列化 | `RedisSerializer<V>`（业务提供） | 使用方 | **本库设计上已规避**：库不持有值类型，无需注册任何业务类型 |
+| 7 | Redis 客户端（Lettuce / Netty） | `cache4j-spring-redis` | 使用方 / Boot | 用 Spring Boot 3 的 native 支持（Boot 已提供 Redis + Lettuce + Netty hints） |
+| 8 | Caffeine 内部机制 | `cache4j-local-caffeine` | 使用方 | 参考 Caffeine 官方 native 文档（可能要求对部分类做 build-time init）；**本文不写死，待实测** |
+| 9 | Spring `@Cacheable` 代理 | `cache4j-spring` | Spring AOT | 无需额外动作（`TwoLevelCacheManager` 是普通 bean，不自造动态代理） |
+| 10 | 构建期初始化陷阱 | 全库 | 本库 | **不要**加 `--initialize-at-build-time=com.asialjim.cache4j`，见 12.6 |
+
+### 12.2 库自带的 AOT 能力（Spring 场景，推荐）
+
+`cache4j-spring` 提供 `RuntimeHintsRegistrar`，由 Spring 6 的 AOT 流程自动调用：
+
+```java
+public final class Cache4jRuntimeHints implements RuntimeHintsRegistrar {
+
+    @Override
+    public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
+        // ① 声明文件本身必须作为资源留住
+        hints.resources().registerPattern(
+                "META-INF/services/com.asialjim.cache4j.core.strategy.CacheDecl");
+        hints.resources().registerPattern(
+                "META-INF/services/com.asialjim.cache4j.core.strategy.CacheDeclProvider");
+
+        // ② 清单里出现的每个类都要可达；清单在 AOT 阶段就能读到，所以是"照实注册"而非猜
+        for (String className : CacheStrategyLoader.declaredClassNames(classLoader)) {
+            hints.reflection().registerType(TypeReference.of(className));
+        }
+        for (String className : CacheStrategyLoader.providerClassNames(classLoader)) {
+            hints.reflection().registerType(TypeReference.of(className),
+                    MemberCategory.INVOKE_DECLARED_CONSTRUCTORS);
+        }
+    }
+}
+```
+
+通过 `META-INF/spring/aot.factories` 声明（Spring 6 的约定），**用户零配置**。
+
+> 为什么这套 hints 是可靠的：`declaredClassNames()` 读的就是构建期真实存在的清单文件。
+> 清单里写了 3 个枚举，就注册 3 个类——不会漏、不会多。
+
+### 12.3 非 Spring 场景：三种交付方式
+
+| 方式 | 用户动作 | 反射 | 适用 |
+|---|---|---|---|
+| **A. 手抄模板** | 把库生成的 `reflect-config.json` + `resource-config.json` 模板加入 `META-INF/native-image/` | `Class.forName` + `getEnumConstants` | 快速验证；清单稳定的项目 |
+| **B. 显式传入** | `options.declEnums(UserCacheDecls.class)` | 同上，但**不需要** resource-config（不读文件） | 不想维护 resources |
+| **C. 生成式注册（零反射）** | 调用生成的 `Cache4jDecls.register(registry)` | **无** | 有严格 native 要求、或启动时间敏感 |
+
+A 的模板由库提供生成能力（不是让人手写）：
+
+```text
+# reflect-config.json（示例：清单里有 2 个枚举）
+[ { "name": "com.acme.cache.UserCacheDecls",  "allDeclaredConstructors": false },
+  { "name": "com.acme.cache.OrderCacheDecls", "allDeclaredConstructors": false } ]
+
+# resource-config.json
+{ "resources": { "includes": [
+    { "pattern": "\\QMETA-INF/services/com.asialjim.cache4j.core.strategy.CacheDecl\\E" }
+] } }
+```
+
+C 的实现方式二选一（P5 再定，见决策 S9）：
+
+- **Spring AOT**：实现 `BeanFactoryInitializationAotProcessor` 生成 `Cache4jDecls`，在
+  `ApplicationContextInitializer` 风格入口里调用（Boot 3 原生支持）；
+- **APT**：`@CacheNamespace` 在编译期生成 `Cache4jDecls`，用户在自己的启动代码里调一行。
+
+两者生成的都是"编译期静态引用 `XxxDecls.values()`"，所以**完全没有反射**。
+
+### 12.4 使用方必须配合的四件事
+
+1. **日志绑定**：选有 native 支持的 SLF4J 绑定（logback ≥ 1.4 官方支持）；`slf4j-simple` 只适合测试；
+2. **值序列化**：库不碰字节，`RedisSerializer<V>` 由业务提供 → 业务自己注册类型
+   （Jackson 用 `@RegisterReflectionForBinding` 或 `@JsonTypeInfo`；**不要**用 JDK 序列化，
+   native image 下它对业务类基本不可用）；
+3. **Redis 客户端**：跟随所选客户端的 native 支持（Boot 3 用户直接继承 Boot 的 hints）；
+4. **Caffeine**：按 Caffeine 官方 native 文档配置（若用 `cache4j-local` 的 HashMap 实现则无此问题）。
+
+### 12.5 验证方式（不做就不写结论）
+
+| 验证项 | 内容 |
+|---|---|
+| 冒烟 A（Spring） | `native-image` 构建 Spring Boot 3 示例：加载声明 → 一次 `put`/`lookup` → 触发一次对账 → 断言命中统计 |
+| 冒烟 B（无 Spring，模板） | 同上，但用 `reflect-config.json` + `resource-config.json` |
+| 冒烟 C（零反射） | 同上，但走 `Cache4jDecls.register(...)`，构建时不加任何 hints |
+| CI | 可选加 GraalVM job（构建 + 跑冒烟 A），耗时长，可只在 release 分支执行 |
+
+实测结果回填 §4.2.3 的模板（`getEnumConstants()` 的最小注册项随 GraalVM 版本变化）。
+
+### 12.6 两个必须写进文档的告诫
+
+1. **不要给本库加 `--initialize-at-build-time`**：`CacheLogger` 首次调用会做 SLF4J 绑定探测，
+   `HashMapLocalCache` 等实现没有静态状态但 `CacheLogger.DIAGNOSED` 是静态的——构建期初始化的
+   静态状态会在运行期沿用，可能导致日志绑定被固化到错误实现。保持默认的**运行期初始化**。
+2. **不承诺"零配置"**：除第 C 种生成式方式外，native image 都需要 hints。把"需要几行配置"
+   说清楚，比说"支持 GraalVM"更有用。
+
+### 12.7 明确不承诺的范围
+
+- ❌ 不支持运行期 classpath 扫描（native image 没有 classpath 目录结构）；
+- ❌ 不支持 JDK 序列化作为值编码；
+- ⚠️ 不保证任意 GraalVM 版本，按实测过的版本给模板；
+- ⚠️ 第三方（Lettuce / Netty / Caffeine / 日志绑定）的行为由各自项目负责。
+
+### 12.8 分期
+
+GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热更，再补 AOT 与 native 验证。
+理由：native image 是部署形态，不是功能；而且 hints 的内容依赖 P1 的加载器实现才对得上。
+
+## 13. 十、待决策（需要拍板）
 
 | # | 问题 | 备选 | 建议 |
 |---|---|---|---|
@@ -650,3 +781,4 @@ public record StrategyUpdate(
 | S7 | 临时策略（`ttlOfChange`）是否要做 | 做 / 不做 | 做（大促场景刚需，实现成本低：访问驱动检查即可发现过期） |
 | S8 | `CacheDefinition` 是否从 `cache4j-spring` 下沉到 `core.strategy` | 下沉 / 保留双份 | **下沉**，Spring 侧保留同名兼容别名 |
 | S9 | 是否提供「真零反射」的生成式入口（APT / AOT 生成 `register(...)`） | 提供 / 不提供 | 先不提供（P1–P3 用文件清单 + 库自带 hints），等有明确 native image 需求再加 |
+| S10 | GraalVM 支持的交付深度 | 只出 hints + 模板 / 再加 CI 冒烟 / 再加生成式入口 | **hints + 模板 + 一次实测冒烟**；CI job 与生成式入口按需再加 |
