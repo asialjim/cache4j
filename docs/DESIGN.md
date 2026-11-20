@@ -585,12 +585,20 @@ requestCount == localHitCount + localNegativeHitCount + centralHitCount
 
 | 计入 `requestCount` | 不计入 |
 |---|---|
-| 业务 `get` / `lookup`（每次入口只记 1 次） | 对账（只读版本）、热 key 上报、`put`/`evict`/`clear`、单飞的 double-check 重查 |
+| 业务 `get` / `lookup` / `lookup(key, loader)`（每次入口只记 1 次） | 对账（只读版本）、热 key 上报、`put`/`evict`/`clear`、`containsKey`（探测语义）、单飞的 double-check 重查 |
+
+**平账约定：一次请求恰好一个结论。** 合并到别人回源的单飞等待方同样记一次 `missCount`
+（它的结论就是"需要回源"），否则 `requestCount ≠ localHit + centralHit + miss`。
+`containsKey` 走独立探测路径：只查本地副本与中央结论，**不改访问频次、不计读指标、不触发回填**。
+内部读（回填前比对版本、对账比对版本）一律走 `LocalCache.peek`，不递增存储层 `storeHitCount` / `storeMissCount`。
 
 **口径约定**
 
 - `hitRate()` 保留为 `valueHitRate()` 的别名（剔除负命中的"值命中率"）；要做运维决策用 `protectionRate()`，两者差额由 `negativeRatio()` 解释；
 - `nullTtl == 0` 时 `*NegativeHitCount ≡ 0`，`protectionRate == valueHitRate`，两个口径自动退化成同一个；
+- 回填采用 `LocalCache.putIfNewer` 做**原子**版本比较（哈希表挂在段锁内、Caffeine 用 `asMap().compute`），
+  消除"读版本 → 写副本"的竞态窗口；本地已有更新版本时计 `backfillDiscardedCount`；
+- 对账失败退避取 `max(version.retryBackoff, version.checkInterval)`，故障期不会比正常期更频繁地重试；
 - 存储实现把审计层字段返回 `0`、`estimatedSize` 返回 `-1`（中央不保证大小）；**不提供 `hitRate` 这类派生量的存储实现不允许拼接**；
 - `statsEnabled=false` 时全部计数器换成 **no-op**（不在热路径加 `if` 分支），派生量返回 `-1`（表示未统计，不用 `0` 与"真的全 miss"混淆）。默认值 `true`，需要零开销时显式关闭。
 - 计数用 `LongAdder`；`CacheStatsSnapshot` 是不可变记录，**同时实现 `CacheStats`**（组件访问器与接口方法同名），

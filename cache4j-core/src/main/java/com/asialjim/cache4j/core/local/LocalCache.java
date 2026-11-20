@@ -5,6 +5,7 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 
+import java.time.Duration;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -47,6 +48,40 @@ public interface LocalCache<V> extends Cache<CacheKey, LocalEntry<V>> {
     default LocalEntry<V> entry(CacheKey key) {
         Lookup<LocalEntry<V>> lookup = lookup(key);
         return lookup instanceof Lookup.Hit<LocalEntry<V>> hit ? hit.value() : null;
+    }
+
+    /**
+     * 内部读：与 {@link #entry} 语义相同，但<strong>不递增任何存储层统计</strong>
+     * （{@code STORE_HIT} / {@code STORE_MISS}）。
+     *
+     * <p>编排层在回填前比对版本、对账时比对版本都用它——那些是内部动作，
+     * 不该混进"本地命中率"这种对外诊断指标。</p>
+     *
+     * @param key key
+     * @return 条目或 {@code null}
+     */
+    default LocalEntry<V> peek(CacheKey key) {
+        return entry(key);
+    }
+
+    /**
+     * 条件写入：仅当本地没有副本、或现有副本的版本<strong>不大于</strong>新版本时才写入。
+     *
+     * <p>回填用它消除"读版本 → 写副本"之间的竞态：两个线程并发回填同一个 key 时，
+     * 旧版本不会覆盖新版本。默认实现是"先读后写"（非原子），本地存储实现应覆盖成原子版本。</p>
+     *
+     * @param key   key
+     * @param value 条目
+     * @param ttl   TTL（可空）
+     * @return 是否写入
+     */
+    default boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
+        LocalEntry<V> current = peek(key);
+        if (current != null && current.revision() > value.revision()) {
+            return false;
+        }
+        put(key, value, ttl);
+        return true;
     }
 
     /**

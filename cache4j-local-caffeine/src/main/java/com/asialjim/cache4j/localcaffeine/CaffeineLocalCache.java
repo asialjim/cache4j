@@ -16,6 +16,7 @@ import com.github.benmanes.caffeine.cache.Ticker;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
@@ -105,6 +106,12 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
     }
 
     @Override
+    public LocalEntry<V> peek(CacheKey key) {
+        TimedEntry<V> timed = cache.getIfPresent(key);   // 不递增本实现的 STORE_HIT/MISS
+        return timed == null ? null : timed.entry();
+    }
+
+    @Override
     public Lookup<LocalEntry<V>> lookup(CacheKey key) {
         TimedEntry<V> timed = cache.getIfPresent(key);
         if (timed == null) {
@@ -124,6 +131,22 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
     public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
         cache.put(key, new TimedEntry<>(value, toNanos(ttl)));
         counters.increment(CacheCounters.Counter.PUT);
+    }
+
+    @Override
+    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
+        AtomicBoolean written = new AtomicBoolean();
+        cache.asMap().compute(key, (ignored, existing) -> {
+            if (existing != null && existing.entry().revision() > value.revision()) {
+                return existing;             // 本地已有更新版本，丢弃本次
+            }
+            written.set(true);
+            return new TimedEntry<>(value, toNanos(ttl));
+        });
+        if (written.get()) {
+            counters.increment(CacheCounters.Counter.PUT);
+        }
+        return written.get();
     }
 
     @Override

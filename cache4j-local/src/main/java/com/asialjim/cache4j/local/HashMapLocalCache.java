@@ -80,6 +80,31 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
     }
 
     @Override
+    public LocalEntry<V> peek(CacheKey key) {
+        Segment<V> segment = segmentOf(key);
+        long now = nanoClock.getAsLong();
+        boolean expired = false;
+        segment.lock.lock();
+        try {
+            TimedEntry<V> entry = segment.map.get(key);
+            if (entry == null) {
+                return null;
+            }
+            if (entry.expired(now)) {
+                segment.map.remove(key);
+                expired = true;
+                return null;
+            }
+            return entry.entry;
+        } finally {
+            segment.lock.unlock();
+            if (expired) {
+                fireRemoved(key);
+            }
+        }
+    }
+
+    @Override
     public Lookup<LocalEntry<V>> lookup(CacheKey key) {
         Segment<V> segment = segmentOf(key);
         long now = nanoClock.getAsLong();
@@ -123,6 +148,29 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
             segment.map.put(key, new TimedEntry<>(value, expireAt));
             evicted = trimSegment(segment);
             counters.increment(CacheCounters.Counter.PUT);
+        } finally {
+            segment.lock.unlock();
+            fireRemoved(evicted);
+        }
+    }
+
+    @Override
+    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
+        long now = nanoClock.getAsLong();
+        long expireAt = ttl == null ? Long.MAX_VALUE : now + ttl.toNanos();
+        Segment<V> segment = segmentOf(key);
+        List<CacheKey> evicted = List.of();
+        segment.lock.lock();
+        try {
+            TimedEntry<V> existing = segment.map.get(key);
+            if (existing != null && !existing.expired(now)
+                    && existing.entry.revision() > value.revision()) {
+                return false;
+            }
+            segment.map.put(key, new TimedEntry<>(value, expireAt));
+            evicted = trimSegment(segment);
+            counters.increment(CacheCounters.Counter.PUT);
+            return true;
         } finally {
             segment.lock.unlock();
             fireRemoved(evicted);

@@ -300,6 +300,20 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     }
 
     @Override
+    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
+        if (!hotKeys.containsKey(key)) {
+            counters.increment(CacheCounters.Counter.DYNAMIC_PUT_DISCARDED);
+            return false;
+        }
+        return delegate.putIfNewer(key, value, min(ttl, dynamic.hotTtl()));
+    }
+
+    @Override
+    public LocalEntry<V> peek(CacheKey key) {
+        return delegate.peek(key);      // 内部读：不记频次、不见证热点
+    }
+
+    @Override
     public void onEntryRemoved(java.util.function.Consumer<CacheKey> listener) {
         // 只把"条目消失"透给编排层同步分区表；热点/预选状态属于访问频次，条目过期不影响热度判断
         delegate.onEntryRemoved(listener);

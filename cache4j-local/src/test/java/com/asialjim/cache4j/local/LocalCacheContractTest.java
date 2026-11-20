@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -218,6 +220,37 @@ public abstract class LocalCacheContractTest {
         cache.put(key("a"), LocalEntry.hit("v2", 2L), Duration.ofMinutes(1));
 
         assertTrue(removed.isEmpty(), implementation() + "：覆盖写不应触发条目消失通知");
+    }
+
+    @Test
+    @DisplayName("putIfNewer：本地已有更新版本时拒绝覆盖，同版本允许刷新")
+    void putIfNewerKeepsNewerRevision() {
+        LocalCache<String> cache = newCache(100);
+        assertTrue(cache.putIfNewer(key("a"), LocalEntry.hit("v2", 2L), Duration.ofMinutes(1)),
+                implementation());
+        assertFalse(cache.putIfNewer(key("a"), LocalEntry.hit("v1", 1L), Duration.ofMinutes(1)),
+                implementation() + "：旧版本不得覆盖新版本");
+        assertEquals("v2", cache.peek(key("a")).value());
+
+        assertTrue(cache.putIfNewer(key("a"), LocalEntry.hit("v2b", 2L), Duration.ofMinutes(1)),
+                implementation() + "：同版本允许写入（刷新 TTL）");
+        assertEquals("v2b", cache.peek(key("a")).value());
+    }
+
+    @Test
+    @DisplayName("peek 是内部读：不递增存储层命中/未命中")
+    void peekDoesNotCountStoreStats() {
+        LocalCache<String> cache = newCache(100);
+        cache.put(key("a"), LocalEntry.hit("va", 1L), Duration.ofMinutes(1));
+
+        long hits = cache.stats().storeHitCount();
+        long misses = cache.stats().storeMissCount();
+
+        assertNotNull(cache.peek(key("a")), implementation());
+        assertNull(cache.peek(key("absent")), implementation());
+
+        assertEquals(hits, cache.stats().storeHitCount(), implementation() + "：peek 不计命中");
+        assertEquals(misses, cache.stats().storeMissCount(), implementation() + "：peek 不计未命中");
     }
 
     @Test

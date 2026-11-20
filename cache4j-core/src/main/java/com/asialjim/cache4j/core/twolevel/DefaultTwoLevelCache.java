@@ -142,6 +142,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public Lookup<V> lookup(K key, CacheLoader<K, V> loader) {
         CacheKey cacheKey = encode(key);
+        partitionOf(cacheKey);                       // 与 lookup(K) 保持一致
         count(CacheCounters.Counter.REQUEST);
 
         ReadResult<V> first = read(cacheKey);
@@ -149,14 +150,15 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             countOutcome(first);
             return first.lookup();
         }
-        // 需要回源：本次请求计一次 miss（即使后面 double-check 命中，结论仍是"需要回源"）
-        count(CacheCounters.Counter.MISS);
-
+        // 需要回源：本次请求的结论记为 miss（即使 double-check 命中，结论仍是"需要回源"）
         CompletableFuture<Lookup<V>> mine = new CompletableFuture<>();
         CompletableFuture<Lookup<V>> existing = inflight.putIfAbsent(cacheKey, mine);
         if (existing != null) {
+            // 合并到别人的回源：同样要有结论，否则 request 数与命中/未命中数不平账
+            count(CacheCounters.Counter.MISS);
             return await(existing);
         }
+        count(CacheCounters.Counter.MISS);
         try {
             ReadResult<V> again = read(cacheKey);
             if (again.source() != Source.NONE) {
@@ -193,7 +195,13 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
 
     @Override
     public boolean containsKey(K key) {
-        return !lookup(key).isMiss();
+        // 探测语义：不改访问频次、不计读指标、不触发回填
+        CacheKey cacheKey = encode(key);
+        if (local.available() && local.peek(cacheKey) != null) {
+            return true;
+        }
+        VersionedLookup<V> centralLookup = centralLookup(cacheKey);
+        return centralLookup != null && !centralLookup.lookup().isMiss();
     }
 
     @Override
@@ -321,6 +329,10 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
      * @return 分区号
      */
     private int partitionOf(CacheKey cacheKey) {
+        if (!local.available()) {
+            // NONE 策略没有本地副本，也就没有"分区"可言；保存分区号只会无界增长
+            return 0;
+        }
         Integer saved = keyPartitions.get(cacheKey);
         if (saved != null) {
             return saved;
@@ -496,20 +508,23 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
 
     /**
      * 回填：只有现有副本的 revision 不大于本次读到的 revision 时才覆盖。
+     *
+     * <p>比较与写入由 {@link LocalCache#putIfNewer} 原子完成，避免"读版本 → 写副本"之间
+     * 被另一个线程的更新版本抢先覆盖（D18 的竞态窗口）。</p>
      */
     private void backfill(CacheKey cacheKey, LocalEntry<V> entry, boolean promoted) {
         if (!local.available()) {
             return;
         }
-        LocalEntry<V> current = local.entry(cacheKey);
-        if (current != null && current.revision() > entry.revision()) {
+        boolean written = putLocal(cacheKey, entry,
+                entry.isNegative() ? centralSpec.nullTtl() : null,
+                promoted ? "热升回填到本地" : "回填到本地");
+        if (!written && local.accepts(cacheKey)) {
+            // 本地拒绝写入是另一件事（DYNAMIC 冷 key），这里只报"被更新版本挡下"
             count(CacheCounters.Counter.BACKFILL_DISCARDED);
             LOG.read(CacheLogger.Subject.TWO_LEVEL, cacheKey, () -> "本地已有更新版本，丢弃本次回填，读到的版本="
-                    + entry.revision() + "，本地版本=" + current.revision());
-            return;
+                    + entry.revision());
         }
-        putLocal(cacheKey, entry, entry.isNegative() ? centralSpec.nullTtl() : null,
-                promoted ? "热升回填到本地" : "回填到本地");
     }
 
     /**
@@ -523,8 +538,8 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
      * @param effective  生效 TTL（可空）
      * @param detail     详细信息
      */
-    private void putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective, String detail) {
-        putLocal(cacheKey, entry, effective, detail, false);
+    private boolean putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective, String detail) {
+        return putLocal(cacheKey, entry, effective, detail, false);
     }
 
     /**
@@ -535,25 +550,27 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
      * @param effective 生效 TTL（可空）
      * @param detail    详情文案
      * @param writeOp   {@code true} 表示调用方写入（日志用"写"），{@code false} 表示内部回填（日志用"读"）
+     * @return 是否真的写入了本地
      */
-    private void putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective,
-                          String detail, boolean writeOp) {
+    private boolean putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective,
+                             String detail, boolean writeOp) {
         if (!local.available()) {
             if (writeOp) {
                 LOG.write(CacheLogger.Subject.TWO_LEVEL, cacheKey, "本地策略=NONE，仅写中央");
             }
-            return;
+            return false;
         }
         Duration localTtl = localSpec.ttl();
         Duration chosen = effective != null && localTtl != null && effective.compareTo(localTtl) < 0
                 ? effective : localTtl;
 
         boolean accepted = local.accepts(cacheKey);
-        local.put(cacheKey, entry, chosen);          // 是否真的写入由本地实现决定（DYNAMIC 会拒绝冷 key）
-        if (accepted) {
+        // 条件写入：本地已有更新版本时不覆盖（回填竞态）
+        boolean written = local.putIfNewer(cacheKey, entry, chosen);
+        if (accepted && written) {
             localPartitions.computeIfAbsent(partitionOf(cacheKey), p -> ConcurrentHashMap.newKeySet())
                     .add(cacheKey);
-        } else {
+        } else if (!accepted) {
             // 本地不持有副本（DYNAMIC 冷 key）→ 分区号也不保留，避免无界增长
             keyPartitions.remove(cacheKey);
         }
@@ -570,6 +587,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             LOG.write(subject, cacheKey, "冷key，不落本地，仅写中央");
         }
         // 回填被拒绝时不额外记：前面那条 "冷key，miss，硬读中央缓存" 已经说明了
+        return written;
     }
 
     // ------------------------------------------------------------------ 写路径
@@ -675,7 +693,9 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                     + "，范围=" + outcome.describeScope()
                     + "，对账完成，清除失效副本 " + outcome.invalidated() + " 条");
         } catch (RuntimeException e) {
-            nextCheckAtNanos = now + version.retryBackoff().toNanos();
+            // 中央故障期不该比对账间隔更频繁地重试
+            nextCheckAtNanos = now + Math.max(version.retryBackoff().toNanos(),
+                    version.checkInterval().toNanos());
             count(CacheCounters.Counter.VERSION_SYNC_ERROR);
             if (!centralSpec.failOpen()) {
                 throw e;
@@ -745,7 +765,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                     invalidated++;
                     continue;
                 }
-                LocalEntry<V> entry = local.entry(cacheKey);
+                LocalEntry<V> entry = local.peek(cacheKey);    // 内部读，不计本地命中率
                 if (entry == null) {
                     // 兜底：存储层尚未回调（如惰性过期未被访问）时，这里顺手剔除幽灵条目
                     local.evict(cacheKey);

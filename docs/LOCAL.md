@@ -31,6 +31,18 @@ public interface LocalCache<V> extends Cache<CacheKey, LocalEntry<V>> {
     Set<CacheKey> keys();
 
     /**
+     * 内部读：语义同 entry()，但不递增 STORE_HIT / STORE_MISS。
+     * 编排层在回填前比对版本、对账比对版本时用它，避免污染对外命中率指标。
+     */
+    default LocalEntry<V> peek(CacheKey key) { return entry(key); }
+
+    /**
+     * 条件写入：本地无副本或现有版本不大于新版本时才写，返回是否写入。
+     * 回填据此原子地排除“旧版本覆盖新版本”（默认实现非原子，实现方应覆盖）。
+     */
+    default boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) { ... }
+
+    /**
      * 注册“本地条目已消失”的监听器：TTL 过期、容量淘汰、显式失效都要回调；
      * 覆盖写（条目仍在）与 clear()（调用方整体清理）不回调。
      * 实现可以惰性触发（例如哈希表在读时才发现过期），但一旦发现必须回调。

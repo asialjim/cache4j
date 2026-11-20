@@ -42,6 +42,16 @@ public final class NoOpLocalCache<V> implements LocalCache<V> {
     }
 
     @Override
+    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
+        return false;
+    }
+
+    @Override
+    public LocalEntry<V> peek(CacheKey key) {
+        return null;
+    }
+
+    @Override
     public Set<CacheKey> keys() {
         return Set.of();
     }
