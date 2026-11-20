@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ 纯 Spring Framework 的装配方式：不用 Spring Boot，也不用任何自动配置机制。
+  ~ 这份就是使用者要抄的模板（docs/ADAPTERS.md 里同步了一份）。
+  -->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:cache="http://www.springframework.org/schema/cache"
+       xsi:schemaLocation="
+           http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd
+           http://www.springframework.org/schema/cache https://www.springframework.org/schema/cache/spring-cache.xsd">
+
+    <!-- ① Redis 连接：Boot 之外的写法就是自己声明连接工厂 -->
+    <bean id="redisConnectionFactory"
+          class="org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory">
+        <property name="hostName" value="127.0.0.1"/>
+        <property name="port" value="6379"/>
+    </bean>
+
+    <!-- ② value 序列化：业务自行决定（这里用 JDK，生产建议 JSON） -->
+    <bean id="cache4jSerializer"
+          class="org.springframework.data.redis.serializer.JdkSerializationRedisSerializer"/>
+
+    <!-- ③ 中央缓存 provider：库提供，不用自己拼 RedisCentralCache + ValueStore -->
+    <bean id="cache4jCentralProvider"
+          class="com.asialjim.cache4j.spring.redis.SpringRedisCentralCacheProvider">
+        <constructor-arg ref="redisConnectionFactory"/>
+        <constructor-arg>
+            <bean class="com.asialjim.cache4j.spring.redis.RedisKeyFormatter" factory-method="defaults"/>
+        </constructor-arg>
+        <constructor-arg ref="cache4jSerializer"/>
+    </bean>
+
+    <!-- ④ 装配配置：缓存声明走包扫描（等价于 Java Config 的 declPackages） -->
+    <bean id="cache4jOptions" class="com.asialjim.cache4j.spring.Cache4jOptionsFactoryBean">
+        <property name="centralProvider" ref="cache4jCentralProvider"/>
+        <property name="declPackagesAsString" value="com.asialjim.cache4j.xmlfixture"/>
+        <property name="statsEnabled" value="true"/>
+    </bean>
+
+    <!-- ⑤ 二级缓存管理器 -->
+    <bean id="cache4jCacheManager"
+          class="com.asialjim.cache4j.spring.TwoLevelCacheManager"
+          factory-method="create" destroy-method="close">
+        <constructor-arg ref="cache4jOptions"/>
+    </bean>
+
+    <!-- ⑥ 接上 Spring Cache 并开启 @Cacheable -->
+    <bean id="cacheManager" class="com.asialjim.cache4j.spring.SpringCacheManagerAdapter">
+        <constructor-arg ref="cache4jCacheManager"/>
+    </bean>
+    <cache:annotation-driven/>
+
+</beans>

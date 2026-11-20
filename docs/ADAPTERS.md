@@ -31,10 +31,13 @@ cache4j-starter                  聚合/默认装配：只拉依赖 + 装配默�
 
 | 模块 | 负责 | 不负责 |
 |---|---|---|
-| `cache4j-spring` | Spring Cache `CacheManager` / `Cache` 适配、属性绑定、本地缓存与二级缓存的 Bean 装配、错误处理 | Redis 连接、Redis 命令 |
-| `cache4j-spring-redis` | 用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer；装配 `RedisCentralCacheProvider`；复用 `spring.data.redis.*` | Spring Cache 适配、版本/热 key 语义、锁定底层客户端 |
-| `cache4j-solon` | Solon `CacheService` / `CacheTagsService` 实现、插件生命周期、属性绑定 | 缓存策略、Redis 连接 |
-| `cache4j-starter` | 依赖聚合、默认装配（读 `cache4j.*` 创建默认实现）；Spring 用户另用 `cache4j-spring-boot-starter` | 编排逻辑（在 `cache4j-core`）、框架绑定 |
+| `cache4j-spring` | Spring Cache `CacheManager` / `Cache` 适配、本地缓存与二级缓存的 Bean 装配（Java Config / XML）、错误处理 | Redis 连接、Redis 命令、**属性绑定**（Boot 才有的能力） |
+| `cache4j-spring-redis` | 用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer；提供 `SpringRedisCentralCacheProvider` 开箱装配 | Spring Cache 适配、版本/热 key 语义、锁定底层客户端 |
+| `cache4j-solon` | **（计划中，暂不实现）** Solon `CacheService` / `CacheTagsService` 实现、插件生命周期 | 缓存策略、Redis 连接 |
+| `cache4j-starter` | **（计划中）** 依赖聚合 + 默认装配 | 编排逻辑（在 `cache4j-core`）、框架绑定 |
+
+> **不做 `cache4j-spring-boot-starter` / 任何自动配置模块。** `spring.factories`、`@AutoConfiguration`、
+> `@ConfigurationProperties` 都是 Boot 机制；本库按约定只用 Spring Framework —— 装配靠 Java Config 或 XML。
 
 版本基线（待最终确认）：
 
@@ -50,39 +53,23 @@ cache4j-starter                  聚合/默认装配：只拉依赖 + 装配默�
 
 ## 2. `cache4j-spring`
 
-### 2.1 自动装配
+### 2.1 装配方式（纯 Spring Framework）
 
-```java
-@AutoConfiguration
-@EnableConfigurationProperties(Cache4jProperties.class)
-@ConditionalOnProperty(prefix = "cache4j", name = "enabled",
-        havingValue = "true", matchIfMissing = true)
-public class Cache4jAutoConfiguration {
+**没有自动配置机制。** 纯 Spring Framework 不具备"扫描 classpath 自动注册 Bean"的标准能力
+（`spring.factories`、`@AutoConfiguration` 都是 Spring Boot 的东西；本项目按约定**不依赖 Boot**）。
+所以装配只有两条等价的路：**Java Config** 与 **XML**。
 
-    @Bean
-    @ConditionalOnMissingBean
-    public LocalCacheProvider localCacheProvider(Cache4jProperties props) { ... }
+| 想要什么 | 怎么做 |
+|---|---|
+| 只要二级缓存对象 | `@Import(Cache4jSpringConfiguration.class)`，注入 `TwoLevelCacheManager` |
+| 要用 `@Cacheable` | `@Import(Cache4jCachingConfiguration.class)`（已带上前者，注册名为 `cacheManager` 的 `CacheManager` + `@EnableCaching`） |
+| 自己已有 `CacheManager` | **不要 import** 上面两个类，自行 `new SpringCacheManagerAdapter(...)` 装配（纯 Spring 没有 `@ConditionalOnMissingBean`，重复定义直接冲突） |
+| XML 装配 | 见 §3.3 的 `cache4j-context.xml` 模板；配置对象用 `Cache4jOptionsFactoryBean` 桥接 |
 
-    @Bean
-    @ConditionalOnMissingBean
-    public TwoLevelCacheManager twoLevelCacheManager(
-            LocalCacheProvider localProvider,
-            ObjectProvider<CentralCacheProvider> centralProviders,
-            Cache4jProperties props) { ... }
-}
-```
-
-- `Cache4jAutoConfiguration` 负责本地缓存、`TwoLevelCacheManager`、按配置创建命名缓存；
-- `CentralCacheProvider` 由 `cache4j-spring-redis`（或用户自定义 Bean）提供；`cache4j-spring` 只按类型注入，不直接依赖 Redis 模块；
-- 如果某个缓存配置为 `central.type=redis` 但容器里没有 `CentralCacheProvider`，**启动失败**并给出明确提示；不能静默降级成内存缓存；
-- 如果配置 `central.type=memory`，使用 `cache4j-central` 的 `InMemoryCentralCache`，仅用于开发/测试；
-- 所有 Bean 都带 `@ConditionalOnMissingBean`，允许业务覆盖。
-
-注册文件：
-
-```text
-META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
-```
+- `CentralCacheProvider` 由 `cache4j-spring-redis`（或用户自定义 Bean）提供；`cache4j-spring` 只按类型注入，不依赖 Redis 模块；
+- 容器里没有 `CentralCacheProvider` 时**启动失败**并给出明确提示，不静默降级成内存缓存；
+- `InMemoryCentralCache` 仅用于开发/测试；
+- 装配在启动期一次性定下来，运行期不可变（`Cache4jSpringOptions` 不可变 + builder）。
 
 ### 2.2 Spring Cache 桥接
 
@@ -225,80 +212,47 @@ public interface CacheSerializerResolver {
 
 ### 2.6 配置示例
 
-```yaml
-cache4j:
-  enabled: true
-  default-local-strategy: static
-  caches:
-    "[user:detail]":
-      local-strategy: static
-      local:
-        provider: caffeine        # caffeine | hashmap
-        max-size: 10000
-        ttl: 30s
-        version:
-          check-interval: 1s      # 命名空间级对账间隔；必须为正
-          jitter: 0.1
-          retry-backoff: 200ms
-          reconcile-batch-size: 1000   # 一次 HMGET 的批量大小
-      central:
-        type: redis               # redis | memory
-        ttl: 10m
-        null-ttl: 30s
-        fail-open: true
-      serializer: userCacheSerializer   # 业务提供的 RedisSerializer Bean 名（只在 spring-redis 生效）
+配置对象是 `Cache4jSpringOptions`（builder，装配期一次性定死），**没有 YAML 形态** —— YAML 绑定是
+Boot 的 `@ConfigurationProperties` 机制，本库不依赖 Boot。两种写法：
 
-    "[product:hot]":
-      local-strategy: dynamic
-      local:
-        max-size: 20000
-        ttl: 60s
-        version:
-          check-interval: 1s
-        dynamic:
-          local-hot-threshold: 100
-          window: 10s
-          max-hot-keys: 2000
-          hot-ttl: 60s
-          sync-interval: 1s       # 热 key 同步点间隔（访问驱动）
-          cooldown: 30s
-          coordination: global    # local | global
-          global:
-            window: 10s
-            hot-threshold: 200000
-            cool-threshold: 50000
-            demote-windows: 3
-            stale-windows: 3
-          sketch-width: 4096
-          sketch-depth: 4
-      central:
-        type: redis
-        ttl: 10m
-      serializer: productCacheSerializer
-  redis:
-    key-prefix: cache4j
-    hash-tag: true
-    clear-batch-size: 500
-```
-
-> 缓存名包含 `:` 时，YAML 必须用 `"[user:detail]"` 的括号写法，否则会被当成嵌套层级。
+**Java Config**
 
 ```java
 @Configuration
-public class CacheSerializerConfig {
+@Import(Cache4jCachingConfiguration.class)
+public class Cache4jConfig {
 
     @Bean
-    public RedisSerializer<User> userCacheSerializer(ObjectMapper objectMapper) {
-        // Spring Data Redis 的通用 JSON serializer 即可；envelope 由 cache4j-spring-redis 负责
+    public RedisSerializer<Object> cache4jSerializer(ObjectMapper objectMapper) {
         return new GenericJackson2JsonRedisSerializer(objectMapper);
+    }
+
+    @Bean
+    public Cache4jSpringOptions cache4jOptions(RedisConnectionFactory factory,
+                                               RedisSerializer<Object> serializer) {
+        return Cache4jSpringOptions.builder()
+                .centralProvider(new SpringRedisCentralCacheProvider(
+                        factory, RedisKeyFormatter.defaults(), serializer), false)
+                .declPackages(List.of("com.acme"))   // 扫描 @CacheNamespace
+                .statsEnabled(true)
+                .undeclaredEnabled(true)
+                .build();
     }
 }
 ```
 
+**XML**
+
+见 §3.3 的 `cache4j-context.xml` 模板（同一套 Bean，用 `Cache4jOptionsFactoryBean` 桥接配置对象）。
+
+> **策略参数不在这里配。** TTL / 容量 / 热 key 阈值属于"策略"，由声明枚举（`@CacheNamespace`）
+> 或策略仓库（`CacheStrategyDataSource`）给出；见 `STRATEGY.md` 与 `STRATEGY-REPOSITORY.md`。
+> 把它们再做成散装属性会和声明打架，所以刻意不放。
+
 ### 2.7 不依赖 Spring Boot
 
 `cache4j-spring` 只用 **Spring Framework**（`spring-context` 提供 `org.springframework.cache` 抽象），
-<strong>不依赖 spring-boot / spring-boot-autoconfigure</strong>，也没有自动装配注册文件：
+**不依赖 spring-boot / spring-boot-autoconfigure**，也不需要任何自动配置注册文件：
 
 | 想要什么 | 怎么做 |
 |---|---|
@@ -306,40 +260,24 @@ public class CacheSerializerConfig {
 | 要用 `@Cacheable` | `@Import(Cache4jCachingConfiguration.class)`（它已带上前者，并注册名为 `cacheManager` 的 Bean + `@EnableCaching`） |
 | 自己已有 `CacheManager` | **不要 import 上面两个类**，直接 `new SpringCacheManagerAdapter(...)` 自行装配（纯 Spring 没有 `@ConditionalOnMissingBean`，重复定义会冲突） |
 
-配置对象是纯 Java 的 `Cache4jSpringOptions`（builder），**不做 YAML 绑定** —— 属性绑定是 Boot 的职责，
-留给后续 `cache4j-starter`。
-
-> `@Cacheable(key = "#id")` 这类按参数名取值的 SpEL 需要编译时 `-parameters`；本工程父 pom 已开启。
-
-### 2.8 生命周期与禁用### 2.7 不依赖 Spring Boot
-
-`cache4j-spring` 只用 **Spring Framework**（`spring-context` 提供 `org.springframework.cache` 抽象），
-<strong>不依赖 spring-boot / spring-boot-autoconfigure</strong>，也没有自动装配注册文件：
-
-| 想要什么 | 怎么做 |
-|---|---|
-| 只要二级缓存对象 | `@Import(Cache4jSpringConfiguration.class)`，注入 `TwoLevelCacheManager` |
-| 要用 `@Cacheable` | `@Import(Cache4jCachingConfiguration.class)`（它已带上前者，并注册名为 `cacheManager` 的 Bean + `@EnableCaching`） |
-| 自己已有 `CacheManager` | **不要 import 上面两个类**，直接 `new SpringCacheManagerAdapter(...)` 自行装配（纯 Spring 没有 `@ConditionalOnMissingBean`，重复定义会冲突） |
-
-配置对象是纯 Java 的 `Cache4jSpringOptions`（builder），**不做 YAML 绑定** —— 属性绑定是 Boot 的职责，
-留给后续 `cache4j-starter`。
+配置对象是纯 Java 的 `Cache4jSpringOptions`（builder），XML 装配用 `Cache4jOptionsFactoryBean` 桥接；
+**不做 `@ConfigurationProperties` 绑定** —— 属性绑定是 Boot 的职责（本库不依赖 Boot）。
 
 > `@Cacheable(key = "#id")` 这类按参数名取值的 SpEL 需要编译时 `-parameters`；本工程父 pom 已开启。
 
 ### 2.8 生命周期与禁用
 
-- `cache4j.enabled=false` 关闭全部自动装配；
-- 业务已定义 `CacheManager` 时，适配器默认让位；可用 `cache4j.spring.primary=true` 强制注册 `@Primary`；
+- `Cache4jSpringOptions.builder().enabled(false)` 关闭整个管理器（装配层仍可存在但不装配缓存）；
+- 业务已定义 `CacheManager` 时不要 import 本模块的两个配置类（纯 Spring 无 `@ConditionalOnMissingBean`）；
 - `TwoLevelCacheManager` 的 `close()` 由 Spring 容器销毁回调触发；先关缓存，再关 provider；
 - 不注册任何 `TaskScheduler` / `@Scheduled` 用于版本或热 key 同步；
 - 不在启动阶段主动 `ping` Redis；健康检查单独提供。
 
-### 2.8 测试
+### 2.9 测试
 
-- `ApplicationContextRunner`：条件装配、属性绑定、缓存名映射；
-- `@SpringBootTest` + Testcontainers：`@Cacheable` / `@CachePut` / `@CacheEvict` / `sync=true`；
-- 自定义 `CacheManager` 时适配器让位；
+- `AnnotationConfigApplicationContext`（纯 Spring，无 Boot）：装配、缓存名映射、声明扫描；
+- `ClassPathXmlApplicationContext`：XML 装配（§3.3 那份模板）；
+- `@Cacheable` / `@CachePut` / `@CacheEvict` / `sync=true` 的行为；
 - `CachingConfigurer` 唯一性；
 - key 生成器与 `SimpleKey` 展开；
 - 错误处理：`failOpen=true/false`；
@@ -429,53 +367,97 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 - **序列化失败直接抛 `CacheException(CODEC_ENCODE_FAILED / CODEC_DECODE_FAILED)`**，不静默当 miss；
 - 换 Redisson / Solon 插件：实现同一接口，key/envelope/Lua/serializer 换成自己的，语义层不动。
 
-### 3.3 自动装配
+### 3.3 装配（纯 Spring Framework，无 Boot）
+
+`cache4j-spring-redis` 提供 **`SpringRedisCentralCacheProvider`**：把 `SpringRedisValueStore`
+（做 I/O）与 `RedisCentralCache`（版本 / 负缓存 / TTL 抖动 / 对账语义）拼好。不给这个类的话，
+每个使用者都要手抄同样的十行，抄错（时钟、key formatter、序列化）产生的都是隐蔽 bug。
+
+**策略数据源不在其中**：那是业务存储（Redis/DB/配置中心），谁接谁实现 `CacheStrategyDataSource`。
+
+#### XML 模板（`spring-context.xml`）
+
+不使用 Boot、不使用任何自动配置机制，只靠 Spring 的 XML 容器：
+
+```xml
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:cache="http://www.springframework.org/schema/cache"
+       xsi:schemaLocation="
+           http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd
+           http://www.springframework.org/schema/cache https://www.springframework.org/schema/cache/spring-cache.xsd">
+
+    <!-- ① Redis 连接：Boot 之外的写法就是自己声明连接工厂 -->
+    <bean id="redisConnectionFactory"
+          class="org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory">
+        <property name="hostName" value="127.0.0.1"/>
+        <property name="port" value="6379"/>
+    </bean>
+
+    <!-- ② value 序列化：业务自行决定（这里 JDK，生产建议 JSON） -->
+    <bean id="cache4jSerializer"
+          class="org.springframework.data.redis.serializer.JdkSerializationRedisSerializer"/>
+
+    <!-- ③ 中央缓存 provider：库提供，不用自己拼 RedisCentralCache + ValueStore -->
+    <bean id="cache4jCentralProvider"
+          class="com.asialjim.cache4j.spring.redis.SpringRedisCentralCacheProvider">
+        <constructor-arg ref="redisConnectionFactory"/>
+        <constructor-arg>
+            <bean class="com.asialjim.cache4j.spring.redis.RedisKeyFormatter" factory-method="defaults"/>
+        </constructor-arg>
+        <constructor-arg ref="cache4jSerializer"/>
+    </bean>
+
+    <!-- ④ 装配配置：缓存声明走包扫描 -->
+    <bean id="cache4jOptions" class="com.asialjim.cache4j.spring.Cache4jOptionsFactoryBean">
+        <property name="centralProvider" ref="cache4jCentralProvider"/>
+        <property name="declPackagesAsString" value="com.acme.cache"/>
+        <property name="statsEnabled" value="true"/>
+    </bean>
+
+    <!-- ⑤ 二级缓存管理器 -->
+    <bean id="cache4jCacheManager"
+          class="com.asialjim.cache4j.spring.TwoLevelCacheManager"
+          factory-method="create" destroy-method="close">
+        <constructor-arg ref="cache4jOptions"/>
+    </bean>
+
+    <!-- ⑥ 接上 Spring Cache 并开启 @Cacheable -->
+    <bean id="cacheManager" class="com.asialjim.cache4j.spring.SpringCacheManagerAdapter">
+        <constructor-arg ref="cache4jCacheManager"/>
+    </bean>
+    <cache:annotation-driven/>
+
+</beans>
+```
+
+这就是 `cache4j-spring-redis-test` 里 `cache4j-context.xml` 的完整内容（`XmlAssemblyTest` 跑它）。
+
+#### Java Config 等价写法
 
 ```java
-@AutoConfiguration
-@ConditionalOnClass(RedisConnectionFactory.class)
-@ConditionalOnBean(RedisConnectionFactory.class)
-@ConditionalOnProperty(prefix = "cache4j.central", name = "type", havingValue = "redis")
-@AutoConfigureAfter({RedisAutoConfiguration.class, Cache4jAutoConfiguration.class})
-public class Cache4jSpringRedisAutoConfiguration {
+@Configuration
+@Import(Cache4jCachingConfiguration.class)
+public class Cache4jConfig {
 
     @Bean
-    @ConditionalOnMissingBean
-    public RedisValueStore<Object> redisValueStore(RedisConnectionFactory factory,
-                                                   Cache4jRedisProperties props,
-                                                   CacheSerializerResolver serializers) {
-        // key 布局 / envelope / Lua / serializer 都在这里
-        return new SpringRedisValueStore<>(factory, props.keyFormatter(), serializers);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public CentralCacheProvider centralCacheProvider(RedisValueStore<Object> store) {
-        return new RedisCentralCacheProvider(store);
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    public HotKeyCoordinator hotKeyCoordinator(RedisValueStore<Object> store,
-                                               Cache4jProperties cache4jProperties) {
-        // 阈值按缓存名解析：各缓存的 local.dynamic.global.* 不同
-        return new RedisHotKeyCoordinator(store,
-                namespace -> cache4jProperties.dynamicGlobalOf(namespace));
+    public Cache4jSpringOptions cache4jOptions(RedisConnectionFactory factory,
+                                               RedisSerializer<Object> serializer) {
+        return Cache4jSpringOptions.builder()
+                .centralProvider(new SpringRedisCentralCacheProvider(
+                        factory, RedisKeyFormatter.defaults(), serializer), false)
+                .declPackages(List.of("com.acme.cache"))
+                .build();
     }
 }
 ```
 
-- 复用 Spring Boot 的 `spring.data.redis.*`：host、port、password、database、SSL、sentinel、cluster、pool 全部由 Spring 配置；
-- `RedisValueStore<Object>` 是 Spring 侧的常规做法（与 `RedisTemplate<K,Object>` 同理）：serializer 按缓存名解析，内部做一次类型收窄；
-- cache4j 只增加 `cache4j.redis.*`：`key-prefix`、`hash-tag`、`clear-batch-size`；
-- 热 key 参数来自各缓存的 `local.dynamic.global.*`，不放进 `cache4j.redis.*`；`RedisHotKeyCoordinator` 通过 `namespace -> GlobalSpec` 解析器取值，因此同一个协调器可以服务多个 `DYNAMIC` 缓存；
-- 某个 namespace 没有 `dynamic.global` 配置时，协调器拒绝该 namespace 的上报（返回 `UNKNOWN` 并记 WARN），而不是用别的缓存的阈值；
-- 不创建第二个 `RedisConnectionFactory`；
-- 不覆盖用户自定义的 `RedisConnectionFactory`；
-- `cache4j-spring-redis` 的 `pom.xml` 只依赖 `spring-data-redis` 的 API，不依赖 `spring-boot-starter-data-redis`，也不依赖 Jedis / Lettuce；避免替用户锁定客户端；
-- 不声明、也不锁定 Jedis / Lettuce 等具体客户端；由用户通过 Spring Data Redis 依赖与配置选择；
-- 若容器里已有 `CentralCacheProvider` 或 `RedisValueStore`，自动配置让位；
-- 若 `cache4j.central.type=redis` 但类路径没有 Spring Data Redis，启动失败并提示引入依赖。
+#### 约定的边界
+
+- 用 `spring.data.redis.*` 或自己声明 `RedisConnectionFactory`（host/port/SSL/sentinel/cluster/pool 都归它）；
+- `cache4j-spring-redis` 的 `pom.xml` 只依赖 `spring-data-redis` API，**不依赖** `spring-boot-starter-data-redis`，也不锁定 Jedis / Lettuce；
+- 两种写法都**不覆盖**用户已有的 `RedisConnectionFactory` / `CacheManager`（XML 靠"别重复声明"，Java Config 靠"别 import 两个配置类"——纯 Spring 没有 `@ConditionalOnMissingBean`）；
+- 类路径没有 Spring Data Redis 时直接编译失败（`CentralCacheProvider` 的构造签名就在那里），不存在"静默降级成内存缓存"。
 
 ### 3.4 序列化边界
 
@@ -496,8 +478,8 @@ public class Cache4jSpringRedisAutoConfiguration {
 
 ### 3.6 测试
 
-- Testcontainers Redis 7；
-- `RedisConnectionFactory` 自动装配；
+- 真机 Redis（`Assumptions` 门控，不可达自动跳过；可用 `-Dcache4j.test.redis.host/port/password` 覆盖）；
+- `SpringRedisCentralCacheProvider` 装配 + `XmlAssemblyTest` 走真实 XML 容器；
 - Jedis / Lettuce 两种 Spring 客户端各跑一遍契约测试；
 - 字节级校验：自定义 codec 写入后，用原生 `GET` 看 envelope；
 - 版本 Lua：写后 `GET __rev` 增加；`MGET rev key` 返回同一快照；

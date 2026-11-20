@@ -139,7 +139,7 @@ cache.put(skuId, newSku);
 同样地，**核心也不依赖 Redis**：中央缓存是抽象（`CentralCache` / `CentralCacheProvider`），
 Redis 只是我们默认提供的适配层之一，换成其他中央存储只需实现同一套契约。
 
-> 当前状态：**P1 + P2 语义层已落地**——`cache4j-core`（契约 + `TwoLevelCache` 编排）、`cache4j-local`（`NONE`/`STATIC`/`DYNAMIC` + 分段 LRU）、`cache4j-central`（内存参考实现 + 热 key 协调）、`cache4j-central-redis`（`RedisValueStore<V>` 下行 SPI + `RedisCentralCache<V>` 语义层 + `RedisHotKeyCoordinator`，**不碰字节**）、`cache4j-spring-redis`（`SpringRedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer）、`cache4j-local-caffeine`（Caffeine 存储实现，与 HashMap 跑同一套契约测试）。`cache4j-spring`（Spring Cache 桥接，不依赖 Boot）与 `cache4j-spring-redis-test`（真实 Redis 集成测试）。175 个用例全绿（Redis 不可达时相关用例自动跳过）。日志走 **SLF4J**，格式固定 `[主题]-子过程-具体信息`（见 DESIGN §7.2）。Spring Boot 自动装配、`cache4j-solon`、`cache4j-starter` 尚未开始。完整设计见：
+> 当前状态：**P1 + P2 语义层已落地**——`cache4j-core`（契约 + `TwoLevelCache` 编排）、`cache4j-local`（`NONE`/`STATIC`/`DYNAMIC` + 分段 LRU）、`cache4j-central`（内存参考实现 + 热 key 协调）、`cache4j-central-redis`（`RedisValueStore<V>` 下行 SPI + `RedisCentralCache<V>` 语义层 + `RedisHotKeyCoordinator`，**不碰字节**）、`cache4j-spring-redis`（`SpringRedisValueStore<V>`：连接 + key 布局 + envelope + Lua + serializer）、`cache4j-local-caffeine`（Caffeine 存储实现，与 HashMap 跑同一套契约测试）。`cache4j-spring`（Spring Cache 桥接，不依赖 Boot）与 `cache4j-spring-redis-test`（真实 Redis 集成测试）。175 个用例全绿（Redis 不可达时相关用例自动跳过）。日志走 **SLF4J**，格式固定 `[主题]-子过程-具体信息`（见 DESIGN §7.2）。**不做 Spring Boot 自动装配**（约定只用 Spring Framework：装配走 Java Config 或 `spring-context.xml`，见 `docs/ADAPTERS.md` §3.3）；`cache4j-solon`、`cache4j-starter` 尚未开始。完整设计见：
 >
 > - [总体设计](docs/DESIGN.md)
 > - [本地缓存与三种策略](docs/LOCAL.md)
