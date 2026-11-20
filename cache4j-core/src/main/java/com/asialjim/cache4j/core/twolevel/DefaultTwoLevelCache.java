@@ -79,6 +79,15 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     private final int partitions;
 
     /**
+     * 本地空值副本的除子 N：{@code localNullTtl = min(localTtl, centralNullTtl / N)}。
+     *
+     * <p>空值副本只是"防穿透的临时标记"，比中央活得久毫无意义；让本地比中央<strong>更早</strong>
+     * 放下这个标记，避免"中央已能重新回源、本地还在说不存在"。来自策略仓库的
+     * {@code NamespacePolicy.localNullTtlDivisor}，默认 10。</p>
+     */
+    private final int localNullTtlDivisor;
+
+    /**
      * 本地副本的<strong>分区索引</strong>：分区号 → 该分区内、确实持有副本的 key（空桶惰性创建）。
      *
      * <p>对账时直接 {@code get(partition)} 取，不必遍历 {@code local.keys()} 重算分区；
@@ -108,6 +117,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         this.milliClock = builder.milliClock;
 
         this.partitions = localSpec.version() == null ? 1 : localSpec.version().reconcilePartitions();
+        this.localNullTtlDivisor = Math.max(1, builder.localNullTtlDivisor);
         // 本地条目过期 / 淘汰 / 失效时立即清掉分区号与分区索引，不等下一次对账才发现
         local.onEntryRemoved(this::forgetLocalPartition);
 
@@ -489,6 +499,26 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         }
     }
 
+    /**
+     * 本地空值副本的存活时长：{@code min(localTtl, centralNullTtl / N)}。
+     *
+     * <p>{@code centralNullTtl = ZERO}（不缓存空值）时不会被调用——那条路径直接不落本地。</p>
+     *
+     * @return 生效 TTL
+     */
+    private Duration localNullTtl() {
+        Duration centralNull = centralSpec.nullTtl();
+        Duration localTtl = localSpec.ttl();
+        if (centralNull == null || centralNull.isZero()) {
+            return Duration.ZERO;
+        }
+        Duration derived = centralNull.dividedBy(localNullTtlDivisor);
+        if (localTtl == null) {
+            return derived;
+        }
+        return derived.compareTo(localTtl) < 0 ? derived : localTtl;
+    }
+
     private void countOutcome(ReadResult<V> result) {
         if (result.source() == Source.LOCAL) {
             count(result.lookup().isNegative()
@@ -516,7 +546,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             return;
         }
         boolean written = putLocal(cacheKey, entry,
-                entry.isNegative() ? centralSpec.nullTtl() : null,
+                entry.isNegative() ? localNullTtl() : null,
                 promoted ? "热升回填到本地" : "回填到本地");
         if (!written && local.accepts(cacheKey)) {
             // 本地拒绝写入是另一件事（DYNAMIC 冷 key），这里只报"被更新版本挡下"
@@ -618,7 +648,8 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         }
         try {
             long revision = central.putNegativeAndGetRevision(cacheKey, centralSpec.nullTtl());
-            putLocal(cacheKey, LocalEntry.negative(revision), centralSpec.nullTtl(), "写中央并写本地（空值）", true);
+            // 本地负副本用派生 TTL：min(localTtl, centralNullTtl / N)，比中央更早放下标记
+            putLocal(cacheKey, LocalEntry.negative(revision), localNullTtl(), "写中央并写本地（空值）", true);
             return Lookup.negative();
         } catch (RuntimeException e) {
             count(CacheCounters.Counter.CENTRAL_ERROR);
@@ -635,7 +666,9 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             try {
                 long revision = central.putNegativeAndGetRevision(cacheKey, effective);
                 count(CacheCounters.Counter.PUT);
-                putLocal(cacheKey, LocalEntry.negative(revision), effective, "写中央并写本地（空值）", true);
+                // 中央用调用方给的 TTL；本地负副本一律用派生值 min(localTtl, centralNullTtl / N)
+                putLocal(cacheKey, LocalEntry.negative(revision), localNullTtl(),
+                        "写中央并写本地（空值）", true);
                 return;
             } catch (RuntimeException e) {
                 count(CacheCounters.Counter.CENTRAL_ERROR);
@@ -865,6 +898,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         private CentralCache<V> central;
         private HotKeyCoordinator hotKeyCoordinator;
         private boolean statsEnabled = true;
+        private int localNullTtlDivisor = 10;
         private LongSupplier nanoClock = System::nanoTime;
         private LongSupplier milliClock = System::currentTimeMillis;
 
@@ -905,6 +939,20 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
          */
         public Builder<K, V> hotKeyCoordinator(HotKeyCoordinator value) {
             this.hotKeyCoordinator = value;
+            return this;
+        }
+
+        /**
+         * 本地空值副本的除子 N（默认 10）：{@code localNullTtl = min(localTtl, centralNullTtl / N)}。
+         *
+         * @param value 除子，必须 ≥ 1
+         * @return this
+         */
+        public Builder<K, V> localNullTtlDivisor(int value) {
+            if (value < 1) {
+                throw invalid("localNullTtlDivisor 必须 >= 1：" + value);
+            }
+            this.localNullTtlDivisor = value;
             return this;
         }
 

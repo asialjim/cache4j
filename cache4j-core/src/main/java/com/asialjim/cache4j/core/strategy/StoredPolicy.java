@@ -17,6 +17,7 @@ import java.time.Duration;
  * @param strategy         生效策略
  * @param maxSize          本地条目上限；{@code null} 用内建默认
  * @param localTtl         本地非空副本存活；{@code null} 用内建默认
+ * @param localNullTtlDivisor 本地空值副本除子 N；{@code null} 用内建默认（10）
  * @param version          版本对账参数；{@code null} 用内建默认
  * @param dynamic          {@code DYNAMIC} 参数；{@code null} 用内建默认
  * @param centralTtl       中央非空存活；{@code null} 用内建默认
@@ -34,6 +35,7 @@ public record StoredPolicy(
         LocalStrategy strategy,
         Long maxSize,
         Duration localTtl,
+        Integer localNullTtlDivisor,
         LocalCacheSpec.VersionSpec version,
         LocalCacheSpec.DynamicSpec dynamic,
         Duration centralTtl,

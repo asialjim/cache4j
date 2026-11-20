@@ -21,6 +21,7 @@ import java.util.Objects;
  * @param declaredStrategy 声明值（只用于审计与展示，**不提供 reset**）
  * @param maxSize          本地条目上限
  * @param localTtl         本地非空副本存活
+ * @param localNullTtlDivisor 本地空值副本除子 N（{@code localNullTtl = min(localTtl, centralNullTtl / N)}）
  * @param version          版本对账参数
  * @param dynamic          {@code DYNAMIC} 参数（非 DYNAMIC 时保留但不生效）
  * @param centralTtl       中央非空存活
@@ -40,6 +41,7 @@ public record NamespacePolicy(
         LocalStrategy declaredStrategy,
         long maxSize,
         Duration localTtl,
+        int localNullTtlDivisor,
         LocalCacheSpec.VersionSpec version,
         LocalCacheSpec.DynamicSpec dynamic,
         Duration centralTtl,
@@ -89,6 +91,9 @@ public record NamespacePolicy(
         if (strategy == LocalStrategy.DYNAMIC && dynamic == null) {
             throw invalid("DYNAMIC 必须提供 dynamic 参数");
         }
+        if (localNullTtlDivisor < 1) {
+            throw invalid("localNullTtlDivisor 必须 >= 1：" + localNullTtlDivisor);
+        }
         if (centralTtl == null || centralTtl.isZero() || centralTtl.isNegative()) {
             throw invalid("centralTtl 必须为正：" + centralTtl);
         }
@@ -113,7 +118,7 @@ public record NamespacePolicy(
                 .nullTtl(centralNullTtl)
                 .failOpen(failOpen)
                 .build();
-        CacheDefinition definition = CacheDefinition.of(local, central);
+        CacheDefinition definition = CacheDefinition.of(local, central, localNullTtlDivisor);
         definition.validate();
         return definition;
     }

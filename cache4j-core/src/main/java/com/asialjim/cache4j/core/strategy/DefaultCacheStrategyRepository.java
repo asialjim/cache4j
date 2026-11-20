@@ -117,7 +117,8 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
         LocalCacheSpec local = definition.local();
         return new NamespacePolicy(
                 decl.getNamespace(), decl.getDescription(), decl.getStrategy(), decl.getStrategy(),
-                local.maxSize(), local.ttl(), local.version(), local.dynamic(),
+                local.maxSize(), local.ttl(), BuiltinDefaults.LOCAL_NULL_TTL_DIVISOR,
+                local.version(), local.dynamic(),
                 definition.central().ttl(), definition.central().nullTtl(), definition.central().failOpen(),
                 0L, 0L, null, null, source);
     }
@@ -136,9 +137,11 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
         Duration centralNullTtl = stored.centralNullTtl() == null
                 ? BuiltinDefaults.CENTRAL_NULL_TTL : stored.centralNullTtl();
         boolean failOpen = stored.failOpen() == null || stored.failOpen();
+        int nullDivisor = stored.localNullTtlDivisor() == null
+                ? BuiltinDefaults.LOCAL_NULL_TTL_DIVISOR : stored.localNullTtlDivisor();
         return new NamespacePolicy(
                 decl.getNamespace(), description, strategy, decl.getStrategy(),
-                maxSize, localTtl, version, dynamic,
+                maxSize, localTtl, nullDivisor, version, dynamic,
                 centralTtl, centralNullTtl, failOpen,
                 stored.configVersion(), stored.updatedAtMillis(), stored.updatedBy(), stored.reason(),
                 NamespacePolicy.Source.REPOSITORY);

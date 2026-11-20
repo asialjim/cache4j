@@ -47,10 +47,16 @@ class TwoLevelCacheIntegrationTest {
     }
 
     private TwoLevelCache<String, String> build(LocalCacheSpec localSpec, CentralCache<String> central) {
+        return build(localSpec, central, 10);
+    }
+
+    private TwoLevelCache<String, String> build(LocalCacheSpec localSpec, CentralCache<String> central,
+                                                 int localNullTtlDivisor) {
         LocalCache<String> local = LocalCaches.create(localSpec, null, clock::nanos);
         return TwoLevelCache.<String, String>builder(NS)
                 .local(local)
                 .central(central)
+                .localNullTtlDivisor(localNullTtlDivisor)
                 .nanoClock(clock::nanos)
                 .milliClock(clock::millis)
                 .build();
@@ -181,6 +187,42 @@ class TwoLevelCacheIntegrationTest {
         assertEquals(0L, stats.centralNegativeHitCount());
         // 第二次：由本地负副本挡下
         assertEquals(1L, stats.localNegativeHitCount());
+    }
+
+    @Test
+    @DisplayName("本地空值副本 = 中央空值 TTL / N：比中央更早放下「不存在」的标记")
+    void localNullTtlIsDerivedFromCentralNullTtl() {
+        // 中央空值 30s，除子 10 → 本地负副本 3s（远小于本地非空 TTL 1 分钟）
+        TwoLevelCache<String, String> cache = build(
+                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
+                central(Duration.ofSeconds(30)), 10);
+
+        assertTrue(cache.lookup("404", k -> null).isNegative());
+        assertTrue(cache.lookup("404").isNegative(), "3s 内由本地负副本挡下");
+        assertEquals(1L, cache.stats().localNegativeHitCount());
+
+        // 推进 4s：本地负副本（3s）已过期，结论改由中央负副本（30s）提供
+        clock.advance(Duration.ofSeconds(4));
+        assertTrue(cache.lookup("404").isNegative(), "结论仍为\"已确认不存在\"");
+        assertEquals(1L, cache.stats().localNegativeHitCount(), "本地负副本已过期，不应再计本地负命中");
+    }
+
+    @Test
+    @DisplayName("本地非空 TTL 比派生值更小时取本地 TTL")
+    void localNullTtlNeverExceedsLocalTtl() {
+        // 中央空值 30s / 10 = 3s，但本地 TTL 只有 500ms → 取 500ms
+        TwoLevelCache<String, String> cache = build(
+                LocalCacheSpec.staticCache(NS, 100, Duration.ofMillis(500), fastVersion()),
+                central(Duration.ofSeconds(30)), 10);
+
+        assertTrue(cache.lookup("404", k -> null).isNegative());
+        assertTrue(cache.lookup("404").isNegative());
+        assertEquals(1L, cache.stats().localNegativeHitCount());
+
+        // 600ms > 本地 500ms：本地负副本过期，但结论仍由中央负副本保证
+        clock.advance(Duration.ofMillis(600));
+        assertTrue(cache.lookup("404").isNegative());
+        assertEquals(1L, cache.stats().localNegativeHitCount(), "本地负副本已过期");
     }
 
     @Test

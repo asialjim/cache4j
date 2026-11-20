@@ -102,7 +102,7 @@ class DefaultCacheStrategyRepositoryTest {
     @DisplayName("数据源有记录：以数据源为准，声明值降级为 declaredStrategy")
     void repositoryWinsOverDeclaration() {
         FakeDataSource dataSource = new FakeDataSource();
-        dataSource.put(new StoredPolicy("user:detail", "运维改写过的说明", LocalStrategy.NONE, null, null,
+        dataSource.put(new StoredPolicy("user:detail", "运维改写过的说明", LocalStrategy.NONE, null, null, null,
                 null, null, null, null, false, 7L, 1_700_000_000_000L, "ops:zhangsan", "仅中央"));
         DefaultCacheStrategyRepository repository = new DefaultCacheStrategyRepository(dataSource);
         repository.declare(Decls.USER_DETAIL, "测试声明");
@@ -124,7 +124,7 @@ class DefaultCacheStrategyRepositoryTest {
     @DisplayName("数据源记录字段缺省：用内建默认补齐")
     void storedPolicyNullFieldsFallBackToBuiltinDefaults() {
         FakeDataSource dataSource = new FakeDataSource();
-        dataSource.put(new StoredPolicy("user:detail", null, LocalStrategy.DYNAMIC, null, null,
+        dataSource.put(new StoredPolicy("user:detail", null, LocalStrategy.DYNAMIC, null, null, null,
                 null, null, null, null, null, 3L, 0L, null, null));
         DefaultCacheStrategyRepository repository = new DefaultCacheStrategyRepository(dataSource);
         repository.declare(Decls.USER_DETAIL, "测试声明");
@@ -177,7 +177,7 @@ class DefaultCacheStrategyRepositoryTest {
     @DisplayName("启动装配不调用 loadAll（预装配集合由声明决定，孤儿不参与）")
     void bootstrapNeverCallsLoadAll() {
         FakeDataSource dataSource = new FakeDataSource();
-        dataSource.put(new StoredPolicy("orphan:cache", null, LocalStrategy.STATIC, null, null,
+        dataSource.put(new StoredPolicy("orphan:cache", null, LocalStrategy.STATIC, null, null, null,
                 null, null, null, null, null, 1L, 0L, null, null));
         DefaultCacheStrategyRepository repository = new DefaultCacheStrategyRepository(dataSource);
         repository.declare(Decls.USER_DETAIL, "测试声明");
