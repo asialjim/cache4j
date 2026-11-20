@@ -74,6 +74,7 @@
 用户只写枚举，接口只规定"**怎么定义一个缓存策略**"：
 
 ```java
+@Getter                    // Lombok 生成 getNamespace() / getStrategy() / getDescription()
 @CacheNamespace            // 供 Spring 包扫描发现；core 侧走 META-INF/services，不依赖它
 public enum UserCacheDecls implements CacheStrategyDecl {
 
@@ -90,10 +91,6 @@ public enum UserCacheDecls implements CacheStrategyDecl {
         this.strategy = strategy;
         this.description = description;
     }
-
-    @Override public String namespace() { return namespace; }
-    @Override public LocalStrategy strategy() { return strategy; }
-    @Override public String description() { return description; }
 }
 ```
 
@@ -101,15 +98,19 @@ public enum UserCacheDecls implements CacheStrategyDecl {
 public interface CacheStrategyDecl {
 
     /** ① 缓存命名空间 */
-    String namespace();
+    String getNamespace();
 
     /** ② 初始本地策略（<strong>声明值</strong>，可被仓库覆盖） */
-    LocalStrategy strategy();
+    LocalStrategy getStrategy();
 
     /** ③ 命名空间描述信息；<strong>必须非空</strong>，否则运维无从判断这个缓存干什么用 */
-    String description();
+    String getDescription();
 }
 ```
+
+**契约用 getter 命名**：枚举里只声明三个字段 + 构造器，配合 Lombok `@Getter` 即可满足接口，
+不需要手写三个 `@Override`。库**不依赖 Lombok**——它只是"字段即实现"的最省事方式，
+不用 Lombok 的团队手写三个 getter 也一样；接口本身没有任何 Lombok 痕迹。
 
 要点：
 
@@ -138,7 +139,7 @@ public interface CacheStrategyDecl {
 因此：
 
 - `cache4j-core` 提供 `CacheStrategyLoader.load()`：按 `ServiceLoader` 的**文件约定**读声明，
-  逐个 `toDefinition()` → `validate()` → 交给注册表；
+  取枚举常量 → 交给仓库 `materialize()` 补全参数 → `validate()` → 注册；
 - `cache4j-spring` 额外提供注解扫描（`@CacheNamespace` 标注的枚举），把扫到的实例一并交给同一个注册表。
   多条路径幂等合并，冲突检测见 4.4。
 
@@ -355,9 +356,8 @@ List<Candidate> out = new ArrayList<>(constants.length);
 for (CacheStrategyDecl decl : constants) {
     String origin = type.getName() + "#" + ((Enum<?>) decl).name();
     try {
-        CacheDefinition def = decl.toDefinition();
-        def.local().validate();
-        def.central().validate();
+        CacheDefinition def = policies.materialize(decl);   // 策略来自声明，参数来自仓库/内建默认
+        def.validate();
         out.add(new Candidate(origin, def));
     } catch (RuntimeException e) {
         throw invalid(where + "：" + origin + " 翻译失败：" + e.getMessage(), e);
@@ -419,14 +419,15 @@ for (Candidate candidate : candidates) {
 ```java
 // 仓库内部：materialize(decl) —— 枚举不参与参数决策
 CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
-    LocalStrategy strategy = policy != null ? policy.activeStrategy() : decl.strategy();
+    String namespace = decl.getNamespace();
+    LocalStrategy strategy = policy != null ? policy.activeStrategy() : decl.getStrategy();
     LocalCacheSpec local = switch (strategy) {
-        case NONE    -> LocalCacheSpec.noLocal(decl.namespace());
-        case STATIC  -> LocalCacheSpec.staticCache(decl.namespace(), p.maxSize(), p.localTtl(), p.version());
-        case DYNAMIC -> LocalCacheSpec.dynamicCache(decl.namespace(), p.maxSize(), p.localTtl(),
+        case NONE    -> LocalCacheSpec.noLocal(namespace);
+        case STATIC  -> LocalCacheSpec.staticCache(namespace, p.maxSize(), p.localTtl(), p.version());
+        case DYNAMIC -> LocalCacheSpec.dynamicCache(namespace, p.maxSize(), p.localTtl(),
                                                     p.version(), p.dynamic());
     };
-    return CacheDefinition.of(local, p.central(decl.namespace()));
+    return CacheDefinition.of(local, p.central(namespace));
 }
 ```
 
@@ -436,14 +437,36 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `maxSize` | `10_000` | 本地条目上限 |
-| `localTtl`（非空副本） | `5m` | 本地副本最长存活 |
-| 本地空值副本 | **不单独配置** | 由中央 `nullTtl` 决定（见 §9 不变量） |
-| `version` | `checkInterval=1s, jitter=0.1, retryBackoff=200ms, reconcileBatchSize=1000, reconcilePartitions=16` | 沿用 `VersionSpec.defaults()` |
-| `dynamic` | `localHotThreshold=5, window=10s, maxHotKeys=1000, hotTtl=60s, syncInterval=1s, cooldown=30s, hotReportPartitions=4, hotReportBatchMax=16, candidateCapacity=1000` | 沿用 `DynamicSpec.defaults()` |
+| `maxSize` | `1_000` | 本地条目上限 |
+| `localTtl`（非空副本） | `30s` | 本地副本最长存活 |
+| 本地空值副本 | `centralNullTtl / N`，`N=10`（可配） | 见下方"本地空值 TTL"；再与 `localTtl` 取小 |
+| `version.checkInterval` | `5s` | 版本对账（时间信号量）窗口 |
+| `version.jitter` | `100ms`（**绝对值**） | 见下方"抖动语义变更" |
+| `version.reconcilePartitions` | `16` | 对账分区数（2 的幂） |
+| `version.reconcileBatchSize` | `1_000` | 单次 `HMGET` 的 field 数 |
+| `version.retryBackoff` | `200ms`（运行时取 `max(backoff, checkInterval)`） | 对账失败退避 |
+| `dynamic.localHotThreshold` | `100` | 热升阈值 |
+| `dynamic.window` | `10s` | 频次统计窗口 |
+| `dynamic.hotTtl` | **不提供**（与本地非空 TTL 共用） | DYNAMIC 热副本没有独立 TTL |
+| `dynamic.hotReportPartitions` | `16` | 热 key 上报分区数 |
+| `dynamic.cooldown` | `30s` | 降热冷却 |
+| `dynamic.maxHotKeys` / `candidateCapacity` | `1_000` | 热点集合与预选表容量 |
 | `centralTtl`（非空） | `30m` | 中央数据存活 |
-| `centralNullTtl`（空值） | `1m`；`ZERO` 表示不缓存空值 | 同时决定本地负副本的上限 |
+| `centralNullTtl`（空值） | `30s`；`ZERO` 表示不缓存空值 | 同时决定本地负副本上限 |
 | `failOpen` | `true` | 中央不可用时降级为只读本地 |
+
+**本地空值 TTL = `centralNullTtl / N`**（`N` 在仓库里按 namespace 配，默认 `10`）：
+
+- 空值副本本来只是"防穿透的临时标记"，活得比中央还久毫无意义，所以按中央空值 TTL 的
+  一个比例缩短，让本地比中央**更早**放下这个标记，避免"中央已能再次回源、本地还在说不存在"；
+- 再与 `localTtl` 取小：`localNullTtl = min(localTtl, centralNullTtl / N)`，`N >= 1`；
+- `centralNullTtl = ZERO`（不缓存空值）⇒ 负副本两层都不落，`N` 不生效；
+- 这是仓库配置项 `localNullTtlDivisor`，**不是**枚举字段，也不给 `LocalCacheSpec` 加组件。
+
+**抖动语义变更（需注意）**：`jitter` 从"比例"（`checkInterval` 的 ±10%）改为**绝对时长**
+（`100ms`）。影响：`VersionSpec.jitter` 的类型由 `double` 变为 `Duration`，`jittered()`
+由 `base * (1 ± jitter)` 改为 `base ± random(0, jitter)`。好处是不同 `checkInterval` 下抖动幅度一致、
+可预测；代价是一次 record 组件类型变更（不兼容）。
 
 **校验**（顺序：先声明后配置，错误信息都能定位到来源）：
 
@@ -454,7 +477,9 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
 4. `CentralCacheSpec`：TTL 为正；
 5. **跨字段校验**（集中在仓库）：
    - `DYNAMIC + coordination=GLOBAL` ⇒ 必须存在 `HotKeyCoordinator`；中央实现不支持协调 ⇒ 失败并提示改 `LOCAL`；
-   - `centralNullTtl > centralTtl` ⇒ 警告（负副本比真值活得久，通常不是本意）。
+   - `centralNullTtl > centralTtl` ⇒ 警告（负副本比真值活得久，通常不是本意）；
+   - `localNullTtlDivisor < 1` ⇒ 失败；`centralNullTtl = ZERO` 时该配置被忽略；
+   - `version.jitter` 为绝对时长，必须 `0 <= jitter < checkInterval`（否则抖动会吃掉整个窗口）。
 
 ### 4.4 启动流程与 fail-fast
 
@@ -593,7 +618,8 @@ __strategy:<namespace>   HASH
 | 能配（仓库里按 namespace） | 不能配（本设计的边界） |
 |---|---|
 | 本地策略类型 `NONE/STATIC/DYNAMIC` | 命名空间本身（改名等于换缓存） |
-| `maxSize`、本地非空 `localTtl` | **本地空值 TTL**（由 `centralNullTtl` 决定） |
+| `maxSize`、本地非空 `localTtl` | **本地空值 TTL 的绝对值**（只能通过 `centralNullTtl / N` 间接配） |
+| 本地空值 TTL 除数 `N`（`localNullTtlDivisor`，默认 10） | — |
 | 版本对账 `version`（间隔/抖动/退避/批大小/分区数） | 档位（本设计不开档位） |
 | DYNAMIC 热升热降全套（`localHotThreshold`、`hotTtl`、`cooldown`、`candidateCapacity`、上报分区/批量） | `version.reconcilePartitions` 必须是 2 的幂（校验而非配置自由度） |
 | 中央 `centralTtl`（非空）、`centralNullTtl`（空值）、`failOpen` | 中央连接/序列化/key 格式（基础设施，需重新装配） |
@@ -766,7 +792,8 @@ long strategyEpoch();             // 当前生效 epoch（gauge 语义，快照�
 | `dynamic.*`（阈值、冷却、分区） | ✅ | 重建 Runtime，热点集合重置 |
 | `centralNullTtl` / `failOpen` | ✅ | 只影响后续写入/降级行为；空值 TTL 同时是本地负副本的上限 |
 | `description` | ✅ | 运维可改写得更准确（声明值仍在审计里） |
-| **本地空值 TTL** | ❌ | 本设计不提供独立旋钮，一律由 `centralNullTtl` 决定 |
+| **本地空值 TTL** | ❌ | 不提供独立旋钮：= `min(localTtl, centralNullTtl / N)` |
+| `localNullTtlDivisor`（N） | ✅ | 改它即可整体调整本地空值副本寿命 |
 | `central.ttl` / `ttlJitter` | ⚠️ 允许但需谨慎 | 只影响**后续写入**，已写入的 key 保留旧 TTL；不做 retro 修正 |
 | 中央连接 / 序列化 / key 格式 | ❌ | 属于基础设施，必须重新装配并接受数据不兼容 |
 | `namespace` 本身 | ❌ | 改名等于换缓存 |
@@ -829,12 +856,15 @@ public record StrategyUpdate(
    （现有实现依赖 `partitions` 固定）；
 7. **`clear(namespace)` 不得删 `__strategy:` 前缀**（否则清缓存会把策略一起清掉）；
 8. **统计口径**：切换不清零计数器，`strategyEpoch` 作为 gauge 暴露；
-9. **本地负副本的存活由中央空值 TTL 决定**：本地层**没有**独立的"空值 TTL"旋钮，
-   负副本的本地有效期 = `min(central.nullTtl, local.ttl)`；`central.nullTtl = ZERO` 表示不缓存空值，
-   此时负副本不落本地也不落中央；
-10. **枚举只声明策略，不声明参数**：`CacheStrategyDecl` 恒为三个成员
+9. **本地负副本的存活由中央空值 TTL 按比例派生**：本地层**没有**独立的"空值 TTL"旋钮，
+   `localNullTtl = min(localTtl, centralNullTtl / N)`，`N` 由仓库按 namespace 配（默认 10）；
+   `centralNullTtl = ZERO` 表示不缓存空值，此时负副本不落本地也不落中央；
+10. **DYNAMIC 没有独立热 TTL**：热副本的 TTL 与本地非空 TTL 共用；空值热副本走第 9 条；
+11. **枚举只声明策略，不声明参数**：`CacheStrategyDecl` 恒为三个成员
     （`namespace` / `strategy` / `description`），不开档位、不加可选参数；
-11. **`description` 非空**：空白即启动失败（运维视角的唯一说明）。
+12. **`description` 非空**：空白即启动失败（运维视角的唯一说明）；
+13. **契约是 getter 命名**：`getNamespace()` / `getStrategy()` / `getDescription()`，
+   枚举配 Lombok `@Getter` 即可零样板实现（库不依赖 Lombok）。
 
 ## 10. 七、测试计划
 
@@ -1015,7 +1045,10 @@ GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热
 | S13 | 枚举契约的成员数 | 三个必需 / 三必需 + 可选档位 / 三必需 + 参数默认方法 | **三个必需**（`namespace`/`strategy`/`description`），参数全归仓库 |
 | S14 | 是否开档位（SMALL/STANDARD/LARGE） | 开 / 不开 | **不开**：未配仓库时用唯一一套内建默认，减小心智负担 |
 | S15 | 是否提供 `reset` | 提供 / 不提供 | **不提供**：要恢复就再 `change` 一次，审计留痕更重要；临时策略一并取消 |
-| S16 | 本地空值副本的存活 | 独立旋钮 / 由中央 `nullTtl` 决定 | **由中央 `nullTtl` 决定**（= `min(central.nullTtl, local.ttl)`），`LocalCacheSpec` 不加字段 |
+| S16 | 本地空值副本的存活 | 独立旋钮 / 由中央 `nullTtl` 派生 | **由中央 `nullTtl` 按 `1/N` 派生**（`N` 仓库可配，默认 10），再与 `localTtl` 取小；`LocalCacheSpec` 不加字段 |
+| S17 | 枚举契约的命名风格 | 裸方法（`namespace()`）/ getter（`getNamespace()`） | **getter**，配合 Lombok `@Getter` 让"三个字段 + 一个注解"即满足契约 |
+| S18 | `version.jitter` 的语义 | 比例（±N%）/ 绝对时长 | **绝对时长**（默认 `100ms`），不同 `checkInterval` 下抖动幅度一致；代价是 `VersionSpec` 组件类型变更 |
+| S19 | DYNAMIC 是否保留独立热 TTL | 保留 / 取消 | **取消**：热副本与本地非空 TTL 共用，少一个旋钮也少一处不一致 |
 | S3 | `DYNAMIC → STATIC` 是否保留副本 | 保留 / 清空 | **保留**（无冲突且避免回源高峰） |
 | S4 | 声明发现方式 | 文件约定（类 ServiceLoader 但不实例化枚举）/ 自研包扫描 / 注解自注册 | **文件约定为主 + Spring 扫描为辅 + 显式传入兜底**；core 不自研包扫描 |
 | S5 | 多节点一致性是否 P1 必需 | 是 / 否（先单节点） | 单节点先上（P1–P2），P3 补中央存储 |
