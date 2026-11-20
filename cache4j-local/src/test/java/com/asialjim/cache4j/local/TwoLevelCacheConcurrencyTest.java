@@ -181,7 +181,7 @@ class TwoLevelCacheConcurrencyTest {
     @DisplayName("对账 + 回填：中央更新后并发读最终拿到新值，且不读陈旧副本")
     void concurrentReadsEventuallySeeFreshValue() throws Exception {
         LocalCacheSpec.VersionSpec version = new LocalCacheSpec.VersionSpec(
-                Duration.ofMillis(5), 0D, Duration.ofMillis(5), 1_000, 16);
+                Duration.ofMillis(5), Duration.ZERO, Duration.ofMillis(5), 1_000, 16);
         TwoLevelCache<String, String> cache = cache("STATIC", version);
 
         cache.put("42", "v1");

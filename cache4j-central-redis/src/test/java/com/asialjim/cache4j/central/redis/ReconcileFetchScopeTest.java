@@ -250,7 +250,7 @@ class ReconcileFetchScopeTest {
                                                 int partitions, int maxSize, Duration localTtl) {
         LocalCacheSpec localSpec = LocalCacheSpec.staticCache(NS, maxSize, localTtl,
                 new LocalCacheSpec.VersionSpec(
-                        Duration.ofMillis(100), 0D, Duration.ofMillis(50), batchSize, partitions));
+                        Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), batchSize, partitions));
         LocalCache<String> local = LocalCaches.create(localSpec, null, clock::nanos);
         CentralCache<String> central = new RedisCentralCache<>(
                 CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build(),

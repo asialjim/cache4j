@@ -147,7 +147,7 @@ public record LocalCacheSpec(
      * 版本对账参数。
      *
      * @param checkInterval     命名空间级对账间隔；必须为正
-     * @param jitter            对账间隔抖动比例（0–0.5）
+     * @param jitter            对账间隔的**绝对抖动**（例如 100ms 表示 ±100ms 均匀分布）
      * @param retryBackoff      对账失败退避；必须为正
      * @param reconcileBatchSize 一次 {@code HMGET} 的批量大小；必须为正
      * @param reconcilePartitions 对账分区数（2 的幂，默认 16）：一次对账只校验「当前访问 key 所属分区」
@@ -156,7 +156,7 @@ public record LocalCacheSpec(
      */
     public record VersionSpec(
             Duration checkInterval,
-            double jitter,
+            Duration jitter,
             Duration retryBackoff,
             int reconcileBatchSize,
             int reconcilePartitions
@@ -171,11 +171,11 @@ public record LocalCacheSpec(
          * 兼容构造：分区数取默认值。
          *
          * @param checkInterval      对账间隔
-         * @param jitter             抖动比例
+         * @param jitter             绝对抖动时长
          * @param retryBackoff       失败退避
          * @param reconcileBatchSize 批量大小
          */
-        public VersionSpec(Duration checkInterval, double jitter, Duration retryBackoff,
+        public VersionSpec(Duration checkInterval, Duration jitter, Duration retryBackoff,
                            int reconcileBatchSize) {
             this(checkInterval, jitter, retryBackoff, reconcileBatchSize, DEFAULT_PARTITIONS);
         }
@@ -186,8 +186,8 @@ public record LocalCacheSpec(
          * @return 默认值
          */
         public static VersionSpec defaults() {
-            return new VersionSpec(Duration.ofSeconds(1), 0.1D, Duration.ofMillis(200), 1_000,
-                    DEFAULT_PARTITIONS);
+            return new VersionSpec(Duration.ofSeconds(5), Duration.ofMillis(100),
+                    Duration.ofMillis(200), 1_000, DEFAULT_PARTITIONS);
         }
 
         /**
@@ -199,8 +199,12 @@ public record LocalCacheSpec(
             if (checkInterval == null || checkInterval.isZero() || checkInterval.isNegative()) {
                 throw invalid("version.checkInterval 必须为正：" + checkInterval);
             }
-            if (jitter < 0D || jitter > 0.5D) {
-                throw invalid("version.jitter 必须在 [0, 0.5]：" + jitter);
+            if (jitter == null || jitter.isNegative()) {
+                throw invalid("version.jitter 不能为负：" + jitter);
+            }
+            if (checkInterval != null && !jitter.minus(checkInterval).isNegative()) {
+                throw invalid("version.jitter 必须小于 checkInterval，否则抖动会吃掉整个窗口：jitter="
+                        + jitter + "，checkInterval=" + checkInterval);
             }
             if (retryBackoff == null || retryBackoff.isZero() || retryBackoff.isNegative()) {
                 throw invalid("version.retryBackoff 必须为正：" + retryBackoff);

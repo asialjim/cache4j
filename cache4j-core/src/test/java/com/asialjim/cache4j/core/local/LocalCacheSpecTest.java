@@ -27,7 +27,7 @@ class LocalCacheSpecTest {
                 () -> LocalCacheSpec.staticCache("user:detail", 100, Duration.ZERO));
         assertThrows(CacheException.class,
                 () -> LocalCacheSpec.staticCache("user:detail", 100, Duration.ofSeconds(30),
-                        new LocalCacheSpec.VersionSpec(Duration.ZERO, 0.1D, Duration.ofMillis(200), 1000))
+                        new LocalCacheSpec.VersionSpec(Duration.ZERO, Duration.ofMillis(10), Duration.ofMillis(200), 1000))
                         .validate());
     }
 

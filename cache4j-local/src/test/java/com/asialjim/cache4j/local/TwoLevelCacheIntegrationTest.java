@@ -63,7 +63,7 @@ class TwoLevelCacheIntegrationTest {
     }
 
     private LocalCacheSpec.VersionSpec fastVersion() {
-        return new LocalCacheSpec.VersionSpec(Duration.ofMillis(100), 0D, Duration.ofMillis(50), 1_000);
+        return new LocalCacheSpec.VersionSpec(Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), 1_000);
     }
 
     // ------------------------------------------------------------------ 策略矩阵

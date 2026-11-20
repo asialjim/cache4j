@@ -1,6 +1,5 @@
 package com.asialjim.cache4j.core.twolevel;
 
-import com.asialjim.cache4j.core.Cache;
 import com.asialjim.cache4j.core.CacheCounters;
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheKey;
@@ -802,14 +801,23 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         }
     }
 
+    /**
+     * 检查点抖动：在 {@code checkInterval ± jitter} 上取均匀分布。
+     *
+     * <p>{@code jitter} 是<strong>绝对时长</strong>（不是比例）：不同 {@code checkInterval}
+     * 下抖动幅度一致、可预测；校验保证 {@code jitter < checkInterval}，不会把窗口吃成负数。</p>
+     *
+     * @param version 版本参数
+     * @return 本次检查间隔（纳秒）
+     */
     private long jittered(LocalCacheSpec.VersionSpec version) {
         long base = version.checkInterval().toNanos();
-        double jitter = version.jitter();
-        if (jitter <= 0D) {
+        long jitterNanos = version.jitter() == null ? 0L : version.jitter().toNanos();
+        if (jitterNanos <= 0L) {
             return base;
         }
-        double factor = 1D + (ThreadLocalRandom.current().nextDouble() * 2D - 1D) * jitter;
-        return Math.max(1L, (long) (base * factor));
+        long delta = ThreadLocalRandom.current().nextLong(-jitterNanos, jitterNanos + 1L);
+        return Math.max(1L, base + delta);
     }
 
     // ------------------------------------------------------------------ 工具

@@ -65,7 +65,7 @@ class RedisSemanticIntegrationTest {
 
     private LocalCacheSpec staticSpec() {
         return LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1),
-                new LocalCacheSpec.VersionSpec(Duration.ofMillis(100), 0D, Duration.ofMillis(50), 1_000));
+                new LocalCacheSpec.VersionSpec(Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), 1_000));
     }
 
     @Test

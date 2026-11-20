@@ -238,7 +238,7 @@ class SpringRedisTwoLevelCacheTest {
                     .cache(CacheDefinition.of(
                             LocalCacheSpec.staticCache(NS, 1_000, Duration.ofMinutes(1),
                                     new LocalCacheSpec.VersionSpec(
-                                            Duration.ofMillis(100), 0D, Duration.ofMillis(50), 1_000)),
+                                            Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), 1_000)),
                             CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build()))
                     .cache(CacheDefinition.of(
                             LocalCacheSpec.noLocal(NS_NONE),
