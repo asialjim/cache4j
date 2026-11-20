@@ -455,12 +455,14 @@ change(req)
 > `putIfAbsent` 会成功写入旧值（§4.3.2 的窗口）。写穿时该窗口被"缓存里已有新值"堵住。
 > 所以顺序固定：**先写穿，写穿失败才 clear**。
 
-#### 4.3.4 写穿需要值编码：`PolicyCodec`（放在 `cache4j-strategy`）
+#### 4.3.4 写穿需要值编码：`PolicyCodec`（可选，在 `core.strategy`）
 
-写穿要把 `StoredPolicy` 编成缓存 value 的字节。为守住"**core 不碰字节**"的既有约束：
+写穿要把 `StoredPolicy` 写成缓存 value。走 `CentralCache<StoredPolicy>` 时**序列化由适配层负责**
+（`RedisSerializer<V>`），所以本编码器是可选的：不想引 JSON 库、或要在 native image 下省反射注册，
+就用它。
 
 ```java
-/** 策略值的编解码。实现放 cache4j-strategy，core 只依赖抽象。 */
+/** 策略值的编解码（可选工具：适配层可拿它实现 RedisSerializer&lt;StoredPolicy&gt;）。 */
 public interface PolicyCodec {
 
     byte[] encode(StoredPolicy policy);
@@ -927,7 +929,7 @@ long brokenPolicyCount();              // 数据源里解析失败的记录数
 | 模块 | 内容 |
 |---|---|
 | `cache4j-core` | 全部 SPI 与模型：`CacheStrategyRepository`（门面接口）、**`CacheStrategyDataSource`（数据源 SPI）**、`CacheStrategyAdmin`、`NamespacePolicy`、`StoredPolicy`、`StrategyChange`、`ChangeResult`、`StrategyView`、`StrategySelfCacheOptions`、`PolicyLookup`（三态） |
-| **`cache4j-strategy`（新增）** | `CachedCacheStrategyRepository`（门面实现）：用本库的 `TwoLevelCache`（namespace=`cache4j.strategy`，`STATIC`）承载策略读取、写穿与 clear 兜底；把 `CacheStrategyDataSource` 当作回源；解析三层优先级；自举校验（禁止 NONE/DYNAMIC）。另含 **`PolicyCodec`（默认手写紧凑文本实现）**。依赖 `core` + `local` + `central`，**不依赖** `spring*` |
+| `cache4j-core`（`core.strategy` 包） | 与仓库契约同包：`CachedCacheStrategyRepository`（门面实现：用本库的 `TwoLevelCache`（namespace=`cache4j.strategy`、`STATIC`）承载策略读取、写穿与 clear 兜底）、`StrategySelfCacheOptions`、`PolicyCodec` / `TextPolicyCodec`。**不新增模块**——它只用到 core 自己的接口（`LocalCache` / `CentralCache` / `TwoLevelCache`），放这里语义更直（策略仓库是核心能力，不是适配层） |
 | `cache4j-spring-redis` | **不新增**：不开箱数据源（R8），也不加 `writeIfRevision`（业务端纯读、写穿用普通 `put`/`putIfNewer`）。数据源由使用者自己按 §20.2 实现 |
 | `cache4j-spring` | 端点（可选 Actuator）、`@CacheNamespace` 扫描接入 |
 | `cache4j-starter` | 默认装配与开关配置（含"仓库自身策略被配成 NONE/DYNAMIC 即启动失败"的校验） |
@@ -1016,7 +1018,9 @@ return next
 | R6 | 数据源写入方法 | **拆两个**：`register`（初始注册，已存在返回 false、不覆盖）+ `update`（乐观锁更新，empty = 冲突） |
 | R7 | 是否强制数据源支持 CAS | 尽力而为：只有 A（真 CAS）/ B（last-write-wins）两级，用 `StrategyView.casSupported` 暴露 |
 | R8 | 是否提供开箱数据源 | **不提供**，谁接谁实现；`cache4j-spring-redis` 不为策略新增任何能力 |
-| R9 | 写穿还是 clear | **写穿为主 + clear 兜底**：写穿（无条件 put）能堵住"旧值回填"窗口；写穿失败退化为 evict（让全网回源），两者都失败才 `APPLIED_STALE`。代价是写穿需要 `PolicyCodec`（放 `cache4j-strategy`，core 不碰字节） |
+| R9 | 写穿还是 clear | **写穿为主 + clear 兜底**：写穿（无条件 put）能堵住"旧值回填"窗口；写穿失败退化为 evict（让全网回源），两者都失败才 `APPLIED_STALE`。序列化走适配层的 `RedisSerializer<StoredPolicy>`，不想引 JSON 库可用 `PolicyCodec` |
+| R10 | 仓库门面放哪个模块 | 新模块 `cache4j-strategy` / **并入 `cache4j-core`** | **并入 core**：门面只依赖 core 自己的接口（`LocalCache` / `CentralCache` / `TwoLevelCache`），pom 里加 local/central 只是测试需要；少一个模块，且"策略仓库"本身就是核心能力而非适配层 |
+| R11 | 门面的测试放哪 | core / **local** | **`cache4j-local` 的测试目录**：core 的测试不能依赖 local/central（`local` 依赖 `core`，反向 test 依赖成环）。代价是 `mvn -pl cache4j-core test` 跑不到它，整体 `mvn test` 覆盖不变 |
 
 ### 剩余问题（Q1–Q8）的结论
 

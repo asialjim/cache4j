@@ -44,7 +44,6 @@
         <module>cache4j-central-redis</module>
         <module>cache4j-spring-redis</module>
         <module>cache4j-spring</module>
-        <module>cache4j-strategy</module>
         <module>cache4j-spring-redis-test</module>
     </modules>
 

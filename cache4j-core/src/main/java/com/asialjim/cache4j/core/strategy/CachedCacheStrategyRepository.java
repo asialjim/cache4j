@@ -1,25 +1,10 @@
-package com.asialjim.cache4j.strategy;
+package com.asialjim.cache4j.core.strategy;
 
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.local.LocalCacheProvider;
 import com.asialjim.cache4j.core.log.CacheLogger;
-import com.asialjim.cache4j.core.strategy.CacheStrategyAdmin;
-import com.asialjim.cache4j.core.strategy.CacheStrategyDataSource;
-import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
-import com.asialjim.cache4j.core.strategy.CacheStrategyRepository;
-import com.asialjim.cache4j.core.strategy.ChangeResult;
-import com.asialjim.cache4j.core.strategy.DefaultCacheStrategyRepository;
-import com.asialjim.cache4j.core.strategy.NamespacePolicy;
-import com.asialjim.cache4j.core.strategy.Page;
-import com.asialjim.cache4j.core.strategy.PolicyLookup;
-import com.asialjim.cache4j.core.strategy.PolicyResolver;
-import com.asialjim.cache4j.core.strategy.StoredPolicy;
-import com.asialjim.cache4j.core.strategy.StrategyChange;
-import com.asialjim.cache4j.core.strategy.StrategyView;
 import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
 
 import java.util.List;
@@ -89,24 +74,6 @@ public final class CachedCacheStrategyRepository implements CacheStrategyReposit
                 .milliClock(milliClock)
                 .build();
         LOG.info(CacheLogger.Subject.STRATEGY_REPO, "启动", "自举缓存已装配：" + options.describe());
-    }
-
-    /**
-     * 便捷装配：用 provider 按 {@code options} 创建自举缓存的两层。
-     *
-     * @param dataSource      数据源
-     * @param options         自举缓存参数
-     * @param localProvider   本地缓存 provider
-     * @param centralProvider 中央缓存 provider
-     * @return 门面
-     */
-    public static CachedCacheStrategyRepository create(CacheStrategyDataSource dataSource,
-                                                       StrategySelfCacheOptions options,
-                                                       LocalCacheProvider localProvider,
-                                                       CentralCacheProvider centralProvider) {
-        return new CachedCacheStrategyRepository(dataSource, options,
-                localProvider.create(options.localSpec(), null),
-                centralProvider.create(options.centralSpec()));
     }
 
     // ------------------------------------------------------------------ 仓库（业务端只用这几个）

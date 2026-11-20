@@ -6,6 +6,8 @@ import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDataSource;
+import com.asialjim.cache4j.core.strategy.CachedCacheStrategyRepository;
+import com.asialjim.cache4j.core.strategy.StrategySelfCacheOptions;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
 import com.asialjim.cache4j.core.strategy.ChangeResult;
 import com.asialjim.cache4j.core.strategy.NamespacePolicy;

@@ -1,9 +1,8 @@
-package com.asialjim.cache4j.strategy;
+package com.asialjim.cache4j.core.strategy;
 
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
-import com.asialjim.cache4j.core.strategy.StoredPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

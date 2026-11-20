@@ -1,6 +1,5 @@
-package com.asialjim.cache4j.strategy;
+package com.asialjim.cache4j.core.strategy;
 
-import com.asialjim.cache4j.core.strategy.StoredPolicy;
 
 /**
  * 策略值的编解码：写穿自举缓存时要把 {@link StoredPolicy} 编成缓存 value 的字节。
