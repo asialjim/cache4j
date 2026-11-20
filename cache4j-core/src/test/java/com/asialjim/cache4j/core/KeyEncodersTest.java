@@ -105,4 +105,32 @@ class KeyEncodersTest {
     void shouldEncodeMultipleParts() {
         assertEquals("a2[s1:a,i1:1]", encoder.encodeAll("a", 1));
     }
+
+    @Test
+    @DisplayName("tagged：类型与长度放在 key 末尾，不打断层级")
+    void taggedKeepsTypeInfoAtTheEnd() {
+        KeyEncoder encoder = KeyEncoders.tagged();
+        assertEquals("keep:s4", encoder.encode("keep"));
+        assertEquals("42:i2", encoder.encode(42));
+        assertEquals("42:l2", encoder.encode(42L));
+        assertEquals("true:B4", encoder.encode(true));
+        assertEquals("null:n4", encoder.encode(null));
+    }
+
+    @Test
+    @DisplayName("tagged：多参数逐段带后缀，值仍紧跟在命名空间之后")
+    void taggedWithMultipleParts() {
+        KeyEncoder encoder = KeyEncoders.tagged();
+        assertEquals("a:s1:1:i1", encoder.encodeAll("a", 1));
+        assertEquals("jim:s3:42:i2", encoder.encodeAll("jim", 42));
+    }
+
+    @Test
+    @DisplayName("tagged：不同类型同值不撞 key（这是它相对 plain 的价值）")
+    void taggedDistinguishesTypes() {
+        KeyEncoder encoder = KeyEncoders.tagged();
+        assertNotEquals(encoder.encode("42"), encoder.encode(42));
+        assertEquals("42:s2", encoder.encode("42"));
+        assertEquals("42:i2", encoder.encode(42));
+    }
 }

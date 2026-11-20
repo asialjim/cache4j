@@ -123,6 +123,36 @@ public final class KeyEncoders {
     }
 
     /**
+     * 带类型后缀的编码器：值与 {@link #plain()} 完全一致，但在<strong>每个编码单元的末尾</strong>
+     * 追加 {@code :<type><length>}。
+     *
+     * <p>与 {@link #canonical()} 的区别是<strong>元信息的位置</strong>：canonical 把
+     * {@code <type><length>:} 放在值前面，于是 Redis key 变成
+     * {@code _c4j:{user:detail}:s2:42}——命名空间与值之间夹了一层看不懂的东西，层级结构被打断。
+     * 本编码器把它挪到末尾：</p>
+     *
+     * <pre>
+     * String "keep"   → keep:s4        （类型 s，4 字节）
+     * Integer 42      → 42:i2          （类型 i，2 字节）
+     * 多参数 (a, 1)   → a:s1:1:i1      （逐段各自带后缀）
+     * </pre>
+     *
+     * <p>Redis 里仍然能按命名空间分层查看：{@code _c4j:{user:detail}:} 之后紧跟值本身。</p>
+     *
+     * <p>取舍：保留类型区分（{@code "42"} 与 {@code 42} 不撞 key），但 key 比 {@link #plain()}
+     * 长一截；多参数场景下后缀会更多。默认不开启，按需选用：</p>
+     *
+     * <pre>
+     * Cache4jSpringOptions.builder().keyEncoder(KeyEncoders.tagged())
+     * </pre>
+     *
+     * @return 编码器
+     */
+    public static KeyEncoder tagged() {
+        return TaggedEncoder.INSTANCE;
+    }
+
+    /**
      * 原样编码器：只接受 {@link String}，其余类型报错。
      *
      * <p>用于"key 已经是字符串"的适配场景（例如 Solon 的 {@code CacheService}）。</p>
@@ -204,6 +234,105 @@ public final class KeyEncoders {
                 append(each, builder);
                 first = false;
             }
+        }
+    }
+
+    /**
+     * 带类型后缀的编码器实现：值原样、后缀在末尾。
+     */
+    private enum TaggedEncoder implements KeyEncoder {
+
+        INSTANCE;
+
+        @Override
+        public String encode(Object key) {
+            StringBuilder builder = new StringBuilder();
+            append(key, builder);
+            return builder.toString();
+        }
+
+        private static void append(Object value, StringBuilder builder) {
+            if (value instanceof Object[] array) {
+                appendAll(java.util.Arrays.asList(array), builder);
+                return;
+            }
+            if (value instanceof Iterable<?> iterable) {
+                appendAll(iterable, builder);
+                return;
+            }
+            String plain = value == null ? "null" : String.valueOf(value);
+            if (builder.length() > 0) {
+                builder.append(':');
+            }
+            builder.append(plain).append(':').append(typeTag(value)).append(utf8Length(plain));
+        }
+
+        private static void appendAll(Iterable<?> values, StringBuilder builder) {
+            for (Object each : values) {
+                append(each, builder);
+            }
+        }
+
+        /**
+         * @param value 值
+         * @return 单字符类型标签（与 {@link #canonical()} 的类型表一致）
+         */
+        private static String typeTag(Object value) {
+            if (value == null) {
+                return "n";
+            }
+            if (value instanceof CharSequence) {
+                return "s";
+            }
+            if (value instanceof Integer) {
+                return "i";
+            }
+            if (value instanceof Long) {
+                return "l";
+            }
+            if (value instanceof Short) {
+                return "h";
+            }
+            if (value instanceof Byte) {
+                return "y";
+            }
+            if (value instanceof Boolean) {
+                return "B";
+            }
+            if (value instanceof Character) {
+                return "C";
+            }
+            if (value instanceof Float) {
+                return "f";
+            }
+            if (value instanceof Double) {
+                return "d";
+            }
+            if (value instanceof java.math.BigDecimal) {
+                return "D";
+            }
+            if (value instanceof java.util.UUID) {
+                return "u";
+            }
+            if (value instanceof java.time.Instant) {
+                return "t";
+            }
+            if (value instanceof java.time.LocalDate) {
+                return "L";
+            }
+            if (value instanceof java.time.LocalDateTime) {
+                return "T";
+            }
+            if (value instanceof java.time.OffsetDateTime) {
+                return "O";
+            }
+            if (value instanceof java.time.ZonedDateTime) {
+                return "Z";
+            }
+            if (value instanceof Enum<?>) {
+                return "e";
+            }
+            return "o";
         }
     }
 

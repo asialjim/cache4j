@@ -345,7 +345,30 @@ _c4j:{user:detail}:_jim
 - 不加类型标签 ⇒ `"42"`(String) 与 `42`(Integer) 编码结果相同 —— 同一个缓存里不要混用同值的不同类型 key；
 - 不加长度前缀 ⇒ 多参数拼接在参数本身含 `:` 时可能歧义（`(a, b:c)` 与 `(a:b, c)` 都是 `a:b:c`）—— key 里避免出现 `:`。
 
-### 可选：`KeyEncoders.canonical()` —— 严格单射
+### 可选：`KeyEncoders.tagged()` —— 类型信息放末尾，不打断层级
+
+想要类型区分、又不想让元信息夹在 namespace 与值之间时用它：
+
+```java
+Cache4jSpringOptions.builder().keyEncoder(KeyEncoders.tagged())
+```
+
+```text
+String "keep"   → keep:s4        （类型 s，4 字节）
+Integer 42      → 42:i2
+多参数 (a, 1)   → a:s1:1:i1      （逐段各自带后缀）
+```
+
+Redis 里：
+
+```text
+_c4j:{user:detail}:keep:s4
+```
+
+`_c4j:{user:detail}:` 之后紧跟值本身，前缀分层照旧可读；类型与长度只是尾巴。
+代价是 key 变长、多参数时后缀更多。
+
+### 可选：`KeyEncoders.canonical()` —— 严格单射（元信息在前）
 
 需要"不同类型绝不撞 key"时显式选用：
 
