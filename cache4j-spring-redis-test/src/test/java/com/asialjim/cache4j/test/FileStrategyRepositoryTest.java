@@ -1,6 +1,7 @@
 package com.asialjim.cache4j.test;
 
 import com.asialjim.cache4j.core.central.CentralCache;
+import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.strategy.CacheNamespace;
@@ -16,6 +17,7 @@ import com.asialjim.cache4j.core.strategy.StrategySelfCacheOptions;
 import com.asialjim.cache4j.core.strategy.TextPolicyCodec;
 import com.asialjim.cache4j.central.redis.RedisCentralCache;
 import com.asialjim.cache4j.localcaffeine.CaffeineLocalCache;
+import com.asialjim.cache4j.spring.Cache4jCachingConfiguration;
 import com.asialjim.cache4j.spring.Cache4jSpringOptions;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import com.asialjim.cache4j.spring.redis.RedisKeyFormatter;
@@ -25,7 +27,15 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.springframework.cache.annotation.Cacheable;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
@@ -66,6 +76,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * @author Asial Jim
  */
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class FileStrategyRepositoryTest {
 
     /**
@@ -87,7 +98,7 @@ class FileStrategyRepositoryTest {
         dataSource = new FileStrategyDataSource(FileStrategyDataSource.DEFAULT_DIRECTORY);
         // 每次开始前清一次，保证可重复；结束不清理，留给人工观察
         cleanup();
-        repository = newRepository();
+        repository = newRepository(connectionFactory, dataSource);
     }
 
     @AfterEach
@@ -103,6 +114,7 @@ class FileStrategyRepositoryTest {
     }
 
     @Test
+    @Order(1)
     @DisplayName("启动装配即可：枚举声明被播种进本地文件（测试不手动 declare）")
     void declarationsArePersistedToFile() {
         // 唯一一个动作：启动装配。声明登记、播种、解析全部由装配层完成。
@@ -136,6 +148,7 @@ class FileStrategyRepositoryTest {
     }
 
     @Test
+    @Order(2)
     @DisplayName("装配层的缓存定义确实来自仓库（仓库有运维改过的值，装配就用它）")
     void managerTakesDefinitionsFromRepository() {
         // 第一次启动：声明被播种进 Redis
@@ -164,6 +177,7 @@ class FileStrategyRepositoryTest {
     }
 
     @Test
+    @Order(3)
     @DisplayName("门面自缓存也在 Redis 上留痕（namespace cache4j.strategy）")
     void selfCacheLeavesTracesInRedis() {
         TwoLevelCacheManager.create(options()).close();
@@ -174,9 +188,35 @@ class FileStrategyRepositoryTest {
         assertFalse(keys.isEmpty(), "门面自己的二级缓存在 Redis 上应有数据，实际 key=" + keys);
     }
 
+    @Test
+    @Order(99)
+    @DisplayName("业务侧 @Cacheable 读写后，decl:* 的数据落在 Redis 里（最后跑，样本留在库里）")
+    void businessCachesWriteToRedis() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.register(DeclCachingConfig.class);
+            context.refresh();
+
+            DeclService service = context.getBean(DeclService.class);
+            assertEquals("static-keep", service.staticValue("keep"));
+            assertEquals("none-keep", service.noneValue("keep"));
+            assertEquals("dynamic-keep", service.dynamicValue("keep"));
+
+            // 再读一次，确认命中（不会再走到方法体）
+            assertEquals("static-keep", service.staticValue("keep"));
+        }
+
+        // 三条策略都写到了中央（Redis），key 布局 cache4j:{<namespace>}:*
+        assertFalse(keys("cache4j:{decl:static}:*").isEmpty(), "STATIC 应写入中央");
+        assertFalse(keys("cache4j:{decl:none}:*").isEmpty(), "NONE 应写入中央");
+        assertFalse(keys("cache4j:{decl:dynamic}:*").isEmpty(), "DYNAMIC 冷 key 也应写入中央");
+        // 版本表同样在
+        assertFalse(keys("cache4j:{decl:static}:__rev").isEmpty(), "版本表应落 Redis");
+    }
+
     // ------------------------------------------------------------------ 装配辅助
 
-    private CachedCacheStrategyRepository newRepository() {
+    private static CachedCacheStrategyRepository newRepository(
+            RedisConnectionFactory connectionFactory, FileStrategyDataSource dataSource) {
         StrategySelfCacheOptions self = StrategySelfCacheOptions.defaults();
         LocalCache<StoredPolicy> local = new CaffeineLocalCache<>(self.localSpec(), System::nanoTime);
         CentralCache<StoredPolicy> central = new RedisCentralCache<>(self.centralSpec(),
@@ -291,6 +331,68 @@ class FileStrategyRepositoryTest {
     }
 
     // ------------------------------------------------------------------ 数据源
+
+    /**
+     * 业务侧最小装配：{@code @Cacheable} 需要 Spring 容器，所以这里单独起一个。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @Import(Cache4jCachingConfiguration.class)
+    static class DeclCachingConfig {
+
+        @Bean(destroyMethod = "destroy")
+        LettuceConnectionFactory redisConnectionFactory() {
+            return RedisTestEnvironment.connectionFactory();
+        }
+
+        @Bean
+        CentralCacheProvider centralCacheProvider(LettuceConnectionFactory factory) {
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            RedisSerializer<Object> values = (RedisSerializer) new StringRedisSerializer();
+            return new SpringRedisCentralCacheProvider(
+                    factory, new RedisKeyFormatter("cache4j", true), values);
+        }
+
+        @Bean(destroyMethod = "close")
+        CachedCacheStrategyRepository strategyRepository(LettuceConnectionFactory factory) {
+            return newRepository(factory, new FileStrategyDataSource(FileStrategyDataSource.DEFAULT_DIRECTORY));
+        }
+
+        @Bean
+        Cache4jSpringOptions cache4jOptions(CentralCacheProvider provider,
+                                            CachedCacheStrategyRepository repository) {
+            return Cache4jSpringOptions.builder()
+                    .centralProvider(provider, false)
+                    .strategyRepository(repository)
+                    .declEnums(Decl.class)
+                    .build();
+        }
+
+        @Bean
+        DeclService declService() {
+            return new DeclService();
+        }
+    }
+
+    /**
+     * 被缓存的业务方法：三条声明各一个，方法体就是"数据源"。
+     */
+    static class DeclService {
+
+        @Cacheable(cacheNames = "decl:static", key = "#id")
+        String staticValue(String id) {
+            return "static-" + id;
+        }
+
+        @Cacheable(cacheNames = "decl:none", key = "#id")
+        String noneValue(String id) {
+            return "none-" + id;
+        }
+
+        @Cacheable(cacheNames = "decl:dynamic", key = "#id")
+        String dynamicValue(String id) {
+            return "dynamic-" + id;
+        }
+    }
 
     /**
      * {@link StoredPolicy} 与文本策略之间的序列化（复用 core 的 {@link TextPolicyCodec}）。
