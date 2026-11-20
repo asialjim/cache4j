@@ -630,8 +630,9 @@ qps       = estimated / windowSeconds
 1. **仓库可选**：不实现 `CachePolicyStore` 就是单节点内存模式，声明 + 内建默认即可工作，
    启动不报错；挂上 Store 才有多节点一致与"重启不回退"；
 2. **只有一套内建默认**（§4.3），没有档位；仓库只做"整条覆盖"，不做字段级合并；
-3. **变更传播无后台线程**：访问驱动检查（默认 5s 一次 volatile 比较，到点才取一次 epoch），
-   与版本对账同构。
+3. **无后台线程、无广播**：仓库自身就是一个 `STATIC` 缓存（namespace=`cache4j.strategy`，
+   版本窗口 5s），变更由该缓存的**版本对账**传播，跨节点延迟 ≤5s；本机改完立即生效靠写穿。
+   仓库自身策略**禁止 `NONE`/`DYNAMIC`**（否则策略读取要么每次打中央、要么自指依赖自身参数）。
 
 ## 6. 三、运行时切换
 
@@ -736,13 +737,13 @@ change(update):
 
 | 主题 | 一句话 |
 |---|---|
-| 变更流程 | 幂等 → 参数校验 → 逐字段比较 → 乐观锁 → **试装配** → 持久化 → 原子提交 → 广播审计；任何一步失败生效值不变 |
+| 变更流程 | 幂等 → 参数校验 → 逐字段比较 → 乐观锁 → **试装配** → 持久化 → 原子提交 → 审计（无广播）；任何一步失败生效值不变 |
 | 幂等 | `requestId` 必填，重复提交返回首次结果 |
 | 乐观锁 | `expectedEpoch` 必填，不匹配返回 `CONFLICT` + 当前 epoch |
 | 无 reset | 要回退就再 `change` 一次，审计留痕优先 |
 | 审计 | APPLIED 用 info、REJECTED/CONFLICT 用 warn；字段含 requestId/operator/reason/diff/epoch |
 | 变更边界 | 策略、容量、TTL、version、dynamic、description 可改；本地空值 TTL 绝对值、档位、namespace、中央连接不可改 |
-| 观测 | `strategyEpoch` / `switchCount` / `switchRejected` / `changeConflict` / `checkCount` / `checkError` |
+| 观测 | `strategyEpoch` / `switchCount` / `switchRejected` / `changeConflict` / `repoReadCount` / `repoErrorCount` / `repoHitRate` |
 
 ## 7. 四、运维 API（契约见 `STRATEGY-REPOSITORY.md` 第二部分）
 
