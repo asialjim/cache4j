@@ -401,11 +401,12 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
             try {
                 policy = PolicyResolver.fromStored(null, stored);
             } catch (RuntimeException e) {
-                // 记录损坏：不自动修复，标 broken 并让其余字段取内建默认
+                // 记录损坏：不自动修复，用内建默认兜底并标 broken，让运维在列表页就能看见
                 LOG.warn(CacheLogger.Subject.STRATEGY_REPO, "查询",
                         "记录解析失败，已标记 broken：namespace=" + stored.namespace()
                                 + "，原因=" + e.getMessage());
-                return null;
+                return StrategyView.of(PolicyResolver.fromDeclaration(new FallbackDecl(stored.namespace())),
+                        null, casSupported).withBroken(true);
             }
             return StrategyView.of(policy, null, casSupported).withOrphan(true);
         }
@@ -525,5 +526,30 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
      * @param origin 来源
      */
     private record DeclEntry(CacheStrategyDecl decl, String origin) {
+    }
+
+    /**
+     * 损坏记录的兜底声明：只用 namespace，其余走内建默认（STATIC）。
+     *
+     * <p>仅仅是为了让运维视图能渲染出"这条记录坏了"的行。</p>
+     *
+     * @param namespace 命名空间
+     */
+    private record FallbackDecl(String namespace) implements CacheStrategyDecl {
+
+        @Override
+        public String getNamespace() {
+            return namespace;
+        }
+
+        @Override
+        public LocalStrategy getStrategy() {
+            return LocalStrategy.STATIC;
+        }
+
+        @Override
+        public String getDescription() {
+            return "（记录损坏，按内建默认展示）";
+        }
     }
 }

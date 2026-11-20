@@ -221,6 +221,24 @@ class DefaultCacheStrategyRepositoryTest {
         assertTrue(orphans.items().stream().allMatch(v -> v.declaredStrategy() == null));
     }
 
+    @Test
+    @DisplayName("损坏记录：列表里标 broken 并用内建默认兜底，不自动修复数据源")
+    void brokenRecordIsMarkedInListView() {
+        FakeDataSource dataSource = new FakeDataSource();
+        // strategy 为 null 且没有声明可兜底 → 解析必然失败
+        dataSource.put(new StoredPolicy("broken:cache", null, null, null, null,
+                null, null, null, null, null, null, 9L, 0L, null, null));
+        DefaultCacheStrategyRepository repository = new DefaultCacheStrategyRepository(dataSource);
+        repository.bootstrap();
+
+        Page<StrategyView> page = repository.page(null, 0, 10);
+        assertEquals(1L, page.total());
+        StrategyView view = page.items().get(0);
+        assertEquals("broken:cache", view.namespace());
+        assertTrue(view.broken(), "损坏记录必须在列表里可见，而不是静默消失");
+        assertEquals(LocalStrategy.STATIC, view.activeStrategy(), "其余字段取内建默认");
+    }
+
     // ------------------------------------------------------------------ fixtures
 
     /**
