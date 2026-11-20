@@ -170,8 +170,9 @@ public final class TwoLevelCacheManager implements AutoCloseable {
         // ② 有仓库：声明登记进仓库（已存在则跳过，绝不覆盖运维改过的值），
         //    再由仓库给出生效定义——运维的改动因此能覆盖代码里的声明默认值
         for (CacheCandidate candidate : declared) {
-            repository.declare(new DefinitionDecl(candidate.namespace(),
-                    candidate.definition().local().strategy(), candidate.origin()), candidate.origin());
+            // 用原始声明登记：description 等"声明里才有的信息"必须原样落库，
+            // 包一层 ad-hoc 声明会把 description 换成来源串
+            repository.declare(candidate.decl(), candidate.origin());
         }
         List<String> failures = repository.bootstrap();
         if (!failures.isEmpty()) {
@@ -202,32 +203,6 @@ public final class TwoLevelCacheManager implements AutoCloseable {
             candidates.addAll(translator.translate(type, "显式传入"));
         }
         return candidates;
-    }
-
-    /**
-     * 把已翻译好的定义包回声明——登记进策略仓库时用。
-     *
-     * @param namespace   命名空间
-     * @param strategy    本地策略
-     * @param description 说明（这里放来源）
-     */
-    private record DefinitionDecl(String namespace, LocalStrategy strategy, String description)
-            implements CacheStrategyDecl {
-
-        @Override
-        public String getNamespace() {
-            return namespace;
-        }
-
-        @Override
-        public LocalStrategy getStrategy() {
-            return strategy;
-        }
-
-        @Override
-        public String getDescription() {
-            return description;
-        }
     }
 
     private static void put(Map<String, CacheDefinition> merged, Map<String, String> origins,

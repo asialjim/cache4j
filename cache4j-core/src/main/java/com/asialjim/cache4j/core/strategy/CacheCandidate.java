@@ -8,9 +8,10 @@ package com.asialjim.cache4j.core.strategy;
  *
  * @param origin     来源标识
  * @param definition 装配定义
+ * @param decl       原始声明（保留 description 等无法从定义还原的信息）
  * @author Asial Jim
  */
-public record CacheCandidate(String origin, CacheDefinition definition) {
+public record CacheCandidate(String origin, CacheDefinition definition, CacheStrategyDecl decl) {
 
     /**
      * @return 缓存的 namespace

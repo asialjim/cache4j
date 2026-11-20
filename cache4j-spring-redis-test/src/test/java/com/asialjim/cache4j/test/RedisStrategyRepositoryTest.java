@@ -4,7 +4,6 @@ import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.strategy.CacheNamespace;
-import com.asialjim.cache4j.core.strategy.CacheStrategyDataSource;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
 import com.asialjim.cache4j.core.strategy.CachedCacheStrategyRepository;
 import com.asialjim.cache4j.core.strategy.NamespacePolicy;
@@ -21,6 +20,7 @@ import com.asialjim.cache4j.spring.Cache4jSpringOptions;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import com.asialjim.cache4j.spring.redis.RedisKeyFormatter;
 import com.asialjim.cache4j.spring.redis.SpringRedisCentralCacheProvider;
+import com.asialjim.cache4j.spring.redis.SpringRedisStrategyDataSource;
 import com.asialjim.cache4j.spring.redis.SpringRedisValueStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
@@ -72,11 +72,11 @@ class RedisStrategyRepositoryTest {
     /**
      * 策略记录所在的 HASH。
      */
-    private static final String POLICY_HASH = "cache4j:strategy:defs";
+    private static final String POLICY_HASH = SpringRedisStrategyDataSource.DEFAULT_KEY;
 
     private LettuceConnectionFactory connectionFactory;
 
-    private RedisStrategyDataSource dataSource;
+    private SpringRedisStrategyDataSource dataSource;
 
     private CachedCacheStrategyRepository repository;
 
@@ -88,7 +88,7 @@ class RedisStrategyRepositoryTest {
         // 每次开始前清一次，保证可重复；结束不清理，留给人工观察
         cleanup();
 
-        dataSource = new RedisStrategyDataSource(connectionFactory);
+        dataSource = new SpringRedisStrategyDataSource(connectionFactory);
         repository = newRepository();
     }
 
@@ -105,29 +105,42 @@ class RedisStrategyRepositoryTest {
     }
 
     @Test
-    @DisplayName("枚举声明被持久化到 Redis：HASH 里能看到三条策略")
+    @DisplayName("启动装配即可：枚举声明被播种进 Redis，HASH 里能看到三条策略（测试不手动 declare）")
     void declarationsArePersistedToRedis() {
-        declareAll();
-
-        Map<String, String> stored = rawHash();
+        // 唯一一个动作：启动装配。声明登记、播种、解析全部由装配层完成。
+        TwoLevelCacheManager manager = TwoLevelCacheManager.create(options());
+        try {
+            Map<String, String> stored = rawHash();
         assertEquals(3, stored.size(), "三条声明应各落一条记录");
         assertTrue(stored.containsKey("decl:static"));
         assertTrue(stored.containsKey("decl:none"));
         assertTrue(stored.containsKey("decl:dynamic"));
         // 内容是可读的 key=value 文本，直接 redis-cli 就能看懂
-        assertTrue(stored.get("decl:static").contains("namespace=decl:static"));
-        assertTrue(stored.get("decl:static").contains("strategy=STATIC"));
+            assertTrue(stored.get("decl:static").contains("namespace=decl:static"));
+            assertTrue(stored.get("decl:static").contains("strategy=STATIC"));
 
-        PolicyLookup lookup = repository.find("decl:static");
-        assertTrue(lookup instanceof PolicyLookup.Found, "声明登记后应能从仓库查到");
-        assertEquals(1L, ((PolicyLookup.Found) lookup).policy().configVersion(),
-                "首次登记的配置版本应为 1");
+            PolicyLookup lookup = repository.find("decl:static");
+            assertTrue(lookup instanceof PolicyLookup.Found, "声明登记后应能从仓库查到");
+            assertEquals(1L, ((PolicyLookup.Found) lookup).policy().configVersion(),
+                    "首次登记的配置版本应为 1");
+
+            // 运维列表页：HSCAN MATCH 流式分页（存储侧过滤），total 是满足条件的总数
+            Page<StoredPolicy> firstPage = dataSource.query("decl:", 0, 2);
+            assertEquals(2, firstPage.items().size(), "第一页取 2 条");
+            assertEquals(3L, firstPage.total(), "total 应为匹配总数，不是当前页条数");
+            Page<StoredPolicy> secondPage = dataSource.query("decl:", 1, 2);
+            assertEquals(1, secondPage.items().size(), "第二页只剩 1 条");
+            assertEquals(0, dataSource.query("no-such:", 0, 10).total(), "无匹配时 total 为 0");
+        } finally {
+            manager.close();
+        }
     }
 
     @Test
     @DisplayName("装配层的缓存定义确实来自仓库（仓库有运维改过的值，装配就用它）")
     void managerTakesDefinitionsFromRepository() {
-        declareAll();
+        // 第一次启动：声明被播种进 Redis
+        TwoLevelCacheManager.create(options()).close();
 
         // 运维改一条：把 decl:static 的本地容量改成 42
         PolicyLookup.Found found = (PolicyLookup.Found) repository.find("decl:static");
@@ -154,7 +167,7 @@ class RedisStrategyRepositoryTest {
     @Test
     @DisplayName("门面自缓存也在 Redis 上留痕（namespace cache4j.strategy）")
     void selfCacheLeavesTracesInRedis() {
-        declareAll();
+        TwoLevelCacheManager.create(options()).close();
         // 触发一次缓存写穿 + 回填
         repository.find("decl:none");
 
@@ -163,14 +176,6 @@ class RedisStrategyRepositoryTest {
     }
 
     // ------------------------------------------------------------------ 装配辅助
-
-    private void declareAll() {
-        for (Decl decl : Decl.values()) {
-            repository.declare(decl, "test");
-        }
-        List<String> namespaces = repository.bootstrap();
-        assertEquals(3, namespaces.size(), "bootstrap 返回已解析的 namespace 列表");
-    }
 
     private CachedCacheStrategyRepository newRepository() {
         StrategySelfCacheOptions self = StrategySelfCacheOptions.defaults();
@@ -284,74 +289,6 @@ class RedisStrategyRepositoryTest {
     }
 
     // ------------------------------------------------------------------ 数据源
-
-    /**
-     * Redis 版的策略数据源：HASH {@code cache4j:strategy:defs}，field = namespace，value = 文本策略。
-     *
-     * <p>这是测试实现，只够跑通链路：{@link #query} 在内存里分页（生产实现应走 HSCAN 存储侧分页），
-     * {@link #update} 的 CAS 也不是原子的（生产应走 Lua 或 WATCH/MULTI）。真实数据源见
-     * {@code STRATEGY-REPOSITORY.md}：那属于业务存储，谁接谁实现。</p>
-     */
-    static final class RedisStrategyDataSource implements CacheStrategyDataSource {
-
-        private final RedisConnectionFactory factory;
-
-        private final TextPolicyCodec codec = new TextPolicyCodec();
-
-        RedisStrategyDataSource(RedisConnectionFactory factory) {
-            this.factory = factory;
-        }
-
-        @Override
-        public Optional<StoredPolicy> load(String namespace) {
-            try (RedisConnection connection = factory.getConnection()) {
-                byte[] raw = connection.hashCommands().hGet(bytes(POLICY_HASH), bytes(namespace));
-                return raw == null ? Optional.empty() : Optional.of(codec.decode(raw));
-            }
-        }
-
-        @Override
-        public Page<StoredPolicy> query(String keyword, int page, int size) {
-            List<StoredPolicy> matched = new ArrayList<>();
-            try (RedisConnection connection = factory.getConnection()) {
-                Map<byte[], byte[]> entries = connection.hashCommands().hGetAll(bytes(POLICY_HASH));
-                for (byte[] raw : entries.values()) {
-                    StoredPolicy policy = codec.decode(raw);
-                    if (keyword == null || keyword.isBlank()
-                            || policy.namespace().contains(keyword)
-                            || (policy.description() != null && policy.description().contains(keyword))) {
-                        matched.add(policy);
-                    }
-                }
-            }
-            matched.sort(Comparator.comparing(StoredPolicy::namespace));
-            int from = Math.min(page * size, matched.size());
-            int to = Math.min(from + size, matched.size());
-            return new Page<>(matched.subList(from, to), page, size, matched.size());
-        }
-
-        @Override
-        public boolean register(StoredPolicy policy) {
-            try (RedisConnection connection = factory.getConnection()) {
-                Boolean added = connection.hashCommands()
-                        .hSetNX(bytes(POLICY_HASH), bytes(policy.namespace()), codec.encode(policy));
-                return Boolean.TRUE.equals(added);
-            }
-        }
-
-        @Override
-        public OptionalLong update(StoredPolicy policy, long expectedConfigVersion) {
-            Optional<StoredPolicy> current = load(policy.namespace());
-            if (current.isEmpty() || current.get().configVersion() != expectedConfigVersion) {
-                return OptionalLong.empty();
-            }
-            try (RedisConnection connection = factory.getConnection()) {
-                connection.hashCommands()
-                        .hSet(bytes(POLICY_HASH), bytes(policy.namespace()), codec.encode(policy));
-            }
-            return OptionalLong.of(policy.configVersion());
-        }
-    }
 
     /**
      * {@link StoredPolicy} 与文本策略之间的序列化（复用 core 的 {@link TextPolicyCodec}）。

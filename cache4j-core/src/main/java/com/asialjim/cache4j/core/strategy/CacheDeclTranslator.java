@@ -83,7 +83,7 @@ public final class CacheDeclTranslator {
             requireDescription(decl.getDescription(), origin);
 
             CacheDefinition definition = BuiltinDefaults.definitionOf(namespace, decl.getStrategy());
-            out.add(new CacheCandidate(origin, definition));
+            out.add(new CacheCandidate(origin, definition, decl));
             LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明", origin
                     + "：strategy=" + decl.getStrategy() + "，description=" + decl.getDescription());
         }
