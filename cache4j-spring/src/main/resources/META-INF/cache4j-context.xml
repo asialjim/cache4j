@@ -1,23 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  ~ 纯 Spring Framework 的装配方式：不用 Spring Boot，也不用任何自动配置机制。
-  ~ 这份就是使用者要抄的模板（docs/ADAPTERS.md 里同步了一份）。
+  ~ cache4j 的 XML 装配模板（纯 Spring Framework，不使用 Spring Boot）。
+  ~
+  ~ 用法：
+  ~   <import resource="classpath:META-INF/cache4j-context.xml"/>
+  ~
+  ~ 必须提供的外部配置（可用 -D 或 properties 文件）：
+  ~   cache4j.decl.packages   —— @CacheNamespace 声明枚举所在的基础包（逗号分隔，必填）
+  ~   cache4j.redis.host/port/password/database —— Redis 连接（有默认值）
+  ~
+  ~ 覆盖方式：Spring 默认允许后定义覆盖前定义。要换 Redis 客户端（Jedis / 自定义），
+  ~ 在你自己的 XML 里 import 之后再定义同名 bean `redisConnectionFactory` 即可。
   -->
 <beans xmlns="http://www.springframework.org/schema/beans"
        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
        xmlns:cache="http://www.springframework.org/schema/cache"
+       xmlns:context="http://www.springframework.org/schema/context"
        xsi:schemaLocation="
            http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd
-           http://www.springframework.org/schema/cache https://www.springframework.org/schema/cache/spring-cache.xsd">
+           http://www.springframework.org/schema/cache https://www.springframework.org/schema/cache/spring-cache.xsd
+           http://www.springframework.org/schema/context https://www.springframework.org/schema/context/spring-context.xsd">
 
-    <!-- ① Redis 连接：Boot 之外的写法就是自己声明连接工厂 -->
+    <!-- 占位符：让 ${cache4j.*} 能被 -D / properties 解析 -->
+    <context:property-placeholder ignore-unresolvable="true"/>
+
+    <!-- ① Redis 连接：默认 Lettuce，换客户端就覆盖这个 bean -->
     <bean id="redisConnectionFactory"
           class="org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory">
-        <property name="hostName" value="127.0.0.1"/>
-        <property name="port" value="6379"/>
+        <property name="hostName" value="${cache4j.redis.host:127.0.0.1}"/>
+        <property name="port" value="${cache4j.redis.port:6379}"/>
+        <property name="database" value="${cache4j.redis.database:0}"/>
     </bean>
 
-    <!-- ② value 序列化：业务自行决定（这里用 JDK，生产建议 JSON） -->
+    <!-- ② value 序列化：业务自行决定。生产建议 JSON（需 jackson）。 -->
     <bean id="cache4jSerializer"
           class="org.springframework.data.redis.serializer.JdkSerializationRedisSerializer"/>
 
@@ -31,11 +46,12 @@
         <constructor-arg ref="cache4jSerializer"/>
     </bean>
 
-    <!-- ④ 装配配置：缓存声明走包扫描（等价于 Java Config 的 declPackages） -->
+    <!-- ④ 装配配置：策略声明靠包扫描（cache4j.decl.packages 必填） -->
     <bean id="cache4jOptions" class="com.asialjim.cache4j.spring.Cache4jOptionsFactoryBean">
         <property name="centralProvider" ref="cache4jCentralProvider"/>
-        <property name="declPackagesAsString" value="com.asialjim.cache4j.xmlfixture"/>
-        <property name="statsEnabled" value="true"/>
+        <property name="declPackagesAsString" value="${cache4j.decl.packages:}"/>
+        <property name="statsEnabled" value="${cache4j.stats.enabled:false}"/>
+        <property name="undeclaredEnabled" value="${cache4j.undeclared.enabled:true}"/>
     </bean>
 
     <!-- ⑤ 二级缓存管理器 -->

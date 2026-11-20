@@ -64,7 +64,35 @@ cache4j-starter                  聚合/默认装配：只拉依赖 + 装配默�
 | 只要二级缓存对象 | `@Import(Cache4jSpringConfiguration.class)`，注入 `TwoLevelCacheManager` |
 | 要用 `@Cacheable` | `@Import(Cache4jCachingConfiguration.class)`（已带上前者，注册名为 `cacheManager` 的 `CacheManager` + `@EnableCaching`） |
 | 自己已有 `CacheManager` | **不要 import** 上面两个类，自行 `new SpringCacheManagerAdapter(...)` 装配（纯 Spring 没有 `@ConditionalOnMissingBean`，重复定义直接冲突） |
-| XML 装配 | 见 §3.3 的 `cache4j-context.xml` 模板；配置对象用 `Cache4jOptionsFactoryBean` 桥接 |
+| 自动扫描（含子模块） | `@Import(Cache4jAutoScanConfiguration.class)`：扫 `com.asialjim.cache4j` 包，classpath 上有 `cache4j-spring-redis` 就自动注册它的配置类（见下） |
+| XML 装配 | `<import resource="classpath:META-INF/cache4j-context.xml"/>`（**库产物**，随 jar 发布）；配置对象用 `Cache4jOptionsFactoryBean` 桥接 |
+
+#### 用组件扫描代替 `@ConditionalOnClass`
+
+纯 Spring 没有 `@ConditionalOnClass`，但也不需要：`@ComponentScan` **天然只看得见 classpath 上真实存在的类**。
+
+```java
+@Configuration
+@EnableCaching
+@Import(Cache4jAutoScanConfiguration.class)
+public class Cache4jConfig {
+
+    @Bean
+    public Cache4jSpringOptions cache4jOptions(CentralCacheProvider provider) {
+        return Cache4jSpringOptions.builder()
+                .centralProvider(provider, false)
+                .declPackages(List.of("com.acme.cache"))
+                .build();
+    }
+}
+```
+
+- 引了 `cache4j-spring-redis` → 扫到 `Cache4jRedisSpringConfiguration` → `cache4jCentralProvider` 自动就位；
+- 没引 → 扫不到 → 业务自己提供 `CentralCacheProvider`，不会莫名其妙去连 Redis；
+- 业务侧只需要给 `Cache4jSpringOptions`（唯一必须人工决定的东西：策略声明包在哪）。
+
+> `Cache4jAutoScanConfiguration` 与 `Cache4jCachingConfiguration` **选一个** import：都 import 会重复注册
+> `cacheManager`。前者一把梭，后者精确控制。
 
 - `CentralCacheProvider` 由 `cache4j-spring-redis`（或用户自定义 Bean）提供；`cache4j-spring` 只按类型注入，不依赖 Redis 模块；
 - 容器里没有 `CentralCacheProvider` 时**启动失败**并给出明确提示，不静默降级成内存缓存；
@@ -375,9 +403,21 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 
 **策略数据源不在其中**：那是业务存储（Redis/DB/配置中心），谁接谁实现 `CacheStrategyDataSource`。
 
-#### XML 模板（`spring-context.xml`）
+#### XML 模板（库产物，随 jar 发布）
 
-不使用 Boot、不使用任何自动配置机制，只靠 Spring 的 XML 容器：
+完整内容在 **`cache4j-spring/src/main/resources/META-INF/cache4j-context.xml`**，
+业务侧一行接入：
+
+```xml
+<import resource="classpath:META-INF/cache4j-context.xml"/>
+```
+
+必填外部配置：`cache4j.decl.packages`（`@CacheNamespace` 声明枚举的基础包）。可选：
+`cache4j.redis.host/port/database`、`cache4j.stats.enabled`、`cache4j.undeclared.enabled`。
+要换 Redis 客户端，import 之后重新定义同名 bean `redisConnectionFactory` 覆盖即可
+（Spring 默认允许后定义覆盖前定义）。
+
+内容如下：
 
 ```xml
 <beans xmlns="http://www.springframework.org/schema/beans"
@@ -431,7 +471,8 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 </beans>
 ```
 
-这就是 `cache4j-spring-redis-test` 里 `cache4j-context.xml` 的完整内容（`XmlAssemblyTest` 跑它）。
+`XmlAssemblyTest` 用 `ClassPathXmlApplicationContext` 加载这份**库产物**跑通了整条链
+（测试侧另有一份 `cache4j-test-context.xml`，只负责注入测试用的 `cache4j.decl.packages`）。
 
 #### Java Config 等价写法
 
