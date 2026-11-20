@@ -65,7 +65,7 @@ cache4j-starter                  聚合/默认装配：只拉依赖 + 装配默�
 | 要用 `@Cacheable` | `@Import(Cache4jCachingConfiguration.class)`（已带上前者，注册名为 `cacheManager` 的 `CacheManager` + `@EnableCaching`） |
 | 自己已有 `CacheManager` | **不要 import** 上面两个类，自行 `new SpringCacheManagerAdapter(...)` 装配（纯 Spring 没有 `@ConditionalOnMissingBean`，重复定义直接冲突） |
 | 自动扫描（含子模块） | `@Import(Cache4jAutoScanConfiguration.class)`：扫 `com.asialjim.cache4j` 包，classpath 上有 `cache4j-spring-redis` 就自动注册它的配置类（见下） |
-| XML 装配 | `<import resource="classpath:META-INF/cache4j-context.xml"/>`（**库产物**，随 jar 发布）；配置对象用 `Cache4jOptionsFactoryBean` 桥接 |
+| XML 装配 | `<import resource="classpath:META-INF/cache4j-context.xml"/>`（**库产物**，随 jar 发布）；文件里只有组件扫描，其余全走注解 |
 
 #### 用组件扫描代替 `@ConditionalOnClass`
 
@@ -405,74 +405,36 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 
 #### XML 模板（库产物，随 jar 发布）
 
-完整内容在 **`cache4j-spring/src/main/resources/META-INF/cache4j-context.xml`**，
+完整内容在 **`cache4j-spring/src/main/resources/META-INF/cache4j-context.xml`**，全部内容就是：
+
+```xml
+<context:annotation-config/>
+
+<bean id="innerAsialJimCache4jSpringConfiguration"
+      class="com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration"/>
+```
+
 业务侧一行接入：
 
 ```xml
 <import resource="classpath:META-INF/cache4j-context.xml"/>
 ```
 
-必填外部配置：`cache4j.decl.packages`（`@CacheNamespace` 声明枚举的基础包）。可选：
-`cache4j.redis.host/port/database`、`cache4j.stats.enabled`、`cache4j.undeclared.enabled`。
-要换 Redis 客户端，import 之后重新定义同名 bean `redisConnectionFactory` 覆盖即可
-（Spring 默认允许后定义覆盖前定义）。
+只有这两行是刻意的：**XML 与注解两条路的装配内容必须一致**，靠"XML 里声明一批 bean + 注解里再声明一批"迟早会腐烂。
+所以 XML 只负责把扫描配置推进容器，剩下的组件（provider / options / 管理器 / Spring Cache 桥接 /
+序列化器）全部由 `@Configuration` 提供，被 `@ComponentScan` 扫到即生效。
 
-内容如下：
+> **`<context:annotation-config/>` 不能省。** 纯 XML 容器默认不注册注解处理器，没有它那个
+> `@Configuration` 类不会被 `ConfigurationClassPostProcessor` 解析——bean 存在，但
+> `@ComponentScan` / `@Autowired` / `@Value` 全是死代码，扫不出任何东西。
 
-```xml
-<beans xmlns="http://www.springframework.org/schema/beans"
-       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-       xmlns:cache="http://www.springframework.org/schema/cache"
-       xsi:schemaLocation="
-           http://www.springframework.org/schema/beans https://www.springframework.org/schema/beans/spring-beans.xsd
-           http://www.springframework.org/schema/cache https://www.springframework.org/schema/cache/spring-cache.xsd">
+业务侧仍要自己提供的三件事：
 
-    <!-- ① Redis 连接：Boot 之外的写法就是自己声明连接工厂 -->
-    <bean id="redisConnectionFactory"
-          class="org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory">
-        <property name="hostName" value="127.0.0.1"/>
-        <property name="port" value="6379"/>
-    </bean>
-
-    <!-- ② value 序列化：业务自行决定（这里 JDK，生产建议 JSON） -->
-    <bean id="cache4jSerializer"
-          class="org.springframework.data.redis.serializer.JdkSerializationRedisSerializer"/>
-
-    <!-- ③ 中央缓存 provider：库提供，不用自己拼 RedisCentralCache + ValueStore -->
-    <bean id="cache4jCentralProvider"
-          class="com.asialjim.cache4j.spring.redis.SpringRedisCentralCacheProvider">
-        <constructor-arg ref="redisConnectionFactory"/>
-        <constructor-arg>
-            <bean class="com.asialjim.cache4j.spring.redis.RedisKeyFormatter" factory-method="defaults"/>
-        </constructor-arg>
-        <constructor-arg ref="cache4jSerializer"/>
-    </bean>
-
-    <!-- ④ 装配配置：缓存声明走包扫描 -->
-    <bean id="cache4jOptions" class="com.asialjim.cache4j.spring.Cache4jOptionsFactoryBean">
-        <property name="centralProvider" ref="cache4jCentralProvider"/>
-        <property name="declPackagesAsString" value="com.acme.cache"/>
-        <property name="statsEnabled" value="true"/>
-    </bean>
-
-    <!-- ⑤ 二级缓存管理器 -->
-    <bean id="cache4jCacheManager"
-          class="com.asialjim.cache4j.spring.TwoLevelCacheManager"
-          factory-method="create" destroy-method="close">
-        <constructor-arg ref="cache4jOptions"/>
-    </bean>
-
-    <!-- ⑥ 接上 Spring Cache 并开启 @Cacheable -->
-    <bean id="cacheManager" class="com.asialjim.cache4j.spring.SpringCacheManagerAdapter">
-        <constructor-arg ref="cache4jCacheManager"/>
-    </bean>
-    <cache:annotation-driven/>
-
-</beans>
-```
-
-`XmlAssemblyTest` 用 `ClassPathXmlApplicationContext` 加载这份**库产物**跑通了整条链
-（测试侧另有一份 `cache4j-test-context.xml`，只负责注入测试用的 `cache4j.decl.packages`）。
+| 项 | 为什么 |
+|---|---|
+| `RedisConnectionFactory` | 客户端由你选（Lettuce / Jedis），`cache4j-spring-redis` 不锁定客户端 |
+| `cache4j.decl.packages` | `@CacheNamespace` 声明枚举所在包；库无法替你决定 |
+| 值序列化器（可选） | 不提供则用库的默认（JSON，缺 jackson 时退回 JDK）；定义 `cache4jSerializer` 覆盖 |
 
 #### Java Config 等价写法
 

@@ -24,6 +24,16 @@ import org.springframework.data.redis.serializer.RedisSerializer;
 public class Cache4jRedisSpringConfiguration {
 
     /**
+     * 默认值序列化器（业务定义同名 {@code cache4jSerializer} 即可覆盖）。
+     *
+     * @return 序列化器
+     */
+    @Bean
+    public RedisSerializer<Object> cache4jSerializer() {
+        return defaultSerializer();
+    }
+
+    /**
      * @param connectionFactory Redis 连接工厂（业务提供）
      * @param serializer        值序列化器；没有则按 JSON → JDK 的顺序兜底
      * @return Redis 中央缓存 provider，Bean 名固定为 {@code cache4jCentralProvider}

@@ -27,9 +27,15 @@ import org.springframework.context.annotation.FilterType;
         basePackages = Cache4jAutoScanConfiguration.LIBRARY_PACKAGE,
         // 本库自己的测试类也在 com.asialjim.cache4j 下，且各自定义 @Bean：
         // 生产 jar 里没有测试类，排除它们只是为了让本库的测试集合保持隔离。
-        excludeFilters = @ComponentScan.Filter(
-                type = FilterType.REGEX,
-                pattern = "com\\.asialjim\\.cache4j\\..*\\$.*"))
+        excludeFilters = {
+                // 本库测试类是 com.asialjim.cache4j 下的内部类，生产 jar 里没有
+                @ComponentScan.Filter(
+                        type = FilterType.REGEX,
+                        pattern = "com\\.asialjim\\.cache4j\\..*\\$.*"),
+                // 本类通常由 XML / @Import 显式注册，别再被自己扫一遍
+                @ComponentScan.Filter(
+                        type = FilterType.ASSIGNABLE_TYPE,
+                        classes = Cache4jAutoScanConfiguration.class)})
 public class Cache4jAutoScanConfiguration {
 
     /**

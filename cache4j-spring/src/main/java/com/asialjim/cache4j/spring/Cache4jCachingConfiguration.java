@@ -22,8 +22,8 @@ import org.springframework.context.annotation.Import;
  *
  * @author Asial Jim
  */
-@Configuration(proxyBeanMethods = false)
 @EnableCaching
+@Configuration(proxyBeanMethods = false)
 @Import(Cache4jSpringConfiguration.class)
 public class Cache4jCachingConfiguration {
 
