@@ -65,6 +65,12 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     private final List<Set<CacheKey>> hotByPartition;
     private final List<Map<CacheKey, Integer>> candidateByPartition;
     private final ConcurrentHashMap<CacheKey, LongAdder> pendingDelta = new ConcurrentHashMap<>();
+
+    /**
+     * 每 key 的精确滑动窗口（16 片）。只对"值得精确统计"的 key 建状态：
+     * 由 CMS 粗筛（可能高估，宁多勿少）决定谁进来，容量上限 = {@code candidateCapacity}。
+     */
+    private final ConcurrentHashMap<CacheKey, HotWindow> windows = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<CacheKey, Long> cooldownUntilNanos = new ConcurrentHashMap<>();
 
     private final AtomicLong accessCounter = new AtomicLong();
@@ -132,40 +138,79 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     public boolean access(CacheKey key) {
         long now = nanoClock.getAsLong();
         sweepCooldownOccasionally(now);
-        int freq = sketch.incrementAndEstimate(key, now);
+        // ① CMS 粗筛：共享草图、固定内存、只会高估 —— 在候选阶段这是安全方向
+        int approx = sketch.incrementAndEstimate(key, now);
+        // ② 精判：值得统计的 key 走它自己的滑动窗口（精确），否则退回 CMS 估计
+        long count = preciseCount(key, now, approx);
 
         HotEntry hot = hotKeys.get(key);
         if (hot != null) {
-            hotKeys.put(key, hot.touch(now, freq));
+            hotKeys.put(key, hot.touch(now, saturate(count)));
             lru.offer(key);
             pendingDeltaFor(key).increment();
             return true;
         }
 
         boolean cooling = isCooling(key, now);
-        if (cooling && freq >= dynamic.hotThresholdCount()) {
+        if (cooling && count >= dynamic.hotThresholdCount()) {
             // 冷却期：频次够了也不许升热（抑制"降热→立刻又升热"的抖动）
-            LOG.read(CacheLogger.Subject.DYNAMIC_LOCAL, key, () -> "冷却期内拒绝升热，估计频次=" + freq
+            LOG.read(CacheLogger.Subject.DYNAMIC_LOCAL, key, () -> "冷却期内拒绝升热，窗口计数=" + count
                     + "，剩余冷却=" + cooldownRemainingMillis(key, now) + "ms");
         }
-        if (!cooling && freq >= dynamic.hotThresholdCount()) {
+        if (!cooling && count >= dynamic.hotThresholdCount()) {
             addDelta(key);
-            promote(key, freq, now);
+            promote(key, count, now);
             counters.increment(CacheCounters.Counter.PROMOTION);
             counters.increment(CacheCounters.Counter.LOCAL_PROMOTION);
-            LOG.read(CacheLogger.Subject.DYNAMIC_LOCAL, key, () -> "触发热升，估计频次=" + freq
-                    + "，热点集合大小=" + hotKeys.size());
+            LOG.read(CacheLogger.Subject.DYNAMIC_LOCAL, key, () -> "触发热升，窗口计数=" + count
+                    + "（阈值=" + dynamic.hotThresholdCount() + "），热点集合大小=" + hotKeys.size());
             return true;
         }
 
         long threshold = dynamic.candidateCount();
-        if (useCandidates() && freq >= threshold) {
-            upsertCandidate(partitionOf(key), key, freq);
+        if (useCandidates() && count >= threshold) {
+            upsertCandidate(partitionOf(key), key, saturate(count));
             pendingDeltaFor(key).increment();
         } else {
             removeCandidate(key);
         }
         return false;
+    }
+
+    /**
+     * 取该 key 的窗口内精确计数。
+     *
+     * <p>窗口状态只为"可能成为热点"的 key 建立：用 CMS 的估计值（只会高估）做粗筛，
+     * 达到候选阈值才建表，容量上限 {@code candidateCapacity}——这样长尾 key 只占共享草图的
+     * 固定内存，不会撑爆 per-key 表。表满后退回 CMS 估计（宁可少算，也不无界增长）。</p>
+     *
+     * <p>建表时以"粗筛阈值"作为窗口初始计数：既保留建表前已攒的访问量（否则低速热点要
+     * 再攒一整个窗口才升热），又不会把 CMS 的高估值直接灌进精确判定（否则一次高估就能误升热）。</p>
+     *
+     * @param key     key
+     * @param now     当前纳秒
+     * @param approx  CMS 估计值
+     * @return 窗口内累计次数
+     */
+    private long preciseCount(CacheKey key, long now, int approx) {
+        HotWindow window = windows.get(key);
+        if (window != null) {
+            return window.advanceAndIncrement(now);
+        }
+        if (approx < dynamic.candidateCount()) {
+            // 粗筛未过：不建状态
+            return approx;
+        }
+        if (windows.size() >= dynamic.candidateCapacity()) {
+            return approx;
+        }
+        // 建表时用粗筛阈值做种：既不会丢掉"进入精确统计之前"已经攒下的访问量，
+        // 也不会把 CMS 的高估值直接灌进来（否则一次高估就可能误升热）。
+        // 注意 approx 已包含本次访问，而紧接着还会 advanceAndIncrement 一次，所以种子里要减去本次。
+        int seed = saturate(Math.max(0L, Math.min(approx - 1L, dynamic.candidateCount() - 1L)));
+        HotWindow created = new HotWindow(dynamic.windowSlices(), dynamic.window().toNanos(), now, seed);
+        HotWindow previous = windows.putIfAbsent(key, created);
+        return (previous != null ? previous : created).advanceAndIncrement(now);
     }
 
     @Override
@@ -296,6 +341,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         candidateByPartition.forEach(Map::clear);
         pendingDelta.clear();
         cooldownUntilNanos.clear();
+        windows.clear();
         lru.clear();
         delegate.clear();
     }
@@ -559,6 +605,8 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
                 return;
             }
         }
+        // 窗口状态清理：整窗无访问（累计归零）的 key 移出表，避免"曾经有希望"的 key 长期占槽
+        windows.entrySet().removeIf(entry -> entry.getValue().total(now) == 0L);
     }
 
     // ------------------------------------------------------------------ 分区与时钟
@@ -602,12 +650,26 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     ) {
 
         static HotEntry promoted(long now, long estimate) {
-            return new HotEntry(now, now, 0L, HotKeyStatus.UNKNOWN, (int) Math.min(Integer.MAX_VALUE, estimate));
+            return new HotEntry(now, now, 0L, HotKeyStatus.UNKNOWN,
+                    DynamicLocalCache.saturate(estimate));
         }
 
         HotEntry touch(long now, int estimate) {
             return new HotEntry(promotedAtNanos, now, lastSyncNanos, lastCentralStatus, estimate);
         }
+    }
+
+    /**
+     * long → int 的饱和转换（窗口计数理论上可能超过 int，实际不会）。
+     *
+     * @param value 原始值
+     * @return 饱和后的 int
+     */
+    private static int saturate(long value) {
+        if (value > Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return value < 0L ? 0 : (int) value;
     }
 
     /**

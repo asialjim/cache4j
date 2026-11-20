@@ -152,7 +152,8 @@ class DynamicLocalCacheTest {
     @Test
     @DisplayName("GLOBAL 模式下，未升热但达到预选阈值的 key 进入候选桶")
     void candidateBucket() {
-        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 1_000L, 10);
+        // 候选阈值 = min(ceil(10 QPS / 1), 199) = 10 QPS → 10s 窗口内 100 次；升热阈值 200 QPS → 2000 次
+        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 10L, 1);
         LocalCacheSpec.DynamicSpec dynamic = new LocalCacheSpec.DynamicSpec(
                 200, 50, Duration.ofSeconds(10), 16, 1_000, Duration.ofSeconds(1),
                 Duration.ofSeconds(30), LocalCacheSpec.Coordination.GLOBAL, global,
@@ -160,9 +161,9 @@ class DynamicLocalCacheTest {
         LocalCache<String> cache = dynamic(dynamic, stub());
 
         // 候选阈值 = ceil(globalHotQps / clientEstimate)，被 hotThresholdQps-1 夹住
-        // 预选阈值 = min(ceil(globalHotQps/10), 200-1) = 100 QPS → 10s 窗口内 1000 次；
-        // 这里远低于升热阈值（200 QPS → 2000 次）
-        for (int i = 0; i < 1_200; i++) {
+        // 前 100 次由 CMS 粗筛（达到候选阈值）后才建立精确窗口；窗口从建表时刻开始计数，
+        // 因此还需要再攒 100 次才进候选桶——远低于升热阈值（2000 次）
+        for (int i = 0; i < 300; i++) {
             cache.access(key("warm"));
         }
         assertEquals(0L, cache.stats().hotKeyCount(), "未达本地阈值不应升热");
