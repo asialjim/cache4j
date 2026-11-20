@@ -93,16 +93,8 @@ public record StrategyView(
      * @return {@code min(localTtl, centralNullTtl / N)}
      */
     public static Duration deriveLocalNullTtl(NamespacePolicy policy) {
-        Duration centralNull = policy.centralNullTtl();
-        if (centralNull == null || centralNull.isZero()) {
-            return Duration.ZERO;
-        }
-        Duration derived = centralNull.dividedBy(Math.max(1, policy.localNullTtlDivisor()));
-        Duration localTtl = policy.localTtl();
-        if (localTtl == null) {
-            return derived;
-        }
-        return derived.compareTo(localTtl) < 0 ? derived : localTtl;
+        return LocalCacheSpec.deriveNullTtl(
+                policy.localTtl(), policy.centralNullTtl(), policy.localNullTtlDivisor());
     }
 
     /**

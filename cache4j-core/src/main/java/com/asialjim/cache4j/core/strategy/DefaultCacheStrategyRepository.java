@@ -15,6 +15,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 默认仓库实现：声明登记 + 三层解析（数据源 → 声明 → 内建默认）。
@@ -34,12 +35,34 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
 
     private final Map<String, DeclEntry> declarations = new LinkedHashMap<>();
 
-    private volatile Map<String, NamespacePolicy> snapshot = Map.of();
+    /**
+     * 生效配置快照：变更用 CAS 替换，读路径无锁。
+     */
+    private final AtomicReference<Map<String, NamespacePolicy>> snapshot =
+            new AtomicReference<>(Map.of());
+
+    /**
+     * 按 namespace 的变更锁：同一 namespace 串行、不同 namespace 并行。
+     *
+     * <p>不能用一个类级锁——变更里含数据源 I/O，一个慢变更会阻塞所有 namespace 的变更。</p>
+     */
+    private final ConcurrentHashMap<String, Object> changeLocks = new ConcurrentHashMap<>();
 
     /**
      * 幂等表：{@code requestId → 首次结果}。作用域仅本进程（管理服务多实例时由乐观锁兜底冲突）。
      */
-    private final Map<String, ChangeResult> idempotency = new ConcurrentHashMap<>();
+    private final Map<String, IdempotentEntry> idempotency = new ConcurrentHashMap<>();
+
+    /**
+     * 幂等结果保留时长（超过即清理）。
+     */
+    private static final long IDEMPOTENCY_TTL_NANOS = Duration.ofMinutes(10).toNanos();
+
+    /**
+     * 幂等清理的触发计数（每 64 次变更扫一次）。
+     */
+    private final java.util.concurrent.atomic.AtomicLong idempotencySweepCounter =
+            new java.util.concurrent.atomic.AtomicLong();
 
     /**
      * @param dataSource 策略数据源；{@code null} 表示不启用仓库（只用声明 + 内建默认）
@@ -72,7 +95,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
             resolved.put(namespace, policy);
             logResolved(policy);
         }
-        this.snapshot = Map.copyOf(resolved);
+        this.snapshot.set(Map.copyOf(resolved));
         LOG.debug(CacheLogger.Subject.ASSEMBLY, "初始化",
                 "解析完成，共 " + resolved.size() + " 个 namespace，数据源="
                         + (dataSource == null ? "未启用" : dataSource.getClass().getSimpleName()));
@@ -81,13 +104,13 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
 
     @Override
     public PolicyLookup find(String namespace) {
-        NamespacePolicy policy = snapshot.get(namespace);
+        NamespacePolicy policy = snapshot.get().get(namespace);
         return policy == null ? new PolicyLookup.Absent() : new PolicyLookup.Found(policy);
     }
 
     @Override
     public List<NamespacePolicy> all() {
-        return new ArrayList<>(snapshot.values());
+        return new ArrayList<>(snapshot.get().values());
     }
 
     // ------------------------------------------------------------------ 管理面
@@ -119,27 +142,59 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
 
     @Override
     public Optional<StrategyView> view(String namespace) {
-        NamespacePolicy policy = snapshot.get(namespace);
+        NamespacePolicy policy = snapshot.get().get(namespace);
         return policy == null ? Optional.empty() : Optional.of(viewOf(policy));
     }
 
     @Override
-    public synchronized ChangeResult change(StrategyChange change) {
+    public ChangeResult change(StrategyChange change) {
         String invalid = validateChangeRequest(change);
         if (invalid != null) {
             return new ChangeResult(ChangeResult.Outcome.REJECTED, change.namespace(), -1L,
                     null, invalid, change.requestId());
         }
-        ChangeResult previous = idempotency.get(change.requestId());
+        sweepIdempotencyOccasionally();
+        IdempotentEntry previous = idempotency.get(change.requestId());
         if (previous != null) {
             LOG.debug(CacheLogger.Subject.STRATEGY_REPO, "变更",
                     "requestId 重复，返回首次结果：requestId=" + change.requestId()
-                            + "，outcome=" + previous.outcome());
-            return previous;
+                            + "，outcome=" + previous.result().outcome());
+            return previous.result();
         }
-        ChangeResult result = doChange(change);
-        idempotency.put(change.requestId(), result);
+        // 同一 namespace 串行、不同 namespace 并行：变更里含数据源 I/O，不能用类级锁
+        String namespace = change.namespace();
+        Object lock = changeLocks.computeIfAbsent(namespace, ignored -> new Object());
+        ChangeResult result;
+        synchronized (lock) {
+            // 锁内再查一次幂等：两个并发请求带同一 requestId 时只有一个真正执行
+            IdempotentEntry raced = idempotency.get(change.requestId());
+            if (raced != null) {
+                return raced.result();
+            }
+            result = doChange(change);
+            idempotency.put(change.requestId(), new IdempotentEntry(result, System.nanoTime()));
+        }
         return result;
+    }
+
+    /**
+     * 幂等表清理：超过 TTL 的条目移除（按变更次数触发，避免每次变更都全表扫描）。
+     */
+    private void sweepIdempotencyOccasionally() {
+        if ((idempotencySweepCounter.incrementAndGet() & 0x3FL) != 0L) {
+            return;
+        }
+        long deadline = System.nanoTime() - IDEMPOTENCY_TTL_NANOS;
+        idempotency.entrySet().removeIf(entry -> entry.getValue().atNanos() < deadline);
+    }
+
+    /**
+     * 幂等结果条目（带写入时刻，供过期清理）。
+     *
+     * @param result  首次结果
+     * @param atNanos 写入时刻
+     */
+    private record IdempotentEntry(ChangeResult result, long atNanos) {
     }
 
     /**
@@ -151,7 +206,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
     private ChangeResult doChange(StrategyChange change) {
         NamespacePolicy target = change.policy();
         String namespace = target.namespace();
-        NamespacePolicy current = snapshot.get(namespace);
+        NamespacePolicy current = snapshot.get().get(namespace);
         DeclEntry decl = declarations.get(namespace);
 
         // ① namespace 必须已存在（新增缓存请先声明再部署，而不是在线凭空造）
@@ -217,9 +272,15 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
                 target.centralTtl(), target.centralNullTtl(), target.failOpen(),
                 newVersion, change.requestedAtMillis(), change.operator(), change.reason(),
                 NamespacePolicy.Source.REPOSITORY);
-        Map<String, NamespacePolicy> next = new LinkedHashMap<>(snapshot);
-        next.put(namespace, committed);
-        this.snapshot = Map.copyOf(next);
+        // CAS 替换快照：不持类级锁也能保证"读到的永远是完整的一份"
+        while (true) {
+            Map<String, NamespacePolicy> currentSnapshot = snapshot.get();
+            Map<String, NamespacePolicy> next = new LinkedHashMap<>(currentSnapshot);
+            next.put(namespace, committed);
+            if (snapshot.compareAndSet(currentSnapshot, Map.copyOf(next))) {
+                break;
+            }
+        }
 
         // ⑦ 审计（APPLIED 用 info）
         LOG.info(CacheLogger.Subject.STRATEGY_REPO, "变更", "APPLIED，namespace=" + namespace
@@ -284,7 +345,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
                 "REJECTED，namespace=" + change.namespace() + "，操作人=" + change.operator()
                         + "，原因=" + message + "，requestId=" + change.requestId());
         return new ChangeResult(ChangeResult.Outcome.REJECTED, change.namespace(), -1L,
-                snapshot.get(change.namespace()), message, change.requestId());
+                snapshot.get().get(change.namespace()), message, change.requestId());
     }
 
     /**
@@ -317,8 +378,9 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
     }
 
     private List<StrategyView> views() {
-        List<StrategyView> views = new ArrayList<>(snapshot.size());
-        snapshot.values().forEach(policy -> views.add(viewOf(policy)));
+        Map<String, NamespacePolicy> current = snapshot.get();
+        List<StrategyView> views = new ArrayList<>(current.size());
+        current.values().forEach(policy -> views.add(viewOf(policy)));
         return views;
     }
 

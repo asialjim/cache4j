@@ -134,6 +134,28 @@ class LocalCacheSpecTest {
     }
 
     @Test
+    @DisplayName("本地空值 TTL 派生：min(localTtl, centralNullTtl / N)")
+    void deriveNullTtl() {
+        // 中央 30s / 10 = 3s，本地 5 分钟不构成约束
+        assertEquals(Duration.ofSeconds(3),
+                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), Duration.ofSeconds(30), 10));
+        // 本地 500ms 更小 → 取本地
+        assertEquals(Duration.ofMillis(500),
+                LocalCacheSpec.deriveNullTtl(Duration.ofMillis(500), Duration.ofSeconds(30), 10));
+        // N=1 → 与中央一致
+        assertEquals(Duration.ofSeconds(30),
+                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), Duration.ofSeconds(30), 1));
+        // 不缓存空值（ZERO / null）→ ZERO
+        assertEquals(Duration.ZERO,
+                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), Duration.ZERO, 10));
+        assertEquals(Duration.ZERO,
+                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), null, 10));
+        // 除子非法时按 1 处理（防御，配置层已校验）
+        assertEquals(Duration.ofSeconds(30),
+                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), Duration.ofSeconds(30), 0));
+    }
+
+    @Test
     @DisplayName("sketchWidth() 由位数换算成格数")
     void sketchWidthFromBits() {
         LocalCacheSpec.DynamicSpec defaults = LocalCacheSpec.DynamicSpec.defaults();

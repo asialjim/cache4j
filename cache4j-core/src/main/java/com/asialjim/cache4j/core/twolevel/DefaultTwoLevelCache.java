@@ -507,16 +507,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
      * @return 生效 TTL
      */
     private Duration localNullTtl() {
-        Duration centralNull = centralSpec.nullTtl();
-        Duration localTtl = localSpec.ttl();
-        if (centralNull == null || centralNull.isZero()) {
-            return Duration.ZERO;
-        }
-        Duration derived = centralNull.dividedBy(localNullTtlDivisor);
-        if (localTtl == null) {
-            return derived;
-        }
-        return derived.compareTo(localTtl) < 0 ? derived : localTtl;
+        return LocalCacheSpec.deriveNullTtl(localSpec.ttl(), centralSpec.nullTtl(), localNullTtlDivisor);
     }
 
     private void countOutcome(ReadResult<V> result) {

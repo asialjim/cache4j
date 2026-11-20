@@ -57,6 +57,31 @@ public record LocalCacheSpec(
     // ------------------------------------------------------------------ 工厂
 
     /**
+     * 派生本地空值副本的存活时长：{@code min(localTtl, centralNullTtl / divisor)}。
+     *
+     * <p>空值副本只是"防穿透的临时标记"，比中央活得久毫无意义；让本地比中央<strong>更早</strong>
+     * 放下标记，避免"中央已能重新回源、本地还在回答不存在"。</p>
+     *
+     * <p>收敛成一处实现：编排层（{@code DefaultTwoLevelCache}）与运维视图
+     * （{@code StrategyView}）都要这个值，各写一份必然漂移。</p>
+     *
+     * @param localTtl       本地非空副本存活（可空）
+     * @param centralNullTtl 中央空值存活；{@code null} 或 {@code ZERO} 表示不缓存空值
+     * @param divisor        除子 N（≥ 1）
+     * @return 本地空值副本存活；不缓存空值时返回 {@link Duration#ZERO}
+     */
+    public static Duration deriveNullTtl(Duration localTtl, Duration centralNullTtl, int divisor) {
+        if (centralNullTtl == null || centralNullTtl.isZero()) {
+            return Duration.ZERO;
+        }
+        Duration derived = centralNullTtl.dividedBy(Math.max(1, divisor));
+        if (localTtl == null) {
+            return derived;
+        }
+        return derived.compareTo(localTtl) < 0 ? derived : localTtl;
+    }
+
+    /**
      * 构造 {@code NONE} 策略配置。
      *
      * @param namespace 缓存名
