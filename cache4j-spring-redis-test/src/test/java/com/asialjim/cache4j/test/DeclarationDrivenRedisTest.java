@@ -20,7 +20,11 @@ import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.FilterType;
 import org.springframework.context.annotation.Import;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
+import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 
 import java.nio.charset.StandardCharsets;
@@ -29,6 +33,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -136,12 +141,22 @@ class DeclarationDrivenRedisTest {
     }
 
     @Test
-    @DisplayName("STATIC：本地有副本，存入redis测试用redis的默认序列化器")
-    void staticDeclarationObject(){
+    @Order(6)
+    @DisplayName("Map 值以干净 JSON 落库：沿用 RedisTemplate 的 valueSerializer，没有 @class")
+    void mapValueIsCleanJson() {
         DeclService service = context.getBean(DeclService.class);
-        Map<String, Object> a = service.mapOf("我擦");
+        Map<String, Object> value = service.mapOf("我擦");
+        System.out.println("[DeclarationDrivenRedisTest] 业务返回值 = " + value);
 
-        System.out.println(a);
+        String raw = rawValue("decl:map", "我擦");
+        System.out.println("[DeclarationDrivenRedisTest] Redis 中的原始值 = " + raw);
+        assertTrue(raw != null && raw.startsWith("{"), "应当是 JSON 对象，实际=" + raw);
+        assertTrue(raw.contains("\"我擦\""), "应当包含业务的 key 值，实际=" + raw);
+        assertFalse(raw.contains("@class"),
+                "干净 JSON 不该带类型标记（那是 GenericJackson2JsonRedisSerializer 无参构造器的行为），实际=" + raw);
+
+        // 再读一次：JSON 能原样反序列化回来（Map → LinkedHashMap）
+        assertEquals(value, service.mapOf("我擦"));
     }
 
     @Test
@@ -203,6 +218,14 @@ class DeclarationDrivenRedisTest {
         TwoLevelCacheManager manager = context.getBean(TwoLevelCacheManager.class);
         return manager.cache(namespace).orElseThrow().local().keys().stream()
                 .anyMatch(key -> namespace.equals(key.namespace()));
+    }
+
+    private String rawValue(String namespace, String encoded) {
+        try (RedisConnection connection = connectionFactory.getConnection()) {
+            byte[] value = connection.stringCommands().get(
+                    ("_c4j:{" + namespace + "}:" + encoded).getBytes(StandardCharsets.UTF_8));
+            return value == null ? null : new String(value, StandardCharsets.UTF_8);
+        }
     }
 
     private boolean redisHasKey(String namespace) {
@@ -310,6 +333,28 @@ class DeclarationDrivenRedisTest {
         @Bean(destroyMethod = "destroy")
         LettuceConnectionFactory redisConnectionFactory() {
             return RedisTestEnvironment.connectionFactory();
+        }
+
+        /**
+         * 业务常见的 {@code RedisTemplate} 配置：cache4j 会沿用它的 valueSerializer，
+         * 于是缓存值的格式与业务自己的 Redis 数据一致。
+         *
+         * <p>这里刻意用<strong>裸 JSON</strong>（ObjectMapper 不开 default typing）：
+         * 写进 Redis 的就是 {@code {"key":"我擦","desc":"Map","count":1}}，
+         * 没有 {@code @class} 之类的类型标记。反序列化回来是 {@code LinkedHashMap}，
+         * 交给 {@code Map<String,Object>} 的返回值足够用。</p>
+         *
+         * @param factory 连接工厂
+         * @return template
+         */
+        @Bean
+        RedisTemplate<String, Object> redisTemplate(LettuceConnectionFactory factory) {
+            RedisTemplate<String, Object> template = new RedisTemplate<>();
+            template.setConnectionFactory(factory);
+            template.setKeySerializer(new StringRedisSerializer());
+            template.setValueSerializer(
+                    new GenericJackson2JsonRedisSerializer(new ObjectMapper()));
+            return template;
         }
 
         /**
