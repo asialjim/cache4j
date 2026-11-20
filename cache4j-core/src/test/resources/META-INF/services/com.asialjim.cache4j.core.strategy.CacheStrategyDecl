@@ -1,0 +1,6 @@
+# 测试用声明：一行一个全限定类名，支持 # 注释与空行
+
+com.asialjim.cache4j.core.strategy.LoaderFixtureDecls
+
+# 重复行应被忽略
+com.asialjim.cache4j.core.strategy.LoaderFixtureDecls
