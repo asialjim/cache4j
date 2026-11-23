@@ -12,7 +12,7 @@
 
     <artifactId>cache4j-central-redis</artifactId>
     <packaging>jar</packaging>
-    <name>cache4j-central-redis</name>
+    <name>AsialJim::Cache4J::Central::Redis</name>
     <description>Redis 语义层 + 泛型下行 SPI：RedisValueStore&lt;V&gt; / RedisCentralCache&lt;V&gt;。不碰字节，key 布局 / envelope / Lua / 序列化归适配层</description>
 
     <dependencies>

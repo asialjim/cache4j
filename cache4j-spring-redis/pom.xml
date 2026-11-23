@@ -12,7 +12,7 @@
 
     <artifactId>cache4j-spring-redis</artifactId>
     <packaging>jar</packaging>
-    <name>cache4j-spring-redis</name>
+    <name>AsialJim::Cache4J::Spring::Redis</name>
     <description>接入 Spring Data Redis：用 RedisConnectionFactory 实现 RedisValueStore&lt;V&gt;；key 布局 / envelope / Lua / serializer 都在本模块</description>
 
     <properties>

@@ -12,7 +12,7 @@
 
     <artifactId>cache4j-local</artifactId>
     <packaging>jar</packaging>
-    <name>cache4j-local</name>
+    <name>AsialJim::Cache4J::Local</name>
     <description>本地缓存实现：NONE / STATIC / DYNAMIC 三种策略 + 零依赖 HashMap 存储</description>
 
     <dependencies>

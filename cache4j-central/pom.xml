@@ -12,7 +12,7 @@
 
     <artifactId>cache4j-central</artifactId>
     <packaging>jar</packaging>
-    <name>cache4j-central</name>
+    <name>AsialJim::Cache4J::Central</name>
     <description>中央缓存 SPI + 内存参考实现（仅供测试与单机），不认识 Redis 与任何客户端</description>
 
     <dependencies>

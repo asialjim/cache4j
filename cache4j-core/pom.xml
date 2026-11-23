@@ -12,7 +12,7 @@
 
     <artifactId>cache4j-core</artifactId>
     <packaging>jar</packaging>
-    <name>cache4j-core</name>
+    <name>AsialJim::Cache4J::Core</name>
     <description>内核：通用契约 + LocalCache / CentralCache SPI + TwoLevelCache 接口与默认编排实现</description>
 
     <dependencies>

@@ -12,7 +12,7 @@
 
     <artifactId>cache4j-spring-redis-test</artifactId>
     <packaging>jar</packaging>
-    <name>cache4j-spring-redis-test</name>
+    <name>AsialJim::Cache4J::Spring::Redis::Test</name>
     <description>集成测试模块：在真实 Redis 环境下验证 Spring + 二级缓存的完整链路（只含测试，不产出可依赖的 API）</description>
 
     <properties>

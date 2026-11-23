@@ -12,7 +12,7 @@
 
     <artifactId>cache4j-local-caffeine</artifactId>
     <packaging>jar</packaging>
-    <name>cache4j-local-caffeine</name>
+    <name>AsialJim::Cache4J::Local::Caffeine</name>
     <description>基于 Caffeine 的本地存储实现（只替换存储层，策略与版本语义不变）</description>
 
     <properties>
