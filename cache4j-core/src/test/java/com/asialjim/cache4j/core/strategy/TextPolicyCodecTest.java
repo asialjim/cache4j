@@ -48,7 +48,7 @@ class TextPolicyCodecTest {
 
         assertEquals(policy, decoded);
         assertNull(decoded.description());
-        assertNull(decoded.maxSize());
+        assertNull(decoded.property().getLocalMaxSize(), "未设置的字段往返后仍是 null");
         assertNull(decoded.dynamic());
     }
 
@@ -72,7 +72,7 @@ class TextPolicyCodecTest {
     void rejectsUnknownSchema() {
         byte[] raw = "schema=99\nnamespace=x:y\n".getBytes(StandardCharsets.UTF_8);
         CacheException e = assertThrows(CacheException.class, () -> codec.decode(raw));
-        assertTrue(e.getMessage().contains("不支持的策略编码版本"), e.getMessage());
+        assertTrue(e.getMessage().contains("不支持的策略记录 schema=99"), e.getMessage());
     }
 
     @Test

@@ -131,7 +131,7 @@ class FileStrategyRepositoryTest {
             assertTrue(content.contains("namespace=decl:none"));
             assertTrue(content.contains("namespace=decl:dynamic"));
             // 直接 cat 就能看懂：策略语义 + 原始 description 都在
-            assertTrue(content.contains("strategy=STATIC"));
+            assertTrue(content.contains("localStrategy=STATIC"));
             assertTrue(content.contains("description=静态本地缓存（仓库落库测试）"));
             assertTrue(content.contains("reason=代码声明播种（bootstrap）"));
 

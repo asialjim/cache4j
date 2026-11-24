@@ -55,19 +55,16 @@ public final class PolicyResolver {
         String description = stored.description() != null
                 ? stored.description()
                 : (decl == null ? strategy.name() : decl.getDescription());
-        long maxSize = stored.maxSize() == null ? BuiltinDefaults.MAX_SIZE : stored.maxSize();
-        Duration localTtl = stored.localTtl() == null ? BuiltinDefaults.LOCAL_TTL : stored.localTtl();
-        int divisor = stored.localNullTtlDivisor() == null
-                ? BuiltinDefaults.LOCAL_NULL_TTL_DIVISOR : stored.localNullTtlDivisor();
-        LocalCacheSpec.VersionSpec version = stored.version() == null
-                ? LocalCacheSpec.VersionSpec.defaults() : stored.version();
+        long maxSize = stored.maxSize();
+        Duration localTtl = stored.localTtl();
+        int divisor = stored.localNullTtlDivisor();
+        LocalCacheSpec.VersionSpec version = stored.version();
         LocalCacheSpec.DynamicSpec dynamic = stored.dynamic() != null
                 ? stored.dynamic()
                 : (strategy == LocalStrategy.DYNAMIC ? LocalCacheSpec.DynamicSpec.defaults() : null);
-        Duration centralTtl = stored.centralTtl() == null ? BuiltinDefaults.CENTRAL_TTL : stored.centralTtl();
-        Duration centralNullTtl = stored.centralNullTtl() == null
-                ? BuiltinDefaults.CENTRAL_NULL_TTL : stored.centralNullTtl();
-        boolean failOpen = stored.failOpen() == null || stored.failOpen();
+        Duration centralTtl = stored.centralTtl();
+        Duration centralNullTtl = stored.centralNullTtl();
+        boolean failOpen = stored.failOpen();
         return new NamespacePolicy(
                 stored.namespace(), description, strategy,
                 decl == null ? null : decl.getStrategy(),

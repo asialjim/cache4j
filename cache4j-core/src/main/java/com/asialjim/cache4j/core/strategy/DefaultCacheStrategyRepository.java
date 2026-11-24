@@ -378,11 +378,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
     }
 
     private static StoredPolicy toStored(NamespacePolicy policy, StrategyChange change) {
-        return new StoredPolicy(
-                policy.namespace(), policy.description(), policy.strategy(),
-                policy.maxSize(), policy.localTtl(), policy.localNullTtlDivisor(),
-                policy.version(), policy.dynamic(),
-                policy.centralTtl(), policy.centralNullTtl(), policy.failOpen(),
+        return new StoredPolicy(CacheStrategyProperty.of(policy),
                 policy.configVersion(), change.requestedAtMillis(), change.operator(), change.reason());
     }
 
@@ -514,10 +510,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
             return;
         }
         StoredPolicy stored = new StoredPolicy(
-                policy.namespace(), policy.description(), policy.strategy(),
-                policy.maxSize(), policy.localTtl(), policy.localNullTtlDivisor(),
-                policy.version(), policy.dynamic(),
-                policy.centralTtl(), policy.centralNullTtl(), policy.failOpen(),
+                CacheStrategyProperty.of(policy),
                 // 首次登记配置版本至少为 1，便于运营面用 0 表示"从未落库"
                 Math.max(1L, policy.configVersion()), System.currentTimeMillis(),
                 "system", "代码声明播种（bootstrap）");

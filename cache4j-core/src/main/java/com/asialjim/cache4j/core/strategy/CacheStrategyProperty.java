@@ -5,6 +5,7 @@ import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -243,30 +244,117 @@ public class CacheStrategyProperty {
     // ------------------------------------------------------------------ 转换
 
     /**
-     * 还原为本地规格；{@code null} 字段用内建默认值补齐。
+     * 从解析后的生效值还原配置（持久化、写穿时用）。
      *
-     * @return 本地规格
+     * <p>时间统一按毫秒表示，保证往返精确。</p>
+     *
+     * @param policy 生效值
+     * @return 配置载体
      */
-    public LocalCacheSpec toLocalSpec() {
-        LocalStrategy strategy = LocalStrategy.valueOf(
-                localStrategy == null ? LocalStrategy.STATIC.name() : localStrategy);
-        if (strategy == LocalStrategy.NONE) {
-            return LocalCacheSpec.noLocal(namespace);
+    public static CacheStrategyProperty of(NamespacePolicy policy) {
+        CacheStrategyProperty property = new CacheStrategyProperty();
+        property.setNamespace(policy.namespace());
+        property.setDescription(policy.description());
+        property.setLocalStrategy(policy.strategy() == null ? null : policy.strategy().name());
+        property.setLocalTimeUnit("MILLISECONDS");
+        property.setCentralTimeUnit("MILLISECONDS");
+        property.setLocalMaxSize(policy.maxSize());
+        property.setLocalTtl(policy.localTtl() == null ? null : policy.localTtl().toMillis());
+        property.setLocalNullTtlDivisor(policy.localNullTtlDivisor());
+
+        LocalCacheSpec.VersionSpec version = policy.version();
+        if (version != null) {
+            property.setVersionCheckInterval(version.checkInterval().toMillis());
+            property.setVersionJitter(version.jitter().toMillis());
+            property.setVersionRetryBackoff(version.retryBackoff().toMillis());
+            property.setReconcileBatchSize(version.reconcileBatchSize());
+            property.setReconcilePartitions(version.reconcilePartitions());
         }
-        Duration ttl = localTtl == null
-                ? BuiltinDefaults.LOCAL_TTL
-                : duration(localTtl, localTimeUnit, TimeUnit.SECONDS);
-        long maxSize = localMaxSize == null ? BuiltinDefaults.MAX_SIZE : localMaxSize;
-        LocalCacheSpec.VersionSpec version = new LocalCacheSpec.VersionSpec(
+
+        LocalCacheSpec.DynamicSpec dynamic = policy.dynamic();
+        if (dynamic != null) {
+            property.setHotThresholdQps((long) dynamic.hotThresholdQps());
+            property.setCoolQps((long) dynamic.coolQps());
+            property.setHotWindow(dynamic.window().toMillis());
+            property.setHotWindowSlices(dynamic.windowSlices());
+            property.setMaxHotKeys(dynamic.maxHotKeys());
+            property.setHotSyncInterval(dynamic.syncInterval().toMillis());
+            property.setHotCooldown(dynamic.cooldown().toMillis());
+            property.setCoordination(dynamic.coordination() == null ? null : dynamic.coordination().name());
+            property.setSketchWidthBits(dynamic.sketchWidthBits());
+            property.setSketchDepth(dynamic.sketchDepth());
+            property.setHotReportPartitions(dynamic.hotReportPartitions());
+            property.setHotReportBatchMax(dynamic.hotReportBatchMax());
+            property.setCandidateCapacity(dynamic.candidateCapacity());
+            LocalCacheSpec.GlobalSpec global = dynamic.global();
+            if (global != null) {
+                property.setGlobalWindow(global.window().toMillis());
+                property.setGlobalHotQps(global.hotQps());
+                property.setGlobalCoolQps(global.coolQps());
+                property.setGlobalDemoteWindows(global.demoteWindows());
+                property.setGlobalStaleWindows(global.staleWindows());
+                property.setGlobalClientEstimate(global.clientEstimate());
+            }
+        }
+
+        property.setCentralTtl(policy.centralTtl() == null ? null : policy.centralTtl().toMillis());
+        property.setCentralNullTtl(policy.centralNullTtl() == null ? null : policy.centralNullTtl().toMillis());
+        property.setFailOpen(policy.failOpen());
+        return property;
+    }
+
+    /**
+     * @return 本地策略
+     * @throws com.asialjim.cache4j.core.CacheException 未设置时抛出——"缺策略"是损坏记录，
+     *         不能静默当成 {@code STATIC}，否则运维看到的是一条正常配置
+     */
+    public LocalStrategy strategy() {
+        if (localStrategy == null || localStrategy.isBlank()) {
+            throw new com.asialjim.cache4j.core.CacheException(
+                    com.asialjim.cache4j.core.CacheResCode.INVALID_SPEC,
+                    "策略记录缺少 localStrategy：namespace=" + namespace);
+        }
+        return LocalStrategy.valueOf(localStrategy);
+    }
+
+    /**
+     * @return 本地最大条目数（{@code null} 用内建默认）
+     */
+    public long maxSize() {
+        return localMaxSize == null ? BuiltinDefaults.MAX_SIZE : localMaxSize;
+    }
+
+    /**
+     * @return 本地 TTL，单位由 {@link #localTimeUnit} 决定
+     */
+    public Duration localTtlDuration() {
+        return localTtl == null ? BuiltinDefaults.LOCAL_TTL : duration(localTtl, localTimeUnit, TimeUnit.SECONDS);
+    }
+
+    /**
+     * @return 本地负副本 TTL 的除数（{@code null} 用内建默认）
+     */
+    public int nullTtlDivisor() {
+        return localNullTtlDivisor == null ? BuiltinDefaults.LOCAL_NULL_TTL_DIVISOR : localNullTtlDivisor;
+    }
+
+    /**
+     * @return 版本对账参数
+     */
+    public LocalCacheSpec.VersionSpec versionSpec() {
+        return new LocalCacheSpec.VersionSpec(
                 duration(versionCheckInterval, localTimeUnit, TimeUnit.SECONDS),
                 duration(versionJitter, localTimeUnit, TimeUnit.MILLISECONDS),
                 duration(versionRetryBackoff, localTimeUnit, TimeUnit.MILLISECONDS),
                 reconcileBatchSize == null ? 1_000 : reconcileBatchSize,
                 reconcilePartitions == null ? LocalCacheSpec.VersionSpec.DEFAULT_PARTITIONS : reconcilePartitions);
-        if (strategy == LocalStrategy.STATIC) {
-            return new LocalCacheSpec(namespace, strategy, maxSize, ttl, version, null);
-        }
-        LocalCacheSpec.DynamicSpec dynamic = new LocalCacheSpec.DynamicSpec(
+    }
+
+    /**
+     * @return 热 key 参数（仅 DYNAMIC 有值）
+     */
+    public LocalCacheSpec.DynamicSpec dynamicSpec() {
+        return new LocalCacheSpec.DynamicSpec(
                 intOf(hotThresholdQps, 100), intOf(coolQps, 25),
                 duration(hotWindow, localTimeUnit, TimeUnit.SECONDS),
                 intOf(hotWindowSlices, 16), intOf(maxHotKeys, 1_000),
@@ -277,7 +365,50 @@ public class CacheStrategyProperty {
                 intOf(sketchWidthBits, 12), intOf(sketchDepth, 4),
                 intOf(hotReportPartitions, 16), intOf(hotReportBatchMax, 16),
                 intOf(candidateCapacity, 1_000));
-        return new LocalCacheSpec(namespace, strategy, maxSize, ttl, version, dynamic);
+    }
+
+    /**
+     * @return 中央 TTL，单位由 {@link #centralTimeUnit} 决定
+     */
+    public Duration centralTtlDuration() {
+        return centralTtl == null
+                ? BuiltinDefaults.CENTRAL_TTL
+                : duration(centralTtl, centralTimeUnit, TimeUnit.MINUTES);
+    }
+
+    /**
+     * @return 中央空值 TTL，单位由 {@link #centralTimeUnit} 决定
+     */
+    public Duration centralNullTtlDuration() {
+        return centralNullTtl == null
+                ? BuiltinDefaults.CENTRAL_NULL_TTL
+                : duration(centralNullTtl, centralTimeUnit, TimeUnit.SECONDS);
+    }
+
+    /**
+     * @return 中央不可用时是否降级（默认 {@code true}）
+     */
+    public boolean failOpenValue() {
+        return failOpen == null || failOpen;
+    }
+
+    /**
+     * 还原为本地规格；{@code null} 字段用内建默认值补齐。
+     *
+     * @return 本地规格
+     */
+    public LocalCacheSpec toLocalSpec() {
+        LocalStrategy resolved = (localStrategy == null || localStrategy.isBlank())
+                ? LocalStrategy.STATIC
+                : LocalStrategy.valueOf(localStrategy);
+        if (resolved == LocalStrategy.NONE) {
+            return LocalCacheSpec.noLocal(namespace);
+        }
+        LocalCacheSpec.VersionSpec version = versionSpec();
+        if (resolved == LocalStrategy.STATIC) {
+            return new LocalCacheSpec(namespace, resolved, maxSize(), localTtlDuration(), version, null);
+        }
+        return new LocalCacheSpec(namespace, resolved, maxSize(), localTtlDuration(), version, dynamicSpec());
     }
 
     /**
@@ -288,11 +419,9 @@ public class CacheStrategyProperty {
     public CentralCacheSpec toCentralSpec() {
         return new CentralCacheSpec(
                 namespace,
-                centralTtl == null ? BuiltinDefaults.CENTRAL_TTL
-                        : duration(centralTtl, centralTimeUnit, TimeUnit.MINUTES),
-                centralNullTtl == null ? BuiltinDefaults.CENTRAL_NULL_TTL
-                        : duration(centralNullTtl, centralTimeUnit, TimeUnit.SECONDS),
-                failOpen == null || failOpen,
+                centralTtlDuration(),
+                centralNullTtlDuration(),
+                failOpenValue(),
                 centralTtlJitter == null ? 0D : centralTtlJitter,
                 allowNoExpiry != null && allowNoExpiry);
     }
@@ -619,5 +748,57 @@ public class CacheStrategyProperty {
 
     public void setAllowNoExpiry(Boolean allowNoExpiry) {
         this.allowNoExpiry = allowNoExpiry;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof CacheStrategyProperty that)) {
+            return false;
+        }
+        return Objects.equals(namespace, that.namespace)
+                && Objects.equals(description, that.description)
+                && Objects.equals(localStrategy, that.localStrategy)
+                && Objects.equals(localTimeUnit, that.localTimeUnit)
+                && Objects.equals(centralTimeUnit, that.centralTimeUnit)
+                && Objects.equals(localMaxSize, that.localMaxSize)
+                && Objects.equals(localTtl, that.localTtl)
+                && Objects.equals(localNullTtlDivisor, that.localNullTtlDivisor)
+                && Objects.equals(versionCheckInterval, that.versionCheckInterval)
+                && Objects.equals(versionJitter, that.versionJitter)
+                && Objects.equals(versionRetryBackoff, that.versionRetryBackoff)
+                && Objects.equals(reconcileBatchSize, that.reconcileBatchSize)
+                && Objects.equals(reconcilePartitions, that.reconcilePartitions)
+                && Objects.equals(hotThresholdQps, that.hotThresholdQps)
+                && Objects.equals(coolQps, that.coolQps)
+                && Objects.equals(hotWindow, that.hotWindow)
+                && Objects.equals(hotWindowSlices, that.hotWindowSlices)
+                && Objects.equals(maxHotKeys, that.maxHotKeys)
+                && Objects.equals(hotSyncInterval, that.hotSyncInterval)
+                && Objects.equals(hotCooldown, that.hotCooldown)
+                && Objects.equals(coordination, that.coordination)
+                && Objects.equals(sketchWidthBits, that.sketchWidthBits)
+                && Objects.equals(sketchDepth, that.sketchDepth)
+                && Objects.equals(hotReportPartitions, that.hotReportPartitions)
+                && Objects.equals(hotReportBatchMax, that.hotReportBatchMax)
+                && Objects.equals(candidateCapacity, that.candidateCapacity)
+                && Objects.equals(globalWindow, that.globalWindow)
+                && Objects.equals(globalHotQps, that.globalHotQps)
+                && Objects.equals(globalCoolQps, that.globalCoolQps)
+                && Objects.equals(globalDemoteWindows, that.globalDemoteWindows)
+                && Objects.equals(globalStaleWindows, that.globalStaleWindows)
+                && Objects.equals(globalClientEstimate, that.globalClientEstimate)
+                && Objects.equals(centralTtl, that.centralTtl)
+                && Objects.equals(centralNullTtl, that.centralNullTtl)
+                && Objects.equals(centralTtlJitter, that.centralTtlJitter)
+                && Objects.equals(failOpen, that.failOpen)
+                && Objects.equals(allowNoExpiry, that.allowNoExpiry);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(namespace, description, localStrategy, localTimeUnit, centralTimeUnit, localMaxSize, localTtl, localNullTtlDivisor, versionCheckInterval, versionJitter, versionRetryBackoff, reconcileBatchSize, reconcilePartitions, hotThresholdQps, coolQps, hotWindow, hotWindowSlices, maxHotKeys, hotSyncInterval, hotCooldown, coordination, sketchWidthBits, sketchDepth, hotReportPartitions, hotReportBatchMax, candidateCapacity, globalWindow, globalHotQps, globalCoolQps, globalDemoteWindows, globalStaleWindows, globalClientEstimate, centralTtl, centralNullTtl, centralTtlJitter, failOpen, allowNoExpiry);
     }
 }

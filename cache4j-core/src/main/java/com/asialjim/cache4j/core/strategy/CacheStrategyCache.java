@@ -221,11 +221,7 @@ public final class CacheStrategyCache implements CacheStrategyRepository {
      * @return 存储记录
      */
     static StoredPolicy toStored(NamespacePolicy policy) {
-        return new StoredPolicy(
-                policy.namespace(), policy.description(), policy.strategy(),
-                policy.maxSize(), policy.localTtl(), policy.localNullTtlDivisor(),
-                policy.version(), policy.dynamic(),
-                policy.centralTtl(), policy.centralNullTtl(), policy.failOpen(),
+        return new StoredPolicy(CacheStrategyProperty.of(policy),
                 policy.configVersion(), policy.updatedAtMillis(), policy.updatedBy(), policy.reason());
     }
 }

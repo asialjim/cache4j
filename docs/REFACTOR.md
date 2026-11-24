@@ -464,6 +464,7 @@ Cache4jImpl  ──持有──►  MixedLocalCache4j  ──路由──►  No
 | R8 | 统计删除后的断言 | 失去载体的断言**直接清理**；必要计数用 `AtomicLong` + 方法返回值，不恢复统计框架 |
 | R9 | `CacheStrategyProperty` 的"未设置" | `null` 表示"用内建默认"，够用 |
 | R10 | 第 3 步迁移方式 | **直接切换**，不做新旧并行开关 |
+| R12 | `CacheStrategyProperty` 的定位 | **唯一的策略定义**——装配、解析、持久化都用它，`LocalCacheSpec` / `CentralCacheSpec` 退化为内部表示（由 `toLocalSpec()` / `toCentralSpec()` 在装配边界转换一次）。**它自己不做 DTO / ORM**：不加任何序列化或持久化注解；需要落库的使用者自己声明 `CacheStrategyPo`，与 Property 字段一对一映射（建议 MapStruct），不要把 ORM 关注点塞进 Property |
 | R11 | 顶层接口命名 | 用 **`Cache4j`** 而不是 `Cache`——Spring 有 `org.springframework.cache.Cache`、Caffeine 有 `com.github.benmanes.caffeine.cache.Cache`，同名会让使用方的 import 频繁冲突。`LocalCache` / `CentralCache` 这类名字没有冲突，保持不带后缀 |
 
 ### 开工前只剩一件需要确认的事
