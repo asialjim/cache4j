@@ -6,7 +6,8 @@ import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.strategy.CacheNamespace;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
-import com.asialjim.cache4j.core.strategy.CachedCacheStrategyRepository;
+import com.asialjim.cache4j.core.strategy.CacheStrategyAdministrator;
+import com.asialjim.cache4j.core.strategy.CacheStrategyCache;
 import com.asialjim.cache4j.core.strategy.NamespacePolicy;
 import com.asialjim.cache4j.core.strategy.Page;
 import com.asialjim.cache4j.core.strategy.PolicyResolver;
@@ -88,7 +89,9 @@ class FileStrategyRepositoryTest {
 
     private FileStrategyDataSource dataSource;
 
-    private CachedCacheStrategyRepository repository;
+    private CacheStrategyCache cache;
+
+    private CacheStrategyAdministrator admin;
 
     @BeforeEach
     void setUp() {
@@ -98,14 +101,16 @@ class FileStrategyRepositoryTest {
         dataSource = new FileStrategyDataSource(FileStrategyDataSource.DEFAULT_DIRECTORY);
         // 每次开始前清一次，保证可重复；结束不清理，留给人工观察
         cleanup();
-        repository = newRepository(connectionFactory, dataSource);
+        cache = newCache(connectionFactory, dataSource);
+        admin = new CacheStrategyAdministrator(cache);
     }
 
     @AfterEach
     void tearDown() {
-        if (repository != null) {
-            repository.close();
-            repository = null;
+        if (cache != null) {
+            cache.close();
+            cache = null;
+            admin = null;
         }
         if (connectionFactory != null) {
             connectionFactory.destroy();
@@ -130,7 +135,7 @@ class FileStrategyRepositoryTest {
             assertTrue(content.contains("description=静态本地缓存（仓库落库测试）"));
             assertTrue(content.contains("reason=代码声明播种（bootstrap）"));
 
-            PolicyLookup lookup = repository.find("decl:static");
+            PolicyLookup lookup = cache.find("decl:static");
             assertTrue(lookup instanceof PolicyLookup.Found, "声明登记后应能从仓库查到");
             assertEquals(1L, ((PolicyLookup.Found) lookup).policy().configVersion(),
                     "首次登记的配置版本应为 1");
@@ -155,13 +160,13 @@ class FileStrategyRepositoryTest {
         TwoLevelCacheManager.create(options()).close();
 
         // 运维改一条：把 decl:static 的本地容量改成 42
-        PolicyLookup.Found found = (PolicyLookup.Found) repository.find("decl:static");
+        PolicyLookup.Found found = (PolicyLookup.Found) cache.find("decl:static");
         NamespacePolicy origin = found.policy();
         StoredPolicy changed = new StoredPolicy(origin.namespace(), origin.description(), origin.strategy(),
                 42L, origin.localTtl(), origin.localNullTtlDivisor(), origin.version(), origin.dynamic(),
                 origin.centralTtl(), origin.centralNullTtl(), origin.failOpen(), origin.configVersion(),
                 origin.updatedAtMillis(), origin.updatedBy(), origin.reason());
-        assertTrue(repository.change(new StrategyChange(
+        assertTrue(admin.change(new StrategyChange(
                 "req-1", "ops", "把容量调小", System.currentTimeMillis(),
                 PolicyResolver.fromStored(null, changed))).applied(), "运维变更应生效");
 
@@ -182,7 +187,7 @@ class FileStrategyRepositoryTest {
     void selfCacheLeavesTracesInRedis() {
         TwoLevelCacheManager.create(options()).close();
         // 触发一次缓存写穿 + 回填
-        repository.find("decl:none");
+        cache.find("decl:none");
 
         var keys = keys("_c4j:{_stg_}:*");
         assertFalse(keys.isEmpty(), "门面自己的二级缓存在 Redis 上应有数据，实际 key=" + keys);
@@ -215,14 +220,14 @@ class FileStrategyRepositoryTest {
 
     // ------------------------------------------------------------------ 装配辅助
 
-    private static CachedCacheStrategyRepository newRepository(
+    private static CacheStrategyCache newCache(
             RedisConnectionFactory connectionFactory, FileStrategyDataSource dataSource) {
         StrategySelfCacheOptions self = StrategySelfCacheOptions.defaults();
         LocalCache<StoredPolicy> local = new CaffeineLocalCache<>(self.localSpec(), System::nanoTime);
         CentralCache<StoredPolicy> central = new RedisCentralCache<>(self.centralSpec(),
                 new SpringRedisValueStore<>(connectionFactory, RedisKeyFormatter.defaults(),
                         new StoredPolicySerializer()));
-        return new CachedCacheStrategyRepository(dataSource, self, local, central);
+        return new CacheStrategyCache(dataSource, self, local, central);
     }
 
     private Cache4jSpringOptions options() {
@@ -231,7 +236,7 @@ class FileStrategyRepositoryTest {
         return Cache4jSpringOptions.builder()
                 .centralProvider(new SpringRedisCentralCacheProvider(
                         connectionFactory, RedisKeyFormatter.defaults(), values), true)
-                .strategyRepository(repository)
+                .strategyRepository(cache)
                 .declEnums(Decl.class)
                 .build();
     }
@@ -353,13 +358,13 @@ class FileStrategyRepositoryTest {
         }
 
         @Bean(destroyMethod = "close")
-        CachedCacheStrategyRepository strategyRepository(LettuceConnectionFactory factory) {
-            return newRepository(factory, new FileStrategyDataSource(FileStrategyDataSource.DEFAULT_DIRECTORY));
+        CacheStrategyCache strategyRepository(LettuceConnectionFactory factory) {
+            return newCache(factory, new FileStrategyDataSource(FileStrategyDataSource.DEFAULT_DIRECTORY));
         }
 
         @Bean
         Cache4jSpringOptions cache4jOptions(CentralCacheProvider provider,
-                                            CachedCacheStrategyRepository repository) {
+                                            CacheStrategyCache repository) {
             return Cache4jSpringOptions.builder()
                     .centralProvider(provider, false)
                     .strategyRepository(repository)

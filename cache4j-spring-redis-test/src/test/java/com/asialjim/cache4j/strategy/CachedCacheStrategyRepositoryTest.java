@@ -6,7 +6,8 @@ import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDataSource;
-import com.asialjim.cache4j.core.strategy.CachedCacheStrategyRepository;
+import com.asialjim.cache4j.core.strategy.CacheStrategyAdministrator;
+import com.asialjim.cache4j.core.strategy.CacheStrategyCache;
 import com.asialjim.cache4j.core.strategy.StrategySelfCacheOptions;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
 import com.asialjim.cache4j.core.strategy.ChangeResult;
@@ -39,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * @author Asial Jim
  */
-class CachedCacheStrategyRepositoryTest {
+class CacheStrategyCacheTest {
 
     private static final String NS = "user:detail";
 
@@ -47,11 +48,11 @@ class CachedCacheStrategyRepositoryTest {
     @DisplayName("bootstrap 把解析结果回填自举缓存；之后 find 不再打数据源")
     void bootstrapFillsSelfCache() {
         Fixture fixture = new Fixture();
-        fixture.repository.declare(Decls.USER_DETAIL, "测试声明");
-        fixture.repository.bootstrap();
+        fixture.cache.declare(Decls.USER_DETAIL, "测试声明");
+        fixture.cache.bootstrap();
         long loadsAfterBootstrap = fixture.dataSource.loads.get();
 
-        NamespacePolicy policy = fixture.repository.find(NS).policyOrNull();
+        NamespacePolicy policy = fixture.cache.find(NS).policyOrNull();
         assertEquals(LocalStrategy.STATIC, policy.strategy());
         assertEquals(loadsAfterBootstrap, fixture.dataSource.loads.get(),
                 "命中自举缓存时不应再访问数据源");
@@ -62,12 +63,12 @@ class CachedCacheStrategyRepositoryTest {
     void missFallsBackToDataSource() {
         Fixture fixture = new Fixture();
         fixture.dataSource.seed(stored(LocalStrategy.NONE, 3L, "仅中央", 1_000L));
-        fixture.repository.declare(Decls.USER_DETAIL, "测试声明");
-        fixture.repository.bootstrap();
-        fixture.repository.selfCache().clear();
+        fixture.cache.declare(Decls.USER_DETAIL, "测试声明");
+        fixture.cache.bootstrap();
+        fixture.cache.selfCache().clear();
         long before = fixture.dataSource.loads.get();
 
-        NamespacePolicy policy = fixture.repository.find(NS).policyOrNull();
+        NamespacePolicy policy = fixture.cache.find(NS).policyOrNull();
         assertNotNull(policy, "回源后应有结果");
         assertEquals(LocalStrategy.NONE, policy.strategy(), "应使用数据源的策略");
         assertEquals(before + 1, fixture.dataSource.loads.get(), "未命中回源一次");
@@ -78,11 +79,11 @@ class CachedCacheStrategyRepositoryTest {
     void changePropagatesToOtherNode() {
         Fixture nodeA = new Fixture();
         nodeA.dataSource.seed(stored(LocalStrategy.STATIC, 1L, "初始", 1_000L));
-        nodeA.repository.declare(Decls.USER_DETAIL, "声明");
-        nodeA.repository.bootstrap();
+        nodeA.cache.declare(Decls.USER_DETAIL, "声明");
+        nodeA.cache.bootstrap();
 
         // 节点 B 共享同一个数据源与中央缓存
-        CachedCacheStrategyRepository nodeB = nodeA.newPeer();
+        CacheStrategyCache nodeB = nodeA.newPeer();
         nodeB.declare(Decls.USER_DETAIL, "声明");
         nodeB.bootstrap();
 
@@ -90,8 +91,8 @@ class CachedCacheStrategyRepositoryTest {
         assertEquals(1_000L, currentB.maxSize());
 
         // A 改配置
-        NamespacePolicy target = withMaxSize(nodeA.repository.find(NS).policyOrNull(), 9_000L);
-        ChangeResult result = nodeA.repository.change(
+        NamespacePolicy target = withMaxSize(nodeA.cache.find(NS).policyOrNull(), 9_000L);
+        ChangeResult result = nodeA.admin.change(
                 new StrategyChange("req-a", "ops", "扩容", nodeA.clock.get(), target));
         assertEquals(ChangeResult.Outcome.APPLIED, result.outcome(), result.message());
 
@@ -105,15 +106,15 @@ class CachedCacheStrategyRepositoryTest {
     @DisplayName("变更成功后写穿自举缓存：本节点立即读到新配置")
     void changeWritesThroughToSelfCache() {
         Fixture fixture = new Fixture();
-        fixture.repository.declare(Decls.USER_DETAIL, "声明");
-        fixture.repository.bootstrap();
+        fixture.cache.declare(Decls.USER_DETAIL, "声明");
+        fixture.cache.bootstrap();
 
-        NamespacePolicy target = withMaxSize(fixture.repository.find(NS).policyOrNull(), 4_000L);
+        NamespacePolicy target = withMaxSize(fixture.cache.find(NS).policyOrNull(), 4_000L);
         // bootstrap 阶段解析时读过一次数据源，这里取变更前的基线
         long before = fixture.dataSource.loads.get();
-        fixture.repository.change(new StrategyChange("req-w", "ops", "扩容", fixture.clock.get(), target));
+        fixture.admin.change(new StrategyChange("req-w", "ops", "扩容", fixture.clock.get(), target));
 
-        assertEquals(4_000L, fixture.repository.find(NS).policyOrNull().maxSize());
+        assertEquals(4_000L, fixture.cache.find(NS).policyOrNull().maxSize());
         assertEquals(before, fixture.dataSource.loads.get(), "写穿后读策略不应再回源数据源");
     }
 
@@ -121,15 +122,15 @@ class CachedCacheStrategyRepositoryTest {
     @DisplayName("从未声明、数据源也没有的 namespace：find 返回 Absent，负缓存生效")
     void absentWhenNeverDeclared() {
         Fixture fixture = new Fixture();
-        fixture.repository.declare(Decls.USER_DETAIL, "声明");
-        fixture.repository.bootstrap();
-        fixture.repository.selfCache().clear();
+        fixture.cache.declare(Decls.USER_DETAIL, "声明");
+        fixture.cache.bootstrap();
+        fixture.cache.selfCache().clear();
 
         // 已声明的 namespace 会被 bootstrap 播种进数据源，所以它不再 Absent
-        assertInstanceOf(PolicyLookup.Found.class, fixture.repository.find(NS));
+        assertInstanceOf(PolicyLookup.Found.class, fixture.cache.find(NS));
 
         // 真正 Absent 的是"谁都没提过"的 namespace
-        assertInstanceOf(PolicyLookup.Absent.class, fixture.repository.find("never:declared"));
+        assertInstanceOf(PolicyLookup.Absent.class, fixture.cache.find("never:declared"));
     }
 
     @Test
@@ -138,13 +139,13 @@ class CachedCacheStrategyRepositoryTest {
         Fixture fixture = new Fixture();
         // 列表页只覆盖数据源里的记录（仅声明、尚未落库的条目用详情视图查）
         fixture.dataSource.seed(stored(LocalStrategy.STATIC, 1L, "初始", 1_000L));
-        fixture.repository.declare(Decls.USER_DETAIL, "声明");
-        fixture.repository.bootstrap();
+        fixture.cache.declare(Decls.USER_DETAIL, "声明");
+        fixture.cache.bootstrap();
 
-        Page<StrategyView> page = fixture.repository.page(null, 0, 10);
+        Page<StrategyView> page = fixture.admin.page(null, 0, 10);
         assertEquals(1L, page.total());
         assertEquals(NS, page.items().get(0).namespace());
-        assertTrue(fixture.repository.view(NS).isPresent());
+        assertTrue(fixture.admin.view(NS).isPresent());
     }
 
     // ------------------------------------------------------------------ fixture
@@ -176,7 +177,9 @@ class CachedCacheStrategyRepositoryTest {
 
         private final CentralCache<StoredPolicy> central;
 
-        private final CachedCacheStrategyRepository repository;
+        private final CacheStrategyCache cache;
+
+        private final CacheStrategyAdministrator admin;
 
         Fixture() {
             this(new MemoryDataSource(), new AtomicLong(1_700_000_000_000L));
@@ -189,14 +192,15 @@ class CachedCacheStrategyRepositoryTest {
                     CentralCacheSpec.builder(StrategySelfCacheOptions.SELF_NAMESPACE)
                             .ttl(Duration.ofMinutes(30)).nullTtl(Duration.ofMinutes(5)).build(),
                     clock::get);
-            this.repository = build(dataSource, central, clock);
+            this.cache = build(dataSource, central, clock);
+            this.admin = new CacheStrategyAdministrator(this.cache);
         }
 
-        private static CachedCacheStrategyRepository build(MemoryDataSource dataSource,
-                                                            CentralCache<StoredPolicy> central,
-                                                            AtomicLong clock) {
+        private static CacheStrategyCache build(MemoryDataSource dataSource,
+                                                CentralCache<StoredPolicy> central,
+                                                AtomicLong clock) {
             StrategySelfCacheOptions options = StrategySelfCacheOptions.defaults();
-            return new CachedCacheStrategyRepository(dataSource, options,
+            return new CacheStrategyCache(dataSource, options,
                     LocalCaches.create(options.localSpec(), null, () -> clock.get() * 1_000_000L),
                     central,
                     () -> clock.get() * 1_000_000L,
@@ -206,7 +210,7 @@ class CachedCacheStrategyRepositoryTest {
         /**
          * @return 与当前节点共享数据源与中央缓存的另一个节点
          */
-        CachedCacheStrategyRepository newPeer() {
+        CacheStrategyCache newPeer() {
             return build(dataSource, central, clock);
         }
     }
