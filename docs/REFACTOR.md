@@ -136,7 +136,7 @@ public final class CacheStrategyCache {
 
 | 动作 | 说明 | 省 |
 |---|---|---:|
-| 策略模型 6 类 → 2 类 | `CacheStrategyDecl` / `NamespacePolicy` / `StoredPolicy` / `StrategyView` / `PolicyResolver` / `BuiltinDefaults` 收敛为 `CacheBlock`（声明）+ `CacheStrategy`（生效值）+ `CacheStrategyProperty`（配置载体） | ~800 |
+| 策略模型 6 类 → 3 类 | `CacheStrategyDecl` / `NamespacePolicy` / `StoredPolicy` / `StrategyView` / `PolicyResolver` / `BuiltinDefaults` 收敛为 `CacheBlock`（声明）+ `CacheStrategy`（生效值）+ `CacheStrategyProperty`（配置载体） | ~800 |
 | 仓库读写分离 | `CachedCacheStrategyRepository` → `CacheStrategyCache`（读，自举）+ `CacheStrategyAdministrator`（管理面） | ~250 |
 | 配置载体扁平化 | `LocalCacheSpec` 四层嵌套 record → `CacheStrategyProperty` | ~300 |
 
@@ -148,36 +148,55 @@ public final class CacheStrategyCache {
 
 理由：这个对象要能被"配置中心 / 数据库 / 文件"直接映射，任何嵌套对象都会把序列化复杂度转嫁给使用方。
 
-因此所有时间字段用 `Long` 毫秒，所有开关用 `Boolean`，所有枚举用 `String`（与 `LocalStrategy.name()` 对齐）：
+**`Duration` 的处理**：拆成"数值 + 时间单位"两个字段，由构造 `CacheStrategy` 时还原：
+
+```java
+Duration.of(property.getLocalTtl(), TimeUnit.valueOf(property.getLocalTimeUnit()))
+```
+
+时间单位按**层**给，不按字段给——一个 namespace 只有一个本地单位、一个中央单位：
+
+| 层 | 单位字段 | 覆盖的字段 |
+|---|---|---|
+| 本地 | `localTimeUnit` | 本地 TTL、对账间隔、抖动、退避、热 key 窗口、热同步间隔、冷却时长、中央阈值窗口 |
+| 中央 | `centralTimeUnit` | 中央 TTL、中央空值 TTL |
+
+> 默认 `localTimeUnit = SECONDS`、`centralTimeUnit = MINUTES`（本地秒级、中央分钟级是最常见的组合）。
+
+**计数型字段与时间单位无关**，永远按"次 / 个"解释：`hotThresholdQps` / `coolQps` / `globalHotQps` / `globalCoolQps` 是 **QPS（每秒）**，不随 `localTimeUnit` 变化；`reconcileBatchSize` / `maxHotKeys` / `hotWindowSlices` / `sketchWidthBits` 等同理。
 
 ```java
 public class CacheStrategyProperty {
 
     // ---- 标识
-    private String  namespace;              // 缓存命名空间
-    private String  description;            // 用途说明
+    private String  namespace;
+    private String  description;
     private String  localStrategy;          // NONE / STATIC / DYNAMIC
+
+    // ---- 时间单位（按层给，见上）
+    private String  localTimeUnit;          // 默认 SECONDS
+    private String  centralTimeUnit;        // 默认 MINUTES
 
     // ---- 本地：容量与 TTL
     private Long    localMaxSize;
-    private Long    localTtlMillis;
+    private Long    localTtl;               // 单位 = localTimeUnit
     private Integer localNullTtlDivisor;    // 本地负副本 TTL = 中央空值 TTL / 该值
 
-    // ---- 本地：版本对账
-    private Long    versionCheckIntervalMillis;
-    private Long    versionJitterMillis;
-    private Long    versionRetryBackoffMillis;
+    // ---- 本地：版本对账（时间字段单位 = localTimeUnit）
+    private Long    versionCheckInterval;
+    private Long    versionJitter;
+    private Long    versionRetryBackoff;
     private Integer reconcileBatchSize;
     private Integer reconcilePartitions;
 
-    // ---- 本地：热 key 判定（仅 DYNAMIC）
+    // ---- 本地：热 key 判定（时间字段单位 = localTimeUnit；QPS 恒按秒）
     private Long    hotThresholdQps;
     private Long    coolQps;
-    private Long    hotWindowMillis;
+    private Long    hotWindow;
     private Integer hotWindowSlices;
     private Integer maxHotKeys;
-    private Long    hotSyncIntervalMillis;
-    private Long    hotCooldownMillis;
+    private Long    hotSyncInterval;
+    private Long    hotCooldown;
     private String  coordination;           // LOCAL / GLOBAL
     private Integer sketchWidthBits;
     private Integer sketchDepth;
@@ -185,22 +204,22 @@ public class CacheStrategyProperty {
     private Integer hotReportBatchMax;
     private Integer candidateCapacity;
 
-    // ---- 本地：中央侧阈值（仅 GLOBAL 协调）
-    private Long    globalWindowMillis;
+    // ---- 本地：GLOBAL 协调阈值（时间字段单位 = localTimeUnit）
+    private Long    globalWindow;
     private Long    globalHotQps;
     private Long    globalCoolQps;
     private Integer globalDemoteWindows;
     private Integer globalStaleWindows;
     private Integer globalClientEstimate;
 
-    // ---- 中央
-    private Long    centralTtlMillis;
-    private Long    centralNullTtlMillis;
+    // ---- 中央（时间字段单位 = centralTimeUnit）
+    private Long    centralTtl;
+    private Long    centralNullTtl;
     private Boolean failOpen;
 }
 ```
 
-`null` 一律表示"用内建默认值"，由构造 `CacheStrategy` 时补齐——这样配置中心只存"改过的字段"即可。
+`null` 一律表示"用内建默认值"，由构造 `CacheStrategy` 时补齐——配置中心只需要存**改过的字段**。
 
 ### 第 3 步：换内核（高风险，收益最大）
 
@@ -281,6 +300,20 @@ public interface SingleFlight<K, V> {
 放在 core，由门面组合：`本地 miss → 中央 miss → singleFlight.once(key, loader)`。
 
 独立之后有三个好处：可单测、可替换（要跨节点保护就换分布式锁实现）、以及**不与 `get` 的返回类型纠缠**（`once` 返回 `Lookup`，天然带三态，负缓存不会被压成 `null`）。
+
+**不挂在 `Cache4j` 接口上**。`Cache4jImpl` 内部持有一个 `SingleFlight` 供自己的 `get` 使用；框架适配层（如 Spring 的 `sync = true`）需要更精细的控制时，**自己注入 `SingleFlight` 并显式组合**：
+
+```java
+// cache4j-spring：SpringCacheAdapter
+public <T> T get(Object key, Callable<T> loader) {
+    Lookup<Object> hit = cache.lookup(key);
+    if (hit.isHit()) return (T) hit.optional().orElseThrow();
+    // 由适配层决定如何包装 loader、如何处理异常，single-flight 只负责"合并"
+    return singleFlight.once(key, () -> callAndStore(key, loader)).optional().orElse(null);
+}
+```
+
+这样 `Cache4j.get` 与框架层的 `sync` 语义互不绑死：前者是"便捷方法"，后者是"显式组合"。
 
 ### 4.3 回填必须 CAS
 
@@ -399,7 +432,7 @@ Cache4jImpl  ──持有──►  MixedLocalCache4j  ──路由──►  No
 
 | 步骤 | 验收 |
 |---|---|
-| 第 1 步 | 删除后 `mvn test` 全绿。**统计删掉后部分断言失去载体**，需先改造：把"对账执行次数""回填丢弃次数"这类断言改为测试内打桩计数（`AtomicLong` 在测试侧，不进公共 API） |
+| 第 1 步 | 删除后 `mvn test` 全绿。统计删掉后失去载体的断言**直接清理**；只保留两个必要计数：`AbstractVersionLocalCache4j` 内的 `AtomicLong reconcileCount`（或直接读 `reconcile()` 的返回值）、以及 `backfillIfNewer` 的返回值——都够断言用，不需要统计框架 |
 | 第 2 步 | 策略仓库相关用例全绿；`Administrator` 的读走缓存、写直连数据源、变更后 evict 缓存 |
 | 第 3 步 | §6 全部十项都有对应用例；运行期改策略后**下一次访问生效**且无需重建缓存对象 |
 
@@ -421,17 +454,17 @@ Cache4jImpl  ──持有──►  MixedLocalCache4j  ──路由──►  No
 
 | # | 问题 | 决策 |
 |---|---|---|
-| R1 | 统计去留 | **先全部删除**（含接口）。核心跑通后再重新设计，避免"为了统计而统计"的结构复杂度 |
+| R1 | 统计去留 | **先全部删除**（含接口与所有调用点）。核心跑通后再重新设计，避免"为了统计而统计"的结构复杂度 |
 | R2 | `canonical` / `tagged` / `identity` 编码器 | **删除**，只留 `plain`（默认） |
 | R3 | `CacheLogger` 主题枚举 | **删除**，直接用 SLF4J，按 `[主题]-操作-详情` 组织文案 |
-| R4 | namespace 配置载体 | 新增 **`CacheStrategyProperty`**；**字段只允许基础类型包装类或 `String`**，禁止嵌套对象；需覆盖本地 + 中央的全部属性 |
+| R4 | namespace 配置载体 | 新增 **`CacheStrategyProperty`**；字段只允许包装类型或 `String`；`Duration` 拆成"数值 + 时间单位"，**时间单位按层给**（`localTimeUnit` / `centralTimeUnit`），计数与 QPS 字段不受单位影响；无需 `List` / `Map` |
 | R5 | `TwoLevelCache` 是否保留兼容 | **直接删除**，不留适配器 |
-| R6 | 对账契约 | **单方法、调用即对账**；判断与执行封在实现内部，禁止调用方两段式 |
-| R7 | 单飞归属 | **独立契约 `SingleFlight`**，因为它是"唯一写者"语义（进程内单线程、集群内单份值） |
+| R6 | 对账契约 | **单方法、调用即对账**；判断与执行封在实现内部，禁止调用方两段式。返回值供观测（`boolean`，后续接统计可用） |
+| R7 | 单飞归属 | **独立契约 `SingleFlight`**（唯一写者语义）；**不挂到 `Cache4j` 接口**，框架适配层按需自行注入并显式组合 |
+| R8 | 统计删除后的断言 | 失去载体的断言**直接清理**；必要计数用 `AtomicLong` + 方法返回值，不恢复统计框架 |
+| R9 | `CacheStrategyProperty` 的"未设置" | `null` 表示"用内建默认"，够用 |
+| R10 | 第 3 步迁移方式 | **直接切换**，不做新旧并行开关 |
 
-### 仍待定
+### 开工前只剩一件需要确认的事
 
-1. `CacheStrategyProperty` 中"未设置"用 `null` 表示（由 `CacheStrategy` 构造时补默认值）是否够用？还是需要显式 `Optional` 语义？
-2. 统计删掉后，"并发只触发一次对账""回填被丢弃"这类验证靠什么承载——测试内打桩计数，还是先加一个极简的 `AtomicLong` 计数（不进公共 API）？
-3. 第 3 步迁移期间，是否需要一条"新旧实现并行、按配置开关切换"的过渡路径，还是直接切换？
-4. `SingleFlight` 需要暴露给框架适配层吗（例如 Spring 的 `sync = true`）？还是由 `Cache4jImpl` 内部持有即可？
+`AbstractVersionLocalCache4j` 里的 `AtomicLong reconcileCount` 是否要暴露 getter。倾向于**不暴露公共 API**（`reconcile()` 的返回值已够断言），仅在同包内可见；第 3 步之后如果确实需要，再作为统计的一部分重新设计。
