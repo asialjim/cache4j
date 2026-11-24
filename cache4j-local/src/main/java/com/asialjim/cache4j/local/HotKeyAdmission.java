@@ -48,7 +48,7 @@ import org.slf4j.LoggerFactory;
  *
  * @author Asial Jim
  */
-final class HotKeyAdmission {
+public final class HotKeyAdmission {
 
     private static final Logger LOG = LoggerFactory.getLogger(HotKeyAdmission.class);
 
@@ -87,7 +87,7 @@ final class HotKeyAdmission {
      * @param coordinator 热 key 协调器；{@code coordination=GLOBAL} 时必填
      * @param nanoClock   单调时钟
      */
-    HotKeyAdmission(LocalCacheSpec spec, HotKeyCoordinator coordinator, LongSupplier nanoClock,
+    public HotKeyAdmission(LocalCacheSpec spec, HotKeyCoordinator coordinator, LongSupplier nanoClock,
                     java.util.function.Consumer<CacheKey> evict) {
         this.spec = spec;
         this.evict = evict;
@@ -110,7 +110,7 @@ final class HotKeyAdmission {
         return hotKeys.containsKey(key);
     }
 
-    boolean coordinationReady() {
+    public boolean coordinationReady() {
         return dynamic.coordination() != LocalCacheSpec.Coordination.GLOBAL || coordinator != null;
     }
 
@@ -190,7 +190,7 @@ final class HotKeyAdmission {
         return (previous != null ? previous : created).advanceAndIncrement(now);
     }
 
-    void hotSync(CacheKey key) {
+    public void hotSync(CacheKey key) {
         if (dynamic.coordination() != LocalCacheSpec.Coordination.GLOBAL || coordinator == null) {
             return;
         }
@@ -544,21 +544,21 @@ final class HotKeyAdmission {
     /**
      * @return 当前热点 key 集合（观测用）
      */
-    Set<CacheKey> hotKeySet() {
+    public Set<CacheKey> hotKeySet() {
         return new LinkedHashSet<>(hotKeys.keySet());
     }
 
     /**
      * 清掉已过期的冷却记录（{@code maintain} 时调用；准入侧状态，与存储无关）。
      */
-    void sweepCooldown() {
+    public void sweepCooldown() {
         sweepCooldownOccasionally(nanoClock.getAsLong());
     }
 
     /**
      * 清空全部准入状态（{@code clear()} 时调用）。
      */
-    void clear() {
+    public void clear() {
         hotKeys.clear();
         hotByPartition.forEach(Set::clear);
         candidateByPartition.forEach(Map::clear);
