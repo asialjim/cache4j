@@ -1,7 +1,6 @@
 package com.asialjim.cache4j.local;
 
 import com.asialjim.cache4j.core.CacheKey;
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
@@ -101,8 +100,4 @@ public final class NoOpLocalCache<V> implements LocalCache<V> {
         // 无本地状态
     }
 
-    @Override
-    public CacheStats stats() {
-        return CacheStats.noop();
-    }
 }

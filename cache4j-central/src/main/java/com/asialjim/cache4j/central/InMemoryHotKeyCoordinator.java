@@ -1,11 +1,12 @@
 package com.asialjim.cache4j.central;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.central.HotKeyReport;
-import com.asialjim.cache4j.core.log.CacheLogger;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
-import com.asialjim.cache4j.core.log.CacheLogger;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 
 import java.util.HashMap;
@@ -32,7 +33,7 @@ import java.util.function.LongSupplier;
  */
 public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
 
-    private static final CacheLogger LOG = CacheLogger.get(InMemoryHotKeyCoordinator.class);
+    private static final Logger LOG = LoggerFactory.getLogger(InMemoryHotKeyCoordinator.class);
 
     private final Function<String, LocalCacheSpec.GlobalSpec> globalSpecs;
     private final LongSupplier milliClock;
@@ -53,7 +54,7 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
         // 中央窗口计数与 QPS 阈值的换算：hotCount()/coolCount() = QPS × 窗口秒数
         LocalCacheSpec.GlobalSpec globalSpec = globalSpecs.apply(namespace);
         if (globalSpec == null || globalSpec.window() == null || globalSpec.window().isZero()) {
-            LOG.warnThrottled(CacheLogger.Subject.HOT_KEY, "热key", () -> "namespace 未配置 dynamic.global，"
+            LOG.warn("[{}]-{}-{}", "热key协调", "热key", "namespace 未配置 dynamic.global，"
                     + "全局热 key 判定被跳过：namespace=" + namespace);
             return HotKeyReport.unknown();
         }

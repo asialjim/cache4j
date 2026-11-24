@@ -1,8 +1,10 @@
 package com.asialjim.cache4j.core.strategy;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
-import com.asialjim.cache4j.core.log.CacheLogger;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -40,7 +42,7 @@ public final class CacheStrategyLoader {
     public static final String DECL_RESOURCE =
             "META-INF/services/com.asialjim.cache4j.core.strategy.CacheStrategyDecl";
 
-    private static final CacheLogger LOG = CacheLogger.get(CacheStrategyLoader.class);
+    private static final Logger LOG = LoggerFactory.getLogger(CacheStrategyLoader.class);
 
     private final ClassLoader classLoader;
 
@@ -73,8 +75,7 @@ public final class CacheStrategyLoader {
             all.addAll(translator.translate(type, "META-INF/services：" + DECL_RESOURCE));
         }
         if (all.isEmpty()) {
-            LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明",
-                    "未发现任何声明文件，" + DECL_RESOURCE + " 不存在或为空");
+            LOG.debug("[{}]-{}-{}", "缓存装配", "声明", "未发现任何声明文件，" + DECL_RESOURCE + " 不存在或为空");
         }
         return all;
     }
@@ -110,8 +111,7 @@ public final class CacheStrategyLoader {
                     continue;
                 }
                 if (!names.add(trimmed)) {
-                    LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明",
-                            url + " 第 " + lineNo + " 行：" + trimmed + " 重复出现，已忽略");
+                    LOG.debug("[{}]-{}-{}", "缓存装配", "声明", url + " 第 " + lineNo + " 行：" + trimmed + " 重复出现，已忽略");
                 }
             }
         } catch (IOException e) {

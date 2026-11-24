@@ -78,8 +78,7 @@ class DeclarationAssemblyTest {
 
     private static Cache4jSpringOptions.Builder options() {
         return Cache4jSpringOptions.builder()
-                .centralProvider(new InMemoryCentralCacheProvider(), true)
-                .statsEnabled(false);
+                .centralProvider(new InMemoryCentralCacheProvider(), true);
     }
 
     /**

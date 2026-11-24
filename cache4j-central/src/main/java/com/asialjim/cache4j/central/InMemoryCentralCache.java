@@ -1,8 +1,6 @@
 package com.asialjim.cache4j.central;
 
-import com.asialjim.cache4j.core.CacheCounters;
 import com.asialjim.cache4j.core.CacheKey;
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
@@ -34,7 +32,6 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
 
     private final CentralCacheSpec spec;
     private final ConcurrentHashMap<CacheKey, Entry<V>> data = new ConcurrentHashMap<>();
-    private final CacheCounters counters = new CacheCounters();
     private final LongSupplier milliClock;
 
     /**
@@ -65,17 +62,13 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
 
     @Override
     public VersionedLookup<V> lookupWithRevision(CacheKey key) {
-        counters.increment(CacheCounters.Counter.COMMAND);
         Entry<V> entry = liveEntry(key);
         if (entry == null) {
-            counters.increment(CacheCounters.Counter.STORE_MISS);
             return new VersionedLookup<>(0L, Lookup.miss());
         }
         if (entry.negative) {
-            counters.increment(CacheCounters.Counter.STORE_HIT);
             return new VersionedLookup<>(entry.revision, Lookup.negative());
         }
-        counters.increment(CacheCounters.Counter.STORE_HIT);
         return new VersionedLookup<>(entry.revision, Lookup.hit(entry.value));
     }
 
@@ -94,7 +87,6 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
 
     @Override
     public Map<CacheKey, Long> revisions(Collection<CacheKey> keys) {
-        counters.increment(CacheCounters.Counter.COMMAND);
         Map<CacheKey, Long> result = new HashMap<>(keys.size() * 2);
         for (CacheKey key : keys) {
             Entry<V> entry = liveEntry(key);
@@ -118,7 +110,6 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
 
     @Override
     public OptionalLong putIfAbsentAndGetRevision(CacheKey key, V value, Duration ttl) {
-        counters.increment(CacheCounters.Counter.COMMAND);
         long now = milliClock.getAsLong();
         long newRevision;
         Entry<V> created;
@@ -147,13 +138,11 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
 
     @Override
     public void evict(CacheKey key) {
-        counters.increment(CacheCounters.Counter.COMMAND);
         data.remove(key);
     }
 
     @Override
     public void clear() {
-        counters.increment(CacheCounters.Counter.COMMAND);
         data.clear();
     }
 
@@ -165,12 +154,6 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
     @Override
     public boolean ping() {
         return true;
-    }
-
-    @Override
-    public CacheStats stats() {
-        counters.setEstimatedSize(-1L);
-        return counters;
     }
 
     @Override
@@ -186,7 +169,6 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
     }
 
     private long store(CacheKey key, V value, boolean negative, Duration ttl) {
-        counters.increment(CacheCounters.Counter.COMMAND);
         long now = milliClock.getAsLong();
         synchronized (data) {
             Entry<V> existing = data.get(key);

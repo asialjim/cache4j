@@ -1,6 +1,8 @@
 package com.asialjim.cache4j.spring.redis;
 
-import com.asialjim.cache4j.core.log.CacheLogger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
@@ -81,22 +83,19 @@ public class Cache4jRedisSpringConfiguration {
     static RedisSerializer<Object> resolveSerializer(RedisSerializer<Object> explicit,
                                                      RedisTemplate<?, ?> template) {
         if (explicit != null) {
-            LOG.info(CacheLogger.Subject.ASSEMBLY, "装配",
-                    "值序列化使用容器里显式声明的 RedisSerializer：" + explicit.getClass().getSimpleName());
+            LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "值序列化使用容器里显式声明的 RedisSerializer：" + explicit.getClass().getSimpleName());
             return explicit;
         }
         if (template != null) {
             RedisSerializer<?> fromTemplate = template.getValueSerializer();
             if (fromTemplate != null) {
-                LOG.info(CacheLogger.Subject.ASSEMBLY, "装配",
-                        "值序列化沿用 RedisTemplate 的 valueSerializer："
+                LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "值序列化沿用 RedisTemplate 的 valueSerializer："
                                 + fromTemplate.getClass().getSimpleName());
                 return (RedisSerializer<Object>) fromTemplate;
             }
         }
         RedisSerializer<Object> fallback = defaultSerializer();
-        LOG.info(CacheLogger.Subject.ASSEMBLY, "装配",
-                "容器里没有可用的 RedisTemplate，值序列化使用默认实现："
+        LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "容器里没有可用的 RedisTemplate，值序列化使用默认实现："
                         + fallback.getClass().getSimpleName());
         return fallback;
     }

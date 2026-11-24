@@ -1,9 +1,11 @@
 package com.asialjim.cache4j.central.redis;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.central.HotKeyReport;
-import com.asialjim.cache4j.core.log.CacheLogger;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 
 import java.util.Map;
@@ -20,7 +22,7 @@ import java.util.function.Function;
 public final class RedisHotKeyCoordinator implements HotKeyCoordinator {
 
     private final RedisValueStore<Object> store;
-    private static final CacheLogger LOG = CacheLogger.get(RedisHotKeyCoordinator.class);
+    private static final Logger LOG = LoggerFactory.getLogger(RedisHotKeyCoordinator.class);
 
     private final Function<String, LocalCacheSpec.GlobalSpec> globalSpecs;
 
@@ -39,7 +41,7 @@ public final class RedisHotKeyCoordinator implements HotKeyCoordinator {
         LocalCacheSpec.GlobalSpec globalSpec = globalSpecs == null ? null : globalSpecs.apply(namespace);
         if (globalSpec == null) {
             // 不猜阈值：该 namespace 没配 dynamic.global
-            LOG.warnThrottled(CacheLogger.Subject.HOT_KEY, "热key", () -> "namespace 未配置 dynamic.global，"
+            LOG.warn("[{}]-{}-{}", "热key协调", "热key", "namespace 未配置 dynamic.global，"
                     + "全局热 key 判定被跳过：namespace=" + namespace);
             return HotKeyReport.unknown();
         }

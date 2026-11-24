@@ -1,10 +1,12 @@
 package com.asialjim.cache4j.core.strategy;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
-import com.asialjim.cache4j.core.log.CacheLogger;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -29,7 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class DefaultCacheStrategyRepository implements CacheStrategyRepository, CacheStrategyAdmin {
 
-    private static final CacheLogger LOG = CacheLogger.get(DefaultCacheStrategyRepository.class);
+    private static final Logger LOG = LoggerFactory.getLogger(DefaultCacheStrategyRepository.class);
 
     private final CacheStrategyDataSource dataSource;
 
@@ -88,8 +90,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
         // 所以策略相同 = 解析结果等价 = 同一份声明。用类名判等是错的——同一个枚举里两个常量
         // 声明同一个 namespace 但策略不同（STATIC vs NONE），那是真的代码打架，必须报出来。
         if (previous.decl().getStrategy() == decl.getStrategy()) {
-            LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明",
-                    origin + " 重复登记同一份声明，已忽略：namespace=" + namespace);
+            LOG.debug("[{}]-{}-{}", "缓存装配", "声明", origin + " 重复登记同一份声明，已忽略：namespace=" + namespace);
             return;
         }
         throw new CacheException(CacheResCode.INVALID_SPEC,
@@ -108,8 +109,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
             logResolved(policy);
         }
         this.snapshot.set(Map.copyOf(resolved));
-        LOG.debug(CacheLogger.Subject.ASSEMBLY, "初始化",
-                "解析完成，共 " + resolved.size() + " 个 namespace，数据源="
+        LOG.debug("[{}]-{}-{}", "缓存装配", "初始化", "解析完成，共 " + resolved.size() + " 个 namespace，数据源="
                         + (dataSource == null ? "未启用" : dataSource.getClass().getSimpleName()));
         return new ArrayList<>(resolved.keySet());
     }
@@ -168,8 +168,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
         sweepIdempotencyOccasionally();
         IdempotentEntry previous = idempotency.get(change.requestId());
         if (previous != null) {
-            LOG.debug(CacheLogger.Subject.STRATEGY_REPO, "变更",
-                    "requestId 重复，返回首次结果：requestId=" + change.requestId()
+            LOG.debug("[{}]-{}-{}", "策略仓库", "变更", "requestId 重复，返回首次结果：requestId=" + change.requestId()
                             + "，outcome=" + previous.result().outcome());
             return previous.result();
         }
@@ -271,8 +270,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
                 newVersion = updated.getAsLong();
             }
         } catch (RuntimeException e) {
-            LOG.warnThrottled(CacheLogger.Subject.STRATEGY_REPO, "变更", () ->
-                    "持久化失败，生效值不变：namespace=" + namespace + "，原因=" + e.getMessage());
+            LOG.warn("[{}]-{}-{}", "策略仓库", "变更", "持久化失败，生效值不变：namespace=" + namespace + "，原因=" + e.getMessage());
             return reject(change, "持久化失败：" + e.getMessage());
         }
 
@@ -295,7 +293,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
         }
 
         // ⑦ 审计（APPLIED 用 info）
-        LOG.info(CacheLogger.Subject.STRATEGY_REPO, "变更", "APPLIED，namespace=" + namespace
+        LOG.debug("[{}]-{}-{}", "策略仓库", "变更", "APPLIED，namespace=" + namespace
                 + "，configVersion " + expected + "→" + newVersion
                 + "，strategy=" + (current == null ? "（新增）" : current.strategy() + "→" + target.strategy())
                 + "，maxSize=" + target.maxSize()
@@ -353,8 +351,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
     }
 
     private ChangeResult reject(StrategyChange change, String message) {
-        LOG.warn(CacheLogger.Subject.STRATEGY_REPO, "变更",
-                "REJECTED，namespace=" + change.namespace() + "，操作人=" + change.operator()
+        LOG.warn("[{}]-{}-{}", "策略仓库", "变更", "REJECTED，namespace=" + change.namespace() + "，操作人=" + change.operator()
                         + "，原因=" + message + "，requestId=" + change.requestId());
         return new ChangeResult(ChangeResult.Outcome.REJECTED, change.namespace(), -1L,
                 snapshot.get().get(change.namespace()), message, change.requestId());
@@ -414,8 +411,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
                 policy = PolicyResolver.fromStored(null, stored);
             } catch (RuntimeException e) {
                 // 记录损坏：不自动修复，用内建默认兜底并标 broken，让运维在列表页就能看见
-                LOG.warn(CacheLogger.Subject.STRATEGY_REPO, "查询",
-                        "记录解析失败，已标记 broken：namespace=" + stored.namespace()
+                LOG.warn("[{}]-{}-{}", "策略仓库", "查询", "记录解析失败，已标记 broken：namespace=" + stored.namespace()
                                 + "，原因=" + e.getMessage());
                 return StrategyView.of(PolicyResolver.fromDeclaration(new FallbackDecl(stored.namespace())),
                         null, casSupported).withBroken(true);
@@ -484,8 +480,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
             Optional<StoredPolicy> loaded = dataSource.load(namespace);
             if (loaded.isEmpty()) {
                 NamespacePolicy seeded = fromDeclaration(decl, NamespacePolicy.Source.DECLARED);
-                LOG.debug(CacheLogger.Subject.ASSEMBLY, "初始化",
-                        namespace + " 数据源无记录，用声明 + 内建默认，并播种到数据源");
+                LOG.debug("[{}]-{}-{}", "缓存装配", "初始化", namespace + " 数据源无记录，用声明 + 内建默认，并播种到数据源");
                 seed(namespace, seeded);
                 // 播种成功后重读一次：让内存快照与数据源一致（configVersion 至少为 1，
                 // 否则后续 change 的乐观锁会拿 0 去比 1，永远冲突）
@@ -496,8 +491,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
             stored = loaded.get();
         } catch (RuntimeException e) {
             // 数据源不可达：不得让业务起不来（除非显式 failClosed，本实现不提供）
-            LOG.warnThrottled(CacheLogger.Subject.ASSEMBLY, "初始化", () ->
-                    "策略数据源读取失败，namespace=" + namespace + "，按声明 + 内建默认继续，原因=" + e.getMessage());
+            LOG.warn("[{}]-{}-{}", "缓存装配", "初始化", "策略数据源读取失败，namespace=" + namespace + "，按声明 + 内建默认继续，原因=" + e.getMessage());
             return fromDeclaration(decl, NamespacePolicy.Source.DECLARED);
         }
         return fromStored(decl, stored);
@@ -529,12 +523,10 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
                 "system", "代码声明播种（bootstrap）");
         try {
             if (!dataSource.register(stored)) {
-                LOG.debug(CacheLogger.Subject.STRATEGY_REPO, "播种",
-                        namespace + " 播种时发现记录已存在，以数据源为准");
+                LOG.debug("[{}]-{}-{}", "策略仓库", "播种", namespace + " 播种时发现记录已存在，以数据源为准");
             }
         } catch (RuntimeException e) {
-            LOG.warnThrottled(CacheLogger.Subject.STRATEGY_REPO, "播种", () ->
-                    "声明播种失败，本节点仍按声明 + 内建默认运行：namespace=" + namespace
+            LOG.warn("[{}]-{}-{}", "策略仓库", "播种", "声明播种失败，本节点仍按声明 + 内建默认运行：namespace=" + namespace
                             + "，原因=" + e.getMessage());
         }
     }
@@ -565,11 +557,10 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
                 + "，configVersion=" + policy.configVersion()
                 + "，来源=" + policy.source();
         if (policy.consistentWithDeclared()) {
-            LOG.info(CacheLogger.Subject.ASSEMBLY, "初始化", detail);
+            LOG.debug("[{}]-{}-{}", "缓存装配", "初始化", detail);
         } else {
             // 声明与生效不一致不告警（业务允许），但信息级留痕便于排障
-            LOG.info(CacheLogger.Subject.ASSEMBLY, "初始化",
-                    detail + "，注意生效策略与代码声明不同（接受，无需处理）");
+            LOG.debug("[{}]-{}-{}", "缓存装配", "初始化", detail + "，注意生效策略与代码声明不同（接受，无需处理）");
         }
     }
 

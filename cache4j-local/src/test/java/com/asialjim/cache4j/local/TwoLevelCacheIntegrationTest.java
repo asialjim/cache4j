@@ -3,7 +3,6 @@ package com.asialjim.cache4j.local;
 import com.asialjim.cache4j.central.InMemoryCentralCache;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheLoader;
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
@@ -84,10 +83,6 @@ class TwoLevelCacheIntegrationTest {
         cache.lookup("42");
         cache.lookup("42");
 
-        CacheStats stats = cache.stats();
-        assertEquals(0L, stats.localHitCount());
-        assertEquals(2L, stats.centralHitCount());
-        assertEquals(-1L, cache.local().stats().estimatedSize());
     }
 
     @Test
@@ -100,9 +95,6 @@ class TwoLevelCacheIntegrationTest {
         cache.lookup("42");
         cache.lookup("42");
 
-        CacheStats stats = cache.stats();
-        assertEquals(2L, stats.localHitCount());
-        assertEquals(0L, stats.centralHitCount());
     }
 
     @Test
@@ -119,12 +111,9 @@ class TwoLevelCacheIntegrationTest {
 
         // 第 1 次访问：冷 key 不落本地，回中央
         cache.lookup("42");
-        assertEquals(1L, cache.stats().centralHitCount());
-        assertEquals(0L, cache.stats().localHitCount());
 
         // 后续访问：已达到 1 QPS 阈值，本地命中
         cache.lookup("42");
-        assertTrue(cache.stats().localHitCount() >= 1L);
     }
 
     // ------------------------------------------------------------------ 版本对账
@@ -149,8 +138,6 @@ class TwoLevelCacheIntegrationTest {
         // 过对账点后，本地副本被清除，重新从中央取到新值
         clock.advance(Duration.ofMillis(200));
         assertEquals("u42-new", cache.lookup("42").optional().orElseThrow());
-        assertTrue(cache.stats().versionInvalidationCount() >= 1L);
-        assertTrue(cache.stats().versionSyncCount() >= 1L);
     }
 
     @Test
@@ -181,13 +168,8 @@ class TwoLevelCacheIntegrationTest {
         assertTrue(cache.lookup("404", k -> null).isNegative());
         assertTrue(cache.lookup("404").isNegative());
 
-        CacheStats stats = cache.stats();
         // 第一次：未命中 → 回源得 null → 写两层负副本（计 miss + sourceNull，不计负命中）
-        assertEquals(1L, stats.missCount());
-        assertEquals(1L, stats.sourceNullCount());
-        assertEquals(0L, stats.centralNegativeHitCount());
         // 第二次：由本地负副本挡下
-        assertEquals(1L, stats.localNegativeHitCount());
     }
 
     @Test
@@ -200,12 +182,10 @@ class TwoLevelCacheIntegrationTest {
 
         assertTrue(cache.lookup("404", k -> null).isNegative());
         assertTrue(cache.lookup("404").isNegative(), "3s 内由本地负副本挡下");
-        assertEquals(1L, cache.stats().localNegativeHitCount());
 
         // 推进 4s：本地负副本（3s）已过期，结论改由中央负副本（30s）提供
         clock.advance(Duration.ofSeconds(4));
         assertTrue(cache.lookup("404").isNegative(), "结论仍为\"已确认不存在\"");
-        assertEquals(1L, cache.stats().localNegativeHitCount(), "本地负副本已过期，不应再计本地负命中");
     }
 
     @Test
@@ -218,12 +198,10 @@ class TwoLevelCacheIntegrationTest {
 
         assertTrue(cache.lookup("404", k -> null).isNegative());
         assertTrue(cache.lookup("404").isNegative());
-        assertEquals(1L, cache.stats().localNegativeHitCount());
 
         // 600ms > 本地 500ms：本地负副本过期，但结论仍由中央负副本保证
         clock.advance(Duration.ofMillis(600));
         assertTrue(cache.lookup("404").isNegative());
-        assertEquals(1L, cache.stats().localNegativeHitCount(), "本地负副本已过期");
     }
 
     @Test
@@ -236,11 +214,6 @@ class TwoLevelCacheIntegrationTest {
         assertTrue(cache.lookup("404", k -> null).isMiss());
         assertTrue(cache.lookup("404", k -> null).isMiss());
 
-        CacheStats stats = cache.stats();
-        assertEquals(2L, stats.sourceLoadCount());
-        assertEquals(2L, stats.sourceNullCount());
-        assertEquals(2L, stats.missCount());
-        assertEquals(1D, stats.nullLoadRatio(), 1e-9);
     }
 
     // ------------------------------------------------------------------ 单飞
@@ -285,8 +258,6 @@ class TwoLevelCacheIntegrationTest {
             pool.shutdownNow();
         }
         assertEquals(1, loads.get());
-        assertEquals(1L, cache.stats().sourceLoadCount());
-        assertEquals(threads, cache.stats().requestCount(), "单飞的重查不得重复计 request");
     }
 
     // ------------------------------------------------------------------ 降级与不变量
@@ -301,7 +272,6 @@ class TwoLevelCacheIntegrationTest {
         assertTrue(cache.lookup("42").isMiss());
         cache.evict("42");
         cache.clear();
-        assertTrue(cache.stats().centralErrorCount() >= 1L);
     }
 
     @Test
@@ -325,11 +295,6 @@ class TwoLevelCacheIntegrationTest {
         cache.lookup("missing");            // 未命中
         cache.lookup("404", k -> null);     // 回源得到空值 → 负缓存
 
-        CacheStats stats = cache.stats();
-        long sum = stats.localHitCount() + stats.localNegativeHitCount()
-                + stats.centralHitCount() + stats.centralNegativeHitCount() + stats.missCount();
-        assertEquals(stats.requestCount(), sum);
-        assertEquals(3L, stats.requestCount());
     }
 
     /**
@@ -426,11 +391,6 @@ class TwoLevelCacheIntegrationTest {
         @Override
         public boolean ping() {
             return false;
-        }
-
-        @Override
-        public CacheStats stats() {
-            return CacheStats.noop();
         }
 
         @Override

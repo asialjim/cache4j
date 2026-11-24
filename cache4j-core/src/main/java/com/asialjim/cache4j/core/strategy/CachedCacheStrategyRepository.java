@@ -1,10 +1,12 @@
 package com.asialjim.cache4j.core.strategy;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.log.CacheLogger;
 import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
 
 import java.util.List;
@@ -24,7 +26,7 @@ import java.util.Optional;
  */
 public final class CachedCacheStrategyRepository implements CacheStrategyRepository, CacheStrategyAdmin {
 
-    private static final CacheLogger LOG = CacheLogger.get(CachedCacheStrategyRepository.class);
+    private static final Logger LOG = LoggerFactory.getLogger(CachedCacheStrategyRepository.class);
 
     private final CacheStrategyDataSource dataSource;
 
@@ -73,7 +75,7 @@ public final class CachedCacheStrategyRepository implements CacheStrategyReposit
                 .nanoClock(nanoClock)
                 .milliClock(milliClock)
                 .build();
-        LOG.info(CacheLogger.Subject.STRATEGY_REPO, "启动", "自举缓存已装配：" + options.describe());
+        LOG.debug("[{}]-{}-{}", "策略仓库", "启动", "自举缓存已装配：" + options.describe());
     }
 
     // ------------------------------------------------------------------ 仓库（业务端只用这几个）
@@ -97,13 +99,11 @@ public final class CachedCacheStrategyRepository implements CacheStrategyReposit
                 policyCache.put(namespace, toStored(policy));
                 filled++;
             } catch (RuntimeException e) {
-                LOG.warnThrottled(CacheLogger.Subject.STRATEGY_REPO, "启动", () ->
-                        "回填自举缓存失败（不影响本次装配，下次读会重新回源）：namespace="
+                LOG.warn("[{}]-{}-{}", "策略仓库", "启动", "回填自举缓存失败（不影响本次装配，下次读会重新回源）：namespace="
                                 + namespace + "，原因=" + e.getMessage());
             }
         }
-        LOG.info(CacheLogger.Subject.STRATEGY_REPO, "启动",
-                "解析完成，共 " + namespaces.size() + " 个 namespace，回填自举缓存 " + filled + " 条");
+        LOG.debug("[{}]-{}-{}", "策略仓库", "启动", "解析完成，共 " + namespaces.size() + " 个 namespace，回填自举缓存 " + filled + " 条");
         return namespaces;
     }
 
@@ -134,8 +134,7 @@ public final class CachedCacheStrategyRepository implements CacheStrategyReposit
             try {
                 policyCache.put(namespace, null);
             } catch (RuntimeException e) {
-                LOG.debug(CacheLogger.Subject.STRATEGY_REPO, "回源",
-                        "负缓存写入失败（不影响结论）：namespace=" + namespace + "，原因=" + e.getMessage());
+                LOG.debug("[{}]-{}-{}", "策略仓库", "回源", "负缓存写入失败（不影响结论）：namespace=" + namespace + "，原因=" + e.getMessage());
             }
             return new PolicyLookup.Absent();
         }
@@ -144,8 +143,7 @@ public final class CachedCacheStrategyRepository implements CacheStrategyReposit
             // 条件插入：避免把"读到的旧值"覆盖掉别人刚写穿的新值
             policyCache.putIfAbsent(namespace, stored, null);
         } catch (RuntimeException e) {
-            LOG.debug(CacheLogger.Subject.STRATEGY_REPO, "回源",
-                    "回填自举缓存失败（不影响本次结论）：namespace=" + namespace + "，原因=" + e.getMessage());
+            LOG.debug("[{}]-{}-{}", "策略仓库", "回源", "回填自举缓存失败（不影响本次结论）：namespace=" + namespace + "，原因=" + e.getMessage());
         }
         return resolveIfChanged(namespace, stored);
     }
@@ -193,8 +191,7 @@ public final class CachedCacheStrategyRepository implements CacheStrategyReposit
             policyCache.put(namespace, toStored(result.current()));
             return result;
         } catch (RuntimeException writeError) {
-            LOG.warn(CacheLogger.Subject.STRATEGY_REPO, "写穿",
-                    "写穿失败，退化为 clear 兜底：namespace=" + namespace
+            LOG.warn("[{}]-{}-{}", "策略仓库", "写穿", "写穿失败，退化为 clear 兜底：namespace=" + namespace
                             + "，原因=" + writeError.getMessage());
         }
         try {
@@ -203,8 +200,7 @@ public final class CachedCacheStrategyRepository implements CacheStrategyReposit
                     result.configVersion(), result.current(),
                     result.message() + "（写穿失败，已 clear 自举缓存，下次读回源）", result.requestId());
         } catch (RuntimeException clearError) {
-            LOG.error(CacheLogger.Subject.STRATEGY_REPO, "写穿",
-                    "写穿与 clear 都失败：namespace=" + namespace + "，其他节点可能延迟到中央 TTL 才生效"
+            LOG.error("[{}]-{}-{}-{}", "策略仓库", "写穿", "写穿与 clear 都失败：namespace=" + namespace + "，其他节点可能延迟到中央 TTL 才生效"
                             + "，原因=" + clearError.getMessage(), clearError);
             return new ChangeResult(ChangeResult.Outcome.APPLIED_STALE, namespace,
                     result.configVersion(), result.current(),
@@ -240,14 +236,13 @@ public final class CachedCacheStrategyRepository implements CacheStrategyReposit
             NamespacePolicy resolved = PolicyResolver.fromStored(decl.orElse(null), stored);
             delegate.applyResolved(resolved);
             if (current != null) {
-                LOG.info(CacheLogger.Subject.STRATEGY_REPO, "刷新", "namespace=" + namespace
+                LOG.debug("[{}]-{}-{}", "策略仓库", "刷新", "namespace=" + namespace
                         + "，configVersion " + current.configVersion() + "→" + resolved.configVersion()
                         + "，strategy=" + current.strategy() + "→" + resolved.strategy());
             }
             return new PolicyLookup.Found(resolved);
         } catch (RuntimeException e) {
-            LOG.warnThrottled(CacheLogger.Subject.STRATEGY_REPO, "刷新", () ->
-                    "策略记录解析失败，视为不可用：namespace=" + namespace + "，原因=" + e.getMessage());
+            LOG.warn("[{}]-{}-{}", "策略仓库", "刷新", "策略记录解析失败，视为不可用：namespace=" + namespace + "，原因=" + e.getMessage());
             return new PolicyLookup.Unavailable(e);
         }
     }

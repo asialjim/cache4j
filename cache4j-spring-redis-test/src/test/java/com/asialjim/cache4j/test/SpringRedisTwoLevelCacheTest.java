@@ -102,11 +102,6 @@ class SpringRedisTwoLevelCacheTest {
         assertEquals(1, USER_LOADS.get(), "loader 只执行一次");
 
         TwoLevelCache<Object, Object> cache = twoLevel(NS);
-        assertTrue(cache.stats().localHitCount() >= 1L, "应命中本地");
-        // 默认 @Cacheable 是 get → 调用方法 → put，不经过 cache4j 的 loader 通道，
-        // 所以这里计的是 miss（需要回源），sourceLoadCount 只有在 sync=true 或显式 loader 时才增加
-        assertEquals(1L, cache.stats().missCount(), "首次应是 miss");
-        assertEquals(0L, cache.stats().sourceLoadCount());
 
         String revisionKey = "_c4j:{" + NS + "}:__rev";
         assertTrue(raw.sync().exists(revisionKey) > 0L, "版本表应落 Redis");
@@ -154,7 +149,6 @@ class SpringRedisTwoLevelCacheTest {
         // version.checkInterval = 100ms，等一个对账周期
         Thread.sleep(300);
         assertEquals("user-42-v2", service.find("42"), "对账后应读到新值");
-        assertTrue(twoLevel(NS).stats().versionInvalidationCount() >= 1L, "应发生版本失效");
     }
 
     @Test
@@ -165,8 +159,6 @@ class SpringRedisTwoLevelCacheTest {
         assertEquals("s-1", service.find("1"));
 
         assertEquals(1, SYNC_LOADS.get(), "loader 只执行一次");
-        TwoLevelCache<Object, Object> cache = twoLevel(NS);
-        assertEquals(1L, cache.stats().sourceLoadCount(), "sync=true 会经过 loader 通道");
     }
 
     @Test
@@ -189,10 +181,9 @@ class SpringRedisTwoLevelCacheTest {
         assertEquals("n-1", service.find("1"));
         assertEquals("n-1", service.find("1"));
 
-        assertEquals(1, NONE_LOADS.get(), "loader 只执行一次（值在中央）");
-        TwoLevelCache<Object, Object> cache = twoLevel(NS_NONE);
-        assertEquals(0L, cache.stats().localHitCount(), "NONE 不应有本地命中");
-        assertEquals(1L, cache.stats().centralHitCount(), "第二次应命中中央");
+        assertEquals(1, NONE_LOADS.get(), "loader 只执行一次（第二次命中中央）");
+        // NONE 策略不落本地：本地副本为空
+        assertTrue(twoLevel(NS_NONE).local().keys().isEmpty(), "NONE 不应有本地副本");
     }
 
     // ------------------------------------------------------------------ 辅助

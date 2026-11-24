@@ -1,8 +1,10 @@
 package com.asialjim.cache4j.core.strategy;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
-import com.asialjim.cache4j.core.log.CacheLogger;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -38,7 +40,7 @@ public final class CacheDeclTranslator {
      */
     public static final int MAX_NAMESPACE_LENGTH = 64;
 
-    private static final CacheLogger LOG = CacheLogger.get(CacheDeclTranslator.class);
+    private static final Logger LOG = LoggerFactory.getLogger(CacheDeclTranslator.class);
 
     /**
      * 翻译一个枚举类。
@@ -66,7 +68,7 @@ public final class CacheDeclTranslator {
             throw invalid(where + "：" + type.getName() + " 无法读取枚举常量");
         }
         if (constants.length == 0) {
-            LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明", where + "：" + type.getName() + " 无任何常量，跳过");
+            LOG.debug("[{}]-{}-{}", "缓存装配", "声明", where + "：" + type.getName() + " 无任何常量，跳过");
             return List.of();
         }
 
@@ -84,7 +86,7 @@ public final class CacheDeclTranslator {
 
             CacheDefinition definition = BuiltinDefaults.definitionOf(namespace, decl.getStrategy());
             out.add(new CacheCandidate(origin, definition, decl));
-            LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明", origin
+            LOG.debug("[{}]-{}-{}", "缓存装配", "声明", origin
                     + "：strategy=" + decl.getStrategy() + "，description=" + decl.getDescription());
         }
         return out;

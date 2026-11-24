@@ -3,7 +3,6 @@ package com.asialjim.cache4j.local;
 import com.asialjim.cache4j.central.InMemoryCentralCache;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheLoader;
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
@@ -131,11 +130,6 @@ class TwoLevelCacheConcurrencyTest {
             assertEquals("loaded-42", lookup.optional().orElseThrow());
         });
 
-        CacheStats stats = cache.stats();
-        long outcomes = stats.localHitCount() + stats.localNegativeHitCount()
-                + stats.centralHitCount() + stats.centralNegativeHitCount() + stats.missCount();
-        assertEquals(stats.requestCount(), outcomes,
-                "request 数必须等于各结论之和：request=" + stats.requestCount() + "，结论=" + outcomes);
     }
 
     @Test
@@ -209,29 +203,9 @@ class TwoLevelCacheConcurrencyTest {
     void containsKeyIsNotCountedAsRead() {
         TwoLevelCache<String, String> cache = cache("STATIC", null);
         cache.put("42", "v1");
-        long requestBefore = cache.stats().requestCount();
 
         assertTrue(cache.containsKey("42"));
         assertTrue(!cache.containsKey("43"));
-
-        assertEquals(requestBefore, cache.stats().requestCount(),
-                "containsKey 是探测语义，不应计为一次读请求");
-    }
-
-    @Test
-    @DisplayName("回填前的内部读不污染本地命中率")
-    void internalReadsDoNotInflateStoreHitRate() {
-        TwoLevelCache<String, String> cache = cache("STATIC", null);
-        cache.put("42", "v1");
-
-        long hitsBefore = cache.local().stats().storeHitCount();
-        for (int i = 0; i < 10; i++) {
-            // 每次都是中央命中 → 回填；回填前会 peek 本地，peek 不应计 STORE_HIT
-            cache.evict("42");
-            cache.lookup("42");
-        }
-        long delta = cache.local().stats().storeHitCount() - hitsBefore;
-        assertEquals(0L, delta, "回填前的内部读不应计入本地命中，实际增加=" + delta);
     }
 
     // ------------------------------------------------------------------ 辅助

@@ -30,7 +30,6 @@ public final class Cache4jSpringOptions {
     private final LocalCacheProvider localProvider;
     private final CentralCacheProvider centralProvider;
     private final boolean ownershipOfCentralProvider;
-    private final boolean statsEnabled;
     private final List<CacheDefinition> definitions;
     private final List<String> declPackages;
     private final List<Class<?>> declEnums;
@@ -43,7 +42,6 @@ public final class Cache4jSpringOptions {
         this.localProvider = builder.localProvider;
         this.centralProvider = builder.centralProvider;
         this.ownershipOfCentralProvider = builder.ownershipOfCentralProvider;
-        this.statsEnabled = builder.statsEnabled;
         this.definitions = List.copyOf(builder.definitions);
         this.declPackages = List.copyOf(builder.declPackages);
         this.declEnums = List.copyOf(builder.declEnums);
@@ -106,9 +104,6 @@ public final class Cache4jSpringOptions {
     /**
      * @return 是否启用统计
      */
-    public boolean statsEnabled() {
-        return statsEnabled;
-    }
 
     /**
      * @return 全部缓存定义（顺序保持）
@@ -150,7 +145,6 @@ public final class Cache4jSpringOptions {
         private LocalCacheProvider localProvider = HashMapLocalCacheProvider.INSTANCE;
         private CentralCacheProvider centralProvider;
         private boolean ownershipOfCentralProvider = true;
-        private boolean statsEnabled = true;
         private final List<CacheDefinition> definitions = new ArrayList<>();
         private final List<String> declPackages = new ArrayList<>();
         private final List<Class<?>> declEnums = new ArrayList<>();
@@ -200,10 +194,6 @@ public final class Cache4jSpringOptions {
          * @param value 是否启用统计
          * @return this
          */
-        public Builder statsEnabled(boolean value) {
-            this.statsEnabled = value;
-            return this;
-        }
 
         /**
          * 追加一条缓存定义。

@@ -456,7 +456,7 @@ Cache4jImpl  ──持有──►  MixedLocalCache4j  ──路由──►  No
 |---|---|---|
 | R1 | 统计去留 | **先全部删除**（含接口与所有调用点）。核心跑通后再重新设计，避免"为了统计而统计"的结构复杂度 |
 | R2 | `canonical` / `tagged` / `identity` 编码器 | **删除**，只留 `plain`（默认） |
-| R3 | `CacheLogger` 主题枚举 | **删除**，直接用 SLF4J，按 `[主题]-操作-详情` 组织文案 |
+| R3 | `CacheLogger` 主题枚举 | **删除**，直接用 SLF4J，按 `[主题]-操作-详情` 组织文案。**日志级别只用 `debug` / `warn` / `error`，不用 `info`**——现有的 13 处 `info` 一律降为 `debug`，后续由使用者按需手动调整。**不保留限流**（现有 16 处 `warnThrottled` 变普通 `warn`） |
 | R4 | namespace 配置载体 | 新增 **`CacheStrategyProperty`**；字段只允许包装类型或 `String`；`Duration` 拆成"数值 + 时间单位"，**时间单位按层给**（`localTimeUnit` / `centralTimeUnit`），计数与 QPS 字段不受单位影响；无需 `List` / `Map` |
 | R5 | `TwoLevelCache` 是否保留兼容 | **直接删除**，不留适配器 |
 | R6 | 对账契约 | **单方法、调用即对账**；判断与执行封在实现内部，禁止调用方两段式。返回值供观测（`boolean`，后续接统计可用） |

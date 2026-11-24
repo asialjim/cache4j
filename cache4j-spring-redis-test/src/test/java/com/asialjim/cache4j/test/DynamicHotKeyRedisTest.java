@@ -1,6 +1,5 @@
 package com.asialjim.cache4j.test;
 
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import org.junit.jupiter.api.AfterEach;
@@ -70,19 +69,16 @@ class DynamicHotKeyRedisTest {
 
         cache.lookup("k1");
         assertEquals(1L, hotKeyCount(), "达到阈值应立即本地升热");
-        assertEquals(1L, cache.stats().localPromotionCount(), "应记一次本地升热");
 
-        // 升热后本地命中（不再打 Redis）
-        long centralBefore = cache.stats().centralHitCount();
-        cache.lookup("k1");
-        assertTrue(cache.stats().localHitCount() >= 1L, "升热后应命中本地");
-        assertEquals(centralBefore, cache.stats().centralHitCount(), "本地命中不应再读中央");
+        // 升热后本地命中：把中央数据删掉，若仍能读到值就证明没走中央
+        cache.central().evict(new com.asialjim.cache4j.core.CacheKey(NS, "k1"));
+        assertEquals("v1", cache.lookup("k1").optional().orElseThrow(),
+                "升热后应命中本地，不依赖中央");
 
         // 热 key 的本地副本被清掉后：仍是热点，但这一次要硬读中央并回填
         cache.local().evict(new com.asialjim.cache4j.core.CacheKey(NS, "k1"));
-        assertEquals("v1", cache.lookup("k1").optional().orElseThrow());
-        assertEquals(centralBefore + 1L, cache.stats().centralHitCount(),
-                "热 key 本地 miss 时应硬读中央");
+        cache.central().put(new com.asialjim.cache4j.core.CacheKey(NS, "k1"), "v1", java.time.Duration.ofMinutes(10));
+        assertEquals("v1", cache.lookup("k1").optional().orElseThrow(), "热 key 本地 miss 时应硬读中央");
         assertEquals(1L, hotKeyCount(), "本次读不应影响热点身份");
         assertTrue(cache.local().containsKey(new com.asialjim.cache4j.core.CacheKey(NS, "k1")),
                 "热 key 读中央后应回填本地");
@@ -98,7 +94,6 @@ class DynamicHotKeyRedisTest {
             cache.lookup("k2");
         }
         awaitTrue(() -> hotKeyCount() == 1L, "应升热");
-        assertEquals(1L, cache.stats().localPromotionCount());
 
         // 让中央也看到足够流量（HOT），避免降热立刻发生
         for (int i = 0; i < 5; i++) {
@@ -107,7 +102,6 @@ class DynamicHotKeyRedisTest {
         Thread.sleep(250);            // 过 syncInterval(200ms)
         cache.lookup("k2");           // 触发一次上报：本轮 delta 累计上报给中央
         assertEquals(1L, hotKeyCount(), "上报后仍应保持热点");
-        assertTrue(cache.stats().hotSyncCount() >= 1L, "应完成一次热 key 上报");
 
         // ---------- 2) 热降（中央判定 COOLING）----------
         // 静默两个窗口（2 × 1s），让集群窗口计数清零；随后一次访问上报 delta=1，
@@ -115,21 +109,14 @@ class DynamicHotKeyRedisTest {
         Thread.sleep(2_200);
         cache.lookup("k2");
         awaitTrue(() -> hotKeyCount() == 0L, "中央判定 COOLING 后应降热");
-        assertTrue(cache.stats().globalDemotionCount() >= 1L, "应记一次中央降热");
-        assertEquals(cache.stats().promotionCount(), cache.stats().demotionCount(),
-                "升降热次数应配平");
 
         // ---------- 3) 冷却（冷却期内拒绝重新升热）----------
-        CacheStats afterDemote = cache.stats();
-        assertEquals(0L, afterDemote.hotKeyCount(), "降热后热点集合应为空");
-
         // 冷却期（2s）内继续高频访问：频次早已超过阈值，但不得重新升热
         for (int i = 0; i < 8; i++) {
             cache.lookup("k2");
         }
         assertEquals(0L, hotKeyCount(),
                 "冷却期内即使频次达标也不能重新升热（日志应出现『冷却期内拒绝升热』）");
-        assertEquals(1L, cache.stats().localPromotionCount(), "冷却期内不应新增本地升热");
 
         // ---------- 4) 冷却结束后可以再次升热 ----------
         Thread.sleep(2_200);
@@ -137,23 +124,28 @@ class DynamicHotKeyRedisTest {
             cache.lookup("k2");
         }
         awaitTrue(() -> hotKeyCount() == 1L, "冷却结束后应能再次升热");
-        assertTrue(cache.stats().localPromotionCount() >= 2L, "应记第二次本地升热");
     }
 
     @Test
     @DisplayName("冷 key 的写入不落本地（写不计频次）")
     void coldKeyPutIsDiscarded() {
         cache.put("k3", "v3");
-        assertEquals(1L, cache.stats().dynamicPutDiscarded(), "冷 key 写入应被丢弃并计数");
         assertEquals(0L, hotKeyCount());
         assertFalse(cache.local().containsKey(new com.asialjim.cache4j.core.CacheKey(
-                NS, "s2:k3")), "冷 key 不应在本地");
+                NS, "k3")), "冷 key 的写不应占用本地（hotkey 统计的是读频次）");
     }
 
     // ------------------------------------------------------------------ 辅助
 
+    /**
+     * 热点身份的直接证据：热 key 才有本地副本。
+     *
+     * <p>不走统计——统计已移除；本地副本数量就是"当前热点集合"的等价观察点。</p>
+     *
+     * @return 本地副本数
+     */
     private long hotKeyCount() {
-        return cache.stats().hotKeyCount();
+        return cache.local().keys().size();
     }
 
     private void awaitTrue(BooleanSupplier condition, String message) throws InterruptedException {

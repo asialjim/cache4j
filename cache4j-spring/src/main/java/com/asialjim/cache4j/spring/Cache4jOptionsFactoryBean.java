@@ -35,7 +35,6 @@ public class Cache4jOptionsFactoryBean implements FactoryBean<Cache4jSpringOptio
 
     private boolean ownsWhenClosing = false;
 
-    private boolean statsEnabled = false;
 
     private boolean undeclaredEnabled = true;
 
@@ -49,7 +48,6 @@ public class Cache4jOptionsFactoryBean implements FactoryBean<Cache4jSpringOptio
     public Cache4jSpringOptions getObject() {
         Cache4jSpringOptions.Builder builder = Cache4jSpringOptions.builder()
                 .enabled(enabled)
-                .statsEnabled(statsEnabled)
                 .undeclaredEnabled(undeclaredEnabled)
                 .declPackages(declPackages)
                 // 关闭时由配置文件声明自己的生命周期
@@ -99,9 +97,6 @@ public class Cache4jOptionsFactoryBean implements FactoryBean<Cache4jSpringOptio
         this.ownsWhenClosing = ownsWhenClosing;
     }
 
-    public void setStatsEnabled(boolean statsEnabled) {
-        this.statsEnabled = statsEnabled;
-    }
 
     public void setUndeclaredEnabled(boolean undeclaredEnabled) {
         this.undeclaredEnabled = undeclaredEnabled;

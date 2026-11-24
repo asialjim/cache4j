@@ -45,7 +45,6 @@ public class Cache4jDefaultOptionsConfiguration {
 
     private static final String KEY_DECL_PACKAGES = "cache4j.decl.packages";
 
-    private static final String KEY_STATS_ENABLED = "cache4j.stats.enabled";
 
     private static final String KEY_UNDECLARED_ENABLED = "cache4j.undeclared.enabled";
 
@@ -54,7 +53,6 @@ public class Cache4jDefaultOptionsConfiguration {
      * @param environment       注解容器里的配置源
      * @param declarations      容器里已有的 {@link CacheStrategyDecl}（业务用 component-scan 扫进来的）
      * @param declPackages      XML 容器里的声明扫描包
-     * @param statsEnabled      XML 容器里的统计开关
      * @param undeclaredEnabled XML 容器里的未声明自动创建开关
      * @return 装配配置
      */
@@ -65,13 +63,11 @@ public class Cache4jDefaultOptionsConfiguration {
             ObjectProvider<CacheNamespaceDeclarations> discovered,
             ObjectProvider<CacheStrategyDecl> declarations,
             @Value("${cache4j.decl.packages:}") String declPackages,
-            @Value("${cache4j.stats.enabled:}") String statsEnabled,
             @Value("${cache4j.undeclared.enabled:}") String undeclaredEnabled) {
         return Cache4jSpringOptions.builder()
                 .centralProvider(centralProvider, false)
                 .caches(discover(discovered, declarations,
                         packages(value(declPackages, KEY_DECL_PACKAGES, environment))))
-                .statsEnabled(flag(value(statsEnabled, KEY_STATS_ENABLED, environment), false))
                 .undeclaredEnabled(flag(value(undeclaredEnabled, KEY_UNDECLARED_ENABLED, environment), true))
                 .build();
     }

@@ -1,7 +1,6 @@
 package com.asialjim.cache4j.central.redis;
 
 import com.asialjim.cache4j.core.CacheKey;
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
@@ -77,9 +76,10 @@ class RedisSemanticIntegrationTest {
 
         nodeA.put("42", "u42");
         assertEquals("u42", nodeB.lookup("42").optional().orElseThrow());
-        // B 已回填本地
+        // B 已回填本地：第二次读不应再打中央
+        int readsBefore = store.readCalls();
         assertEquals("u42", nodeB.lookup("42").optional().orElseThrow());
-        assertTrue(nodeB.stats().localHitCount() >= 1L);
+        assertEquals(readsBefore, store.readCalls(), "第二次应命中本地，不读中央");
 
         // A 改写
         clock.advance(Duration.ofMillis(1));
@@ -91,7 +91,6 @@ class RedisSemanticIntegrationTest {
         // 到点后对账清除副本，读到新值
         clock.advance(Duration.ofMillis(200));
         assertEquals("u42-v2", nodeB.lookup("42").optional().orElseThrow());
-        assertTrue(nodeB.stats().versionInvalidationCount() >= 1L);
     }
 
     @Test
@@ -138,9 +137,8 @@ class RedisSemanticIntegrationTest {
         clock.advance(Duration.ofSeconds(2));
         nodeA.lookup("42");
 
-        CacheStats stats = nodeA.stats();
-        assertTrue(stats.hotKeyCount() >= 1L, "本地应升热");
-        assertTrue(stats.hotSyncCount() >= 1L, "到点应完成一次上报");
+        assertTrue(nodeA.local().keys().stream().anyMatch(k -> "42".equals(k.encoded())),
+                "本地应升热（该 key 进入本地副本）");
     }
 
     /**

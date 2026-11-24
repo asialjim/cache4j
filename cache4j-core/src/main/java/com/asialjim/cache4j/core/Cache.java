@@ -97,11 +97,6 @@ public interface Cache<K, V> extends AutoCloseable {
     void clear();
 
     /**
-     * @return 统计视图
-     */
-    CacheStats stats();
-
-    /**
      * 释放资源；默认无资源，幂等。
      */
     @Override

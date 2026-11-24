@@ -1,8 +1,10 @@
 package com.asialjim.cache4j.spring;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
-import com.asialjim.cache4j.core.log.CacheLogger;
 import com.asialjim.cache4j.core.strategy.CacheNamespace;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
 import org.springframework.beans.factory.config.BeanDefinition;
@@ -29,7 +31,7 @@ import java.util.Set;
  */
 public final class SpringCacheDeclScanner {
 
-    private static final CacheLogger LOG = CacheLogger.get(SpringCacheDeclScanner.class);
+    private static final Logger LOG = LoggerFactory.getLogger(SpringCacheDeclScanner.class);
 
     private final ClassLoader classLoader;
 
@@ -72,11 +74,9 @@ public final class SpringCacheDeclScanner {
                 inPackage.add(type);
             }
             if (inPackage.isEmpty()) {
-                LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明",
-                        "Spring 扫描：" + basePackage + " 未发现 @CacheNamespace 枚举");
+                LOG.debug("[{}]-{}-{}", "缓存装配", "声明", "Spring 扫描：" + basePackage + " 未发现 @CacheNamespace 枚举");
             } else {
-                LOG.debug(CacheLogger.Subject.ASSEMBLY, "声明",
-                        "Spring 扫描：" + basePackage + " 发现 " + inPackage.size() + " 个声明枚举");
+                LOG.debug("[{}]-{}-{}", "缓存装配", "声明", "Spring 扫描：" + basePackage + " 发现 " + inPackage.size() + " 个声明枚举");
             }
             found.addAll(inPackage);
         }

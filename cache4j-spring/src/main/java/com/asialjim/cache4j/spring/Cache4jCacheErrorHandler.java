@@ -1,8 +1,10 @@
 package com.asialjim.cache4j.spring;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
-import com.asialjim.cache4j.core.log.CacheLogger;
 import org.springframework.cache.Cache;
 import org.springframework.cache.interceptor.CacheErrorHandler;
 
@@ -19,7 +21,7 @@ import org.springframework.cache.interceptor.CacheErrorHandler;
  */
 public final class Cache4jCacheErrorHandler implements CacheErrorHandler {
 
-    private static final CacheLogger LOG = CacheLogger.get(Cache4jCacheErrorHandler.class);
+    private static final Logger LOG = LoggerFactory.getLogger(Cache4jCacheErrorHandler.class);
 
     private final boolean failOpen;
 
@@ -58,7 +60,7 @@ public final class Cache4jCacheErrorHandler implements CacheErrorHandler {
             throw exception;
         }
         String namespace = cache == null ? "-" : cache.getName();
-        LOG.warnThrottled(CacheLogger.Subject.SPRING_BRIDGE, "降级", () -> "namespace=" + namespace
+        LOG.warn("[{}]-{}-{}", "Spring缓存桥接", "降级", "namespace=" + namespace
                 + "，操作=" + operation + "，按 failOpen 降级，原因="
                 + exception.getClass().getSimpleName() + ":" + exception.getMessage());
     }

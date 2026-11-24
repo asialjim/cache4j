@@ -132,11 +132,10 @@ class ReconcileFetchScopeTest {
         cache.lookup("a");
         clock.advance(Duration.ofMillis(200));
 
-        long centralHitsBefore = cache.stats().centralHitCount();
+        int readsBefore = store.readCalls();
         cache.lookup("a");            // 命中本地，只触发对账
 
-        assertTrue(cache.stats().localHitCount() >= 1L, "应命中本地");
-        assertEquals(centralHitsBefore, cache.stats().centralHitCount(), "对账不应产生中央数据读");
+        assertEquals(readsBefore, store.readCalls(), "对账不应产生中央数据读（读由本地命中吸收）");
         assertEquals(1, store.revisionsCalls(), "对账本身仍取了一次版本");
     }
 

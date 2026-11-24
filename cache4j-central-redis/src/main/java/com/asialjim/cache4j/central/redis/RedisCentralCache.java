@@ -1,10 +1,8 @@
 package com.asialjim.cache4j.central.redis;
 
-import com.asialjim.cache4j.core.CacheCounters;
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheResCode;
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
@@ -29,7 +27,6 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
 
     private final CentralCacheSpec spec;
     private final RedisValueStore<V> store;
-    private final CacheCounters counters = new CacheCounters();
 
     /**
      * @param spec  配置
@@ -157,12 +154,6 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
     }
 
     @Override
-    public CacheStats stats() {
-        counters.setEstimatedSize(-1L);
-        return counters;
-    }
-
-    @Override
     public CentralCacheSpec spec() {
         return spec;
     }
@@ -202,13 +193,9 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
     }
 
     private void countRead(Lookup<V> lookup) {
-        counters.increment(CacheCounters.Counter.COMMAND);
         if (lookup.isNegative()) {
-            counters.increment(CacheCounters.Counter.STORE_HIT);
         } else if (lookup.isHit()) {
-            counters.increment(CacheCounters.Counter.STORE_HIT);
         } else {
-            counters.increment(CacheCounters.Counter.STORE_MISS);
         }
     }
 

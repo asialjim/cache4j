@@ -1,5 +1,8 @@
 package com.asialjim.cache4j.spring;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,7 +21,6 @@ import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
-import com.asialjim.cache4j.core.log.CacheLogger;
 import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
 import org.springframework.util.ClassUtils;
 
@@ -43,7 +45,7 @@ import java.util.Set;
  */
 public final class TwoLevelCacheManager implements AutoCloseable {
 
-    private static final CacheLogger LOG = CacheLogger.get(TwoLevelCacheManager.class);
+    private static final Logger LOG = LoggerFactory.getLogger(TwoLevelCacheManager.class);
 
     private final Map<String, TwoLevelCache<Object, Object>> caches;
     private final CentralCacheProvider centralProvider;
@@ -52,7 +54,6 @@ public final class TwoLevelCacheManager implements AutoCloseable {
     private final CentralCacheProvider undeclaredCentralProvider;
     private final KeyEncoder keyEncoder;
     private final HotKeyCoordinator coordinator;
-    private final boolean statsEnabled;
     private final boolean undeclaredEnabled;
 
     /**
@@ -67,7 +68,6 @@ public final class TwoLevelCacheManager implements AutoCloseable {
                                  CentralCacheProvider undeclaredCentralProvider,
                                  KeyEncoder keyEncoder,
                                  HotKeyCoordinator coordinator,
-                                 boolean statsEnabled,
                                  boolean undeclaredEnabled) {
         this.caches = caches;
         this.centralProvider = centralProvider;
@@ -76,7 +76,6 @@ public final class TwoLevelCacheManager implements AutoCloseable {
         this.undeclaredCentralProvider = undeclaredCentralProvider;
         this.keyEncoder = keyEncoder;
         this.coordinator = coordinator;
-        this.statsEnabled = statsEnabled;
         this.undeclaredEnabled = undeclaredEnabled;
     }
 
@@ -89,14 +88,14 @@ public final class TwoLevelCacheManager implements AutoCloseable {
     public static TwoLevelCacheManager create(Cache4jSpringOptions options) {
         Map<String, TwoLevelCache<Object, Object>> built = new LinkedHashMap<>();
         if (!options.enabled()) {
-            LOG.info(CacheLogger.Subject.ASSEMBLY, "装配", "已禁用（cache4j.enabled=false），不创建任何缓存");
+            LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "已禁用（cache4j.enabled=false），不创建任何缓存");
             return new TwoLevelCacheManager(built, options.centralProvider(), false,
                     options.localProvider(), options.centralProvider(), options.keyEncoder(),
-                    null, options.statsEnabled(), false);
+                    null, false);
         }
         List<CacheDefinition> definitions = definitions(options);
         if (definitions.isEmpty()) {
-            LOG.error(CacheLogger.Subject.ASSEMBLY, "装配", "至少需要一条缓存定义"
+            LOG.error("[{}]-{}-{}", "缓存装配", "装配", "至少需要一条缓存定义"
                     + "（程序化定义 / META-INF/services 声明 / @CacheNamespace 扫描 三者皆空）");
             throw new IllegalStateException("至少需要一条缓存定义");
         }
@@ -106,7 +105,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
         for (CacheDefinition definition : definitions) {
             String namespace = definition.namespace();
             if (built.containsKey(namespace)) {
-                LOG.error(CacheLogger.Subject.ASSEMBLY, "装配", "重复的缓存名：namespace=" + namespace);
+                LOG.error("[{}]-{}-{}", "缓存装配", "装配", "重复的缓存名：namespace=" + namespace);
                 throw new IllegalStateException("重复的缓存名：" + namespace);
             }
             LocalCacheSpec localSpec = definition.local();
@@ -120,19 +119,18 @@ public final class TwoLevelCacheManager implements AutoCloseable {
                     .local(local)
                     .central(central)
                     .hotKeyCoordinator(coordinator)
-                    .statsEnabled(options.statsEnabled())
                     .build();
             built.put(namespace, cache);
-            LOG.info(CacheLogger.Subject.ASSEMBLY, "装配", "namespace=" + namespace + "，装配完成，strategy=" + localSpec.strategy()
+            LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "namespace=" + namespace + "，装配完成，strategy=" + localSpec.strategy()
                     + "，localTtl=" + localSpec.ttl()
                     + "，centralTtl=" + definition.central().ttl()
                     + "，coordinator=" + (coordinator == null ? "none" : coordinator.getClass().getSimpleName()));
         }
-        LOG.info(CacheLogger.Subject.ASSEMBLY, "装配", "共装配 " + built.size() + " 个缓存："
+        LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "共装配 " + built.size() + " 个缓存："
                 + String.join(", ", built.keySet()));
         return new TwoLevelCacheManager(built, options.centralProvider(),
                 options.ownsCentralProvider(), options.localProvider(), options.centralProvider(),
-                options.keyEncoder(), coordinator, options.statsEnabled(),
+                options.keyEncoder(), coordinator,
                 options.undeclaredEnabled());
     }
 
@@ -176,8 +174,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
         }
         List<String> failures = repository.bootstrap();
         if (!failures.isEmpty()) {
-            LOG.warn(CacheLogger.Subject.ASSEMBLY, "装配",
-                    "策略仓库自举有 " + failures.size() + " 个 namespace 失败：" + failures);
+            LOG.warn("[{}]-{}-{}", "缓存装配", "装配", "策略仓库自举有 " + failures.size() + " 个 namespace 失败：" + failures);
         }
         for (CacheDefinition definition : repository.definitions()) {
             merged.putIfAbsent(definition.namespace(), definition);
@@ -254,8 +251,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
      */
     private TwoLevelCache<Object, Object> createUndeclared(String name) {
         undeclared.add(name);
-        LOG.warn(CacheLogger.Subject.ASSEMBLY, "声明",
-                name + " 未经 CacheStrategyDecl 声明，按内建默认创建，请补充到声明枚举"
+        LOG.warn("[{}]-{}-{}", "缓存装配", "声明", name + " 未经 CacheStrategyDecl 声明，按内建默认创建，请补充到声明枚举"
                         + "（未声明 namespace 累计 " + undeclared.size() + " 个）");
         CacheDefinition definition = BuiltinDefaults.definitionOf(name, LocalStrategy.STATIC);
         LocalCache<Object> local = localProvider.create(definition.local(), coordinator);
@@ -266,7 +262,6 @@ public final class TwoLevelCacheManager implements AutoCloseable {
                 .central(central)
                 .hotKeyCoordinator(coordinator)
                 .localNullTtlDivisor(definition.localNullTtlDivisor())
-                .statsEnabled(statsEnabled)
                 .build();
         synchronized (caches) {
             caches.put(name, created);
@@ -297,7 +292,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
 
     @Override
     public void close() {
-        LOG.info(CacheLogger.Subject.ASSEMBLY, "关闭", "关闭 " + caches.size() + " 个缓存"
+        LOG.debug("[{}]-{}-{}", "缓存装配", "关闭", "关闭 " + caches.size() + " 个缓存"
                 + (ownsCentralProvider ? "，并关闭中央 provider" : ""));
         caches.values().forEach(cache -> {
             try {

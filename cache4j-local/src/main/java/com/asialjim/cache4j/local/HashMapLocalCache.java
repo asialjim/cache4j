@@ -1,8 +1,6 @@
 package com.asialjim.cache4j.local;
 
-import com.asialjim.cache4j.core.CacheCounters;
 import com.asialjim.cache4j.core.CacheKey;
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
@@ -41,7 +39,6 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
     private final Segment<V>[] segments;
     private final int perSegmentCapacity;
     private final LongSupplier nanoClock;
-    private final CacheCounters counters = new CacheCounters();
 
     /**
      * 条目消失（过期 / 容量淘汰 / 显式失效）时的通知，默认空实现。
@@ -113,16 +110,13 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
         try {
             TimedEntry<V> entry = segment.map.get(key);
             if (entry == null) {
-                counters.increment(CacheCounters.Counter.STORE_MISS);
                 return Lookup.miss();
             }
             if (entry.expired(now)) {
                 segment.map.remove(key);
-                counters.increment(CacheCounters.Counter.STORE_MISS);
                 expired = true;
                 return Lookup.miss();
             }
-            counters.increment(CacheCounters.Counter.STORE_HIT);
             return Lookup.hit(entry.entry);
         } finally {
             segment.lock.unlock();
@@ -147,7 +141,6 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
         try {
             segment.map.put(key, new TimedEntry<>(value, expireAt));
             evicted = trimSegment(segment);
-            counters.increment(CacheCounters.Counter.PUT);
         } finally {
             segment.lock.unlock();
             fireRemoved(evicted);
@@ -169,7 +162,6 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
             }
             segment.map.put(key, new TimedEntry<>(value, expireAt));
             evicted = trimSegment(segment);
-            counters.increment(CacheCounters.Counter.PUT);
             return true;
         } finally {
             segment.lock.unlock();
@@ -191,7 +183,6 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
             }
             segment.map.put(key, new TimedEntry<>(value, expireAt));
             evicted = trimSegment(segment);
-            counters.increment(CacheCounters.Counter.PUT);
             return true;
         } finally {
             segment.lock.unlock();
@@ -307,12 +298,6 @@ public final class HashMapLocalCache<V> implements LocalCache<V> {
         for (CacheKey key : keys) {
             removalListener.accept(key);
         }
-    }
-
-    @Override
-    public CacheStats stats() {
-        counters.setEstimatedSize(size());
-        return counters;
     }
 
     /**

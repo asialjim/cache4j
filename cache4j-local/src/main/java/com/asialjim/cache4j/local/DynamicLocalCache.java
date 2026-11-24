@@ -1,8 +1,9 @@
 package com.asialjim.cache4j.local;
 
-import com.asialjim.cache4j.core.CacheCounters;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.core.CacheKey;
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
@@ -11,7 +12,6 @@ import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
-import com.asialjim.cache4j.core.log.CacheLogger;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -56,9 +56,8 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     private final HotKeyCoordinator coordinator;
     private final FrequencySketch sketch;
     private final LongSupplier nanoClock;
-    private static final CacheLogger LOG = CacheLogger.get(DynamicLocalCache.class);
+    private static final Logger LOG = LoggerFactory.getLogger(DynamicLocalCache.class);
 
-    private final CacheCounters counters = new CacheCounters();
 
     private final ConcurrentHashMap<CacheKey, HotEntry> hotKeys = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<CacheKey> lru = new ConcurrentLinkedQueue<>();
@@ -154,15 +153,13 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         boolean cooling = isCooling(key, now);
         if (cooling && count >= dynamic.hotThresholdCount()) {
             // 冷却期：频次够了也不许升热（抑制"降热→立刻又升热"的抖动）
-            LOG.read(CacheLogger.Subject.DYNAMIC_LOCAL, key, () -> "冷却期内拒绝升热，窗口计数=" + count
+            LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "冷却期内拒绝升热，窗口计数=" + count
                     + "，剩余冷却=" + cooldownRemainingMillis(key, now) + "ms");
         }
         if (!cooling && count >= dynamic.hotThresholdCount()) {
             addDelta(key);
             promote(key, count, now);
-            counters.increment(CacheCounters.Counter.PROMOTION);
-            counters.increment(CacheCounters.Counter.LOCAL_PROMOTION);
-            LOG.read(CacheLogger.Subject.DYNAMIC_LOCAL, key, () -> "触发热升，窗口计数=" + count
+            LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "触发热升，窗口计数=" + count
                     + "（阈值=" + dynamic.hotThresholdCount() + "），热点集合大小=" + hotKeys.size());
             return true;
         }
@@ -245,16 +242,14 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
 
             for (Map.Entry<CacheKey, Long> entry : reported.entrySet()) {
                 if (entry.getValue() == 0L) {
-                    counters.increment(CacheCounters.Counter.HOT_COMPENSATION_QUERY);
                 }
             }
 
             Map<CacheKey, HotKeyReport> reports = coordinator.reportAndStatusAll(spec.namespace(), reported);
             applyCentralStatus(reports);
             nextSyncAtNanos = now + jitteredSyncInterval();
-            counters.increment(CacheCounters.Counter.HOT_SYNC);
             final Map<CacheKey, Long> flushed = reported;
-            LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "namespace=" + spec.namespace() + "，上报完成，分区=" + partitionOf(key)
+            LOG.debug("[{}]-{}-{}", "动态本地缓存", "热key", "namespace=" + spec.namespace() + "，上报完成，分区=" + partitionOf(key)
                     + "，上报 key 数=" + flushed.size());
         } catch (RuntimeException e) {
             // 只回填真正上报过的增量（被倾斜截断的那部分已单独回填）
@@ -266,8 +261,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             long backoff = spec.version() == null ? Duration.ofMillis(200).toNanos()
                     : spec.version().retryBackoff().toNanos();
             nextSyncAtNanos = now + backoff;
-            counters.increment(CacheCounters.Counter.HOT_SYNC_ERROR);
-            LOG.warnThrottled(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "热 key 上报失败，整批回填并退避，"
+            LOG.warn("[{}]-{}-{}", "动态本地缓存", "热key", "热 key 上报失败，整批回填并退避，"
                     + "namespace=" + spec.namespace() + "，退避=" + backoff + "ms 级，原因=" + e.getMessage());
         } finally {
             syncing.set(false);
@@ -289,7 +283,6 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         for (Map.Entry<CacheKey, Long> entry : batch.entrySet()) {
             if (!selected.containsKey(entry.getKey())) {
                 restoreDelta(entry.getKey(), entry.getValue());
-                counters.increment(CacheCounters.Counter.HOT_REPORT_DROPPED);
             }
         }
         return selected;
@@ -311,7 +304,6 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             // 冷 key 不落本地：写不计频次，也就不可能因为它"热"。需要 read-your-write 请用 STATIC。
             // 日志由编排层按"调用方写入"还是"内部回填"分别记录（见 DefaultTwoLevelCache），
             // 这里只负责计数，避免把读路径的回填误报成"写"。
-            counters.increment(CacheCounters.Counter.DYNAMIC_PUT_DISCARDED);
             return;
         }
         Duration effective = ttl;
@@ -321,7 +313,6 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     @Override
     public boolean putIfAbsent(CacheKey key, LocalEntry<V> value, Duration ttl) {
         if (!hotKeys.containsKey(key)) {
-            counters.increment(CacheCounters.Counter.DYNAMIC_PUT_DISCARDED);
             return false;
         }
         return delegate.putIfAbsent(key, value, ttl);
@@ -349,7 +340,6 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     @Override
     public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
         if (!hotKeys.containsKey(key)) {
-            counters.increment(CacheCounters.Counter.DYNAMIC_PUT_DISCARDED);
             return false;
         }
         return delegate.putIfNewer(key, value, ttl);
@@ -375,18 +365,6 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
                 cooldownUntilNanos.remove(key, until);
             }
         });
-    }
-
-    @Override
-    public CacheStats stats() {
-        counters.setEstimatedSize(delegate.stats().estimatedSize());
-        counters.setHotKeyCount(hotKeys.size());
-        long candidates = 0L;
-        for (Map<CacheKey, Integer> bucket : candidateByPartition) {
-            candidates += bucket.size();
-        }
-        counters.setCandidateCount(candidates);
-        return counters;
     }
 
     @Override
@@ -438,9 +416,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
             cooldownUntilNanos.put(key, now + dynamic.cooldown().toNanos());
         }
         delegate.evict(key);
-        counters.increment(CacheCounters.Counter.DEMOTION);
-        counters.increment(CacheCounters.Counter.GLOBAL_DEMOTION);
-        LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "降热，来源=中央 COOLING，key=" + key.masked()
+        LOG.debug("[{}]-{}-{}", "动态本地缓存", "热key", "降热，来源=中央 COOLING，key=" + key.masked()
                 + "，进入冷却=" + dynamic.cooldown() + "，热点集合大小=" + hotKeys.size());
     }
 
@@ -466,9 +442,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
                     if (!hotKeys.containsKey(key) && !isCooling(key, now)) {
                         // 中央只回传状态，本地记录自己的窗口计数（不回灌中央数值）
                         promote(key, localCount(key, now), now);
-                        counters.increment(CacheCounters.Counter.PROMOTION);
-                        counters.increment(CacheCounters.Counter.GLOBAL_PROMOTION);
-                        LOG.debug(CacheLogger.Subject.DYNAMIC_LOCAL, "热key", () -> "升热，来源=中央 HOT，key="
+                        LOG.debug("[{}]-{}-{}", "动态本地缓存", "热key", "升热，来源=中央 HOT，key="
                                 + key.masked() + "，本地窗口计数=" + localCount(key, now)
                                 + "，热点集合大小=" + hotKeys.size());
                     }
@@ -551,7 +525,6 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
         }
         int bound = dynamic.maxHotKeys() + dynamic.candidateCapacity();
         if (pendingDelta.size() >= bound) {
-            counters.increment(CacheCounters.Counter.HOT_REPORT_DROPPED);
             return new LongAdder();
         }
         return pendingDelta.computeIfAbsent(key, ignored -> new LongAdder());

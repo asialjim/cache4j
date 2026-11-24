@@ -1,5 +1,8 @@
 package com.asialjim.cache4j.spring.redis;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.asialjim.cache4j.central.redis.RedisAccessException;
 import com.asialjim.cache4j.central.redis.RedisValueStore;
 import com.asialjim.cache4j.core.CacheException;
@@ -10,7 +13,6 @@ import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
-import com.asialjim.cache4j.core.log.CacheLogger;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.redis.RedisConnectionFailureException;
@@ -50,7 +52,7 @@ import java.util.function.LongSupplier;
  */
 public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 
-    private static final CacheLogger LOG = CacheLogger.get(SpringRedisValueStore.class);
+    private static final Logger LOG = LoggerFactory.getLogger(SpringRedisValueStore.class);
 
     private static final byte[] EMPTY = new byte[0];
 
@@ -347,7 +349,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
             return serializer.deserialize(payload);
         } catch (RuntimeException e) {
             // 数据损坏必须可见：ERROR 级别，且永远不降级
-            LOG.error(CacheLogger.Subject.REDIS_STORE, "编解码", "反序列化失败，key=" + key.masked()
+            LOG.error("[{}]-{}-{}-{}", "Redis存储", "编解码", "反序列化失败，key=" + key.masked()
                     + "，serializer=" + serializer.getClass().getSimpleName(), e);
             throw new CacheException(CacheResCode.CODEC_DECODE_FAILED, "反序列化失败", e);
         }
@@ -357,7 +359,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
         try {
             byte[] payload = serializer.serialize(value);
             if (payload == null) {
-                LOG.error(CacheLogger.Subject.REDIS_STORE, "编解码", "serializer 返回 null，value 类型="
+                LOG.error("[{}]-{}-{}", "Redis存储", "编解码", "serializer 返回 null，value 类型="
                         + (value == null ? "null" : value.getClass().getName()));
                 throw new CacheException(CacheResCode.CODEC_ENCODE_FAILED, "serializer 返回 null");
             }
@@ -365,7 +367,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
         } catch (CacheException e) {
             throw e;
         } catch (RuntimeException e) {
-            LOG.error(CacheLogger.Subject.REDIS_STORE, "编解码", "序列化失败，value 类型="
+            LOG.error("[{}]-{}-{}-{}", "Redis存储", "编解码", "序列化失败，value 类型="
                     + (value == null ? "null" : value.getClass().getName())
                     + "，serializer=" + serializer.getClass().getSimpleName(), e);
             throw new CacheException(CacheResCode.CODEC_ENCODE_FAILED, "序列化失败", e);

@@ -1,8 +1,6 @@
 package com.asialjim.cache4j.localcaffeine;
 
-import com.asialjim.cache4j.core.CacheCounters;
 import com.asialjim.cache4j.core.CacheKey;
-import com.asialjim.cache4j.core.CacheStats;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
@@ -41,7 +39,6 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
 
     private final LocalCacheSpec spec;
     private final com.github.benmanes.caffeine.cache.Cache<CacheKey, TimedEntry<V>> cache;
-    private final CacheCounters counters = new CacheCounters();
 
     /**
      * 条目消失（过期 / 容量淘汰 / 显式失效）时的通知，默认空实现。
@@ -115,10 +112,8 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
     public Lookup<LocalEntry<V>> lookup(CacheKey key) {
         TimedEntry<V> timed = cache.getIfPresent(key);
         if (timed == null) {
-            counters.increment(CacheCounters.Counter.STORE_MISS);
             return Lookup.miss();
         }
-        counters.increment(CacheCounters.Counter.STORE_HIT);
         return Lookup.hit(timed.entry());
     }
 
@@ -130,7 +125,6 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
     @Override
     public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
         cache.put(key, new TimedEntry<>(value, toNanos(ttl)));
-        counters.increment(CacheCounters.Counter.PUT);
     }
 
     @Override
@@ -144,7 +138,6 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
             return new TimedEntry<>(value, toNanos(ttl));
         });
         if (written.get()) {
-            counters.increment(CacheCounters.Counter.PUT);
         }
         return written.get();
     }
@@ -155,7 +148,6 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
         if (previous != null) {
             return false;
         }
-        counters.increment(CacheCounters.Counter.PUT);
         return true;
     }
 
@@ -189,12 +181,6 @@ public final class CaffeineLocalCache<V> implements LocalCache<V> {
     public void onEntryRemoved(Consumer<CacheKey> listener) {
         this.removalListener = listener == null ? key -> {
         } : listener;
-    }
-
-    @Override
-    public CacheStats stats() {
-        counters.setEstimatedSize(cache.estimatedSize());
-        return counters;
     }
 
     @Override
