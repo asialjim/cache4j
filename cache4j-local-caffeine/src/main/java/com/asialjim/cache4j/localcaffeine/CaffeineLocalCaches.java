@@ -5,7 +5,7 @@ import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
-import com.asialjim.cache4j.local.DynamicLocalCache;
+import com.asialjim.cache4j.local.HotKeyAdmissionLocalCache;
 
 import java.util.function.LongSupplier;
 
@@ -66,7 +66,7 @@ public final class CaffeineLocalCaches {
                     throw new CacheException(CacheResCode.INVALID_SPEC,
                             "coordination=GLOBAL 必须提供 HotKeyCoordinator，不静默退化为单节点模式");
                 }
-                yield new DynamicLocalCache<>(new CaffeineLocalCache<>(spec, nanoClock), spec,
+                yield new HotKeyAdmissionLocalCache<>(new CaffeineLocalCache<>(spec, nanoClock), spec,
                         coordinator, nanoClock);
             }
         };

@@ -4,6 +4,7 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
+import com.asialjim.cache4j.core.local.NoneLocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
@@ -19,7 +20,7 @@ import java.util.Set;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public final class NoOpLocalCache<V> implements LocalCache<V> {
+public final class NoOpLocalCache<V> implements NoneLocalCache<V> {
 
     private final LocalCacheSpec spec;
 

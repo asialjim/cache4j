@@ -61,8 +61,7 @@ public final class LocalCaches {
                             com.asialjim.cache4j.core.CacheResCode.INVALID_SPEC,
                             "coordination=GLOBAL 必须提供 HotKeyCoordinator，不静默退化为单节点模式");
                 }
-                yield new DynamicLocalCache<>(new HashMapLocalCache<>(spec, nanoClock), spec,
-                        coordinator, nanoClock);
+                yield new HashMapDynamicLocalCache<>(spec, coordinator, nanoClock);
             }
         };
     }

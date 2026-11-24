@@ -4,6 +4,7 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
+import com.asialjim.cache4j.core.local.StaticLocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
@@ -31,7 +32,7 @@ import java.util.function.LongSupplier;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public final class HashMapLocalCache<V> implements LocalCache<V> {
+public final class HashMapLocalCache<V> implements StaticLocalCache<V> {
 
     private static final int SEGMENTS = 16;
 

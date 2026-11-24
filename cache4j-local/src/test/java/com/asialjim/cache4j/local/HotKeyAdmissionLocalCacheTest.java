@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * @author Asial Jim
  */
-class DynamicLocalCacheTest {
+class HotKeyAdmissionLocalCacheTest {
 
     private static final String NS = "product:hot";
 

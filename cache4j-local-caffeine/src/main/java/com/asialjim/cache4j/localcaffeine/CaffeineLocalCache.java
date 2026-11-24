@@ -4,6 +4,7 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
+import com.asialjim.cache4j.core.local.StaticLocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -30,7 +31,7 @@ import java.util.function.LongSupplier;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public final class CaffeineLocalCache<V> implements LocalCache<V> {
+public final class CaffeineLocalCache<V> implements StaticLocalCache<V> {
 
     /**
      * 永不过期的 TTL 表达（Caffeine 用纳秒计时）。

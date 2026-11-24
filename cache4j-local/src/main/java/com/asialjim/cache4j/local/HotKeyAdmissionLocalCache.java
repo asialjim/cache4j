@@ -48,7 +48,7 @@ import java.util.function.LongSupplier;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public final class DynamicLocalCache<V> implements LocalCache<V> {
+public final class HotKeyAdmissionLocalCache<V> implements LocalCache<V> {
 
     private final LocalCache<V> delegate;
     private final LocalCacheSpec spec;
@@ -56,7 +56,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
     private final HotKeyCoordinator coordinator;
     private final FrequencySketch sketch;
     private final LongSupplier nanoClock;
-    private static final Logger LOG = LoggerFactory.getLogger(DynamicLocalCache.class);
+    private static final Logger LOG = LoggerFactory.getLogger(HotKeyAdmissionLocalCache.class);
 
 
     private final ConcurrentHashMap<CacheKey, HotEntry> hotKeys = new ConcurrentHashMap<>();
@@ -82,7 +82,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
      * @param coordinator 热 key 协调器；{@code coordination=GLOBAL} 时必填
      * @param nanoClock   单调时钟
      */
-    public DynamicLocalCache(LocalCache<V> delegate, LocalCacheSpec spec,
+    public HotKeyAdmissionLocalCache(LocalCache<V> delegate, LocalCacheSpec spec,
                              HotKeyCoordinator coordinator, LongSupplier nanoClock) {
         this.delegate = delegate;
         this.spec = spec;
@@ -635,7 +635,7 @@ public final class DynamicLocalCache<V> implements LocalCache<V> {
 
         static HotEntry promoted(long now, long estimate) {
             return new HotEntry(now, now, 0L, HotKeyStatus.UNKNOWN,
-                    DynamicLocalCache.saturate(estimate));
+                    HotKeyAdmissionLocalCache.saturate(estimate));
         }
 
         HotEntry touch(long now, int estimate) {
