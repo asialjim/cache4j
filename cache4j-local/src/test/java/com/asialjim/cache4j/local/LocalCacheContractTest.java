@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.local.NoneLocalCache;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
@@ -250,7 +251,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("NONE 策略：不存值、不参与版本对账")
     void noOpHasNoState() {
-        LocalCache<String> cache = new NoOpLocalCache<>(LocalCacheSpec.noLocal("user:detail"));
+        LocalCache<String> cache = new NoneLocalCache<>(LocalCacheSpec.noLocal("user:detail"));
         assertFalse(cache.available());
 
         cache.put(key("a"), LocalEntry.hit("va", 1L), Duration.ofMinutes(1));

@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.core.twolevel;
 
+import com.asialjim.cache4j.core.local.NoneLocalCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -659,7 +660,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
          */
         public Cache4j<K, V> build() {
             if (local == null) {
-                throw invalid("local 不能为空（NONE 策略请使用 NoOpLocalCache）");
+                throw invalid("local 不能为空（NONE 策略请使用 NoneLocalCache）");
             }
             if (central == null) {
                 throw invalid("central 不能为空");

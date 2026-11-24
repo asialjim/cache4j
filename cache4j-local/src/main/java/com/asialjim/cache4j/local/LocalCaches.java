@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.local.NoneLocalCache;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
@@ -52,7 +53,7 @@ public final class LocalCaches {
                                           LongSupplier nanoClock) {
         spec.validate();
         return switch (spec.strategy()) {
-            case NONE -> new NoOpLocalCache<>(spec);
+            case NONE -> new NoneLocalCache<>(spec);
             case STATIC -> new HashMapLocalCache<>(spec, nanoClock);
             case DYNAMIC -> {
                 if (spec.dynamic().coordination() == LocalCacheSpec.Coordination.GLOBAL
