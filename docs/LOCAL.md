@@ -4,6 +4,11 @@
 
 ---
 
+> **实现状态（2026-11 重构后）**：本文描述的设计基本仍然成立，但类名与外围设施已变——
+> 门面实现是 `Cache4jImpl`（原 `DefaultTwoLevelCache`），顶层接口统一为 `Cache4j`，
+> 统计与 `CacheLogger` 已移除，编码器只剩 `plain` 与 `delegate`。
+> 完整清单见 `DESIGN.md` §3.9「重构后的类地图」与 `REFACTOR.md` §9。
+
 ## 1. 本地缓存 SPI（通用契约在 `cache4j-core`，本地侧在 `cache4j-local`）
 
 `Cache`、`Lookup`、`CacheKey` 是 core 的通用契约；`LocalCache`、`LocalCacheSpec`、`LocalStrategy` 是本地侧 SPI（接口由 core 暴露），由 `cache4j-local` 负责实现与装配。
@@ -205,7 +210,7 @@ LocalCacheSpec.dynamicCache("user:detail", 10_000, ttl,
 - 三个工厂都会校验参数；`NONE` 忽略 `maxSize` / `ttl` / `version`，非零配置记 WARN；
 - `STATIC` / `DYNAMIC` 的 `version` 不允许为 `null`，缺省由工厂填充默认 `VersionSpec`；
 - `DYNAMIC` 且 `coordination=GLOBAL` 时 `global` 必填，`coordination=LOCAL` 时忽略 `global` 并记 INFO；
-- 工厂只做**本地侧**校验；"必须有 `HotKeyCoordinator`"的校验在 `TwoLevelCache` 构建阶段完成，因为它需要看到装配上下文。
+- 工厂只做**本地侧**校验；"必须有 `HotKeyCoordinator`"的校验在 `Cache4j` 构建阶段完成，因为它需要看到装配上下文。
 
 ---
 
@@ -283,7 +288,7 @@ access:
 - 信号量属于**命名空间**（`nextSyncAtNanos` + `syncing` CAS），不是每 key 一个；
 - **一次对账覆盖全部本地副本**，所以低频 key 不会被饿死；
 - 载荷 = 本地已知 key 数（≤ `maxSize`），不是该命名空间在中央的 key 总数；
-- 本地实现只负责存 `LocalEntry` 并提供 `keys()`；比对逻辑在 `TwoLevelCache`，本地不感知中央版本的生成规则；
+- 本地实现只负责存 `LocalEntry` 并提供 `keys()`；比对逻辑在 `Cache4j`，本地不感知中央版本的生成规则；
 - 对账失败按 `retryBackoff` 推迟下次，不改任何副本；
 - 对账是**逐条 evict**，不存在"半失效"窗口，所以不需要 `version.during` 之类的开关。
 

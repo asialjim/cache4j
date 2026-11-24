@@ -12,10 +12,15 @@
 
 ---
 
+> **实现状态（2026-11 重构后）**：本文描述的设计基本仍然成立，但类名与外围设施已变——
+> 门面实现是 `Cache4jImpl`（原 `DefaultTwoLevelCache`），顶层接口统一为 `Cache4j`，
+> 统计与 `CacheLogger` 已移除，编码器只剩 `plain` 与 `delegate`。
+> 完整清单见 `DESIGN.md` §3.9「重构后的类地图」与 `REFACTOR.md` §9。
+
 ## 1. 模块职责
 
 ```text
-cache4j-core（LocalCache / CentralCache 接口 + Spec + TwoLevelCache 接口 + DefaultTwoLevelCache）
+cache4j-core（LocalCache / CentralCache 接口 + Spec + Cache4j 接口 + Cache4jImpl）
 ├── cache4j-local
 │   └── cache4j-local-caffeine   依赖 local
 ├── cache4j-central              中央缓存 SPI
@@ -117,10 +122,10 @@ public final class SpringCacheManagerAdapter implements org.springframework.cach
 ```java
 public final class SpringCacheAdapter implements org.springframework.cache.Cache {
 
-    private final TwoLevelCache<Object, Object> delegate;
+    private final Cache4j<Object, Object> delegate;
 
     @Override public String getName();
-    @Override public Object getNativeCache();  // 返回 TwoLevelCache
+    @Override public Object getNativeCache();  // 返回 Cache4j
     @Override public ValueWrapper get(Object key);
     @Override public <T> T get(Object key, Class<T> type);
     @Override public <T> T get(Object key, Callable<T> valueLoader);
@@ -143,12 +148,12 @@ public final class SpringCacheAdapter implements org.springframework.cache.Cache
 | `evict(key)` | `evict` |
 | `clear()` | `clear`；Redis 下是 `SCAN`，非原子 |
 | `invalidate()`（若目标 Spring 版本有） | 映射到 `clear()` |
-| `getNativeCache()` | 返回 `TwoLevelCache`，便于业务做高级操作 |
+| `getNativeCache()` | 返回 `Cache4j`，便于业务做高级操作 |
 
 `sync=true`：
 
 - Spring 对 `@Cacheable(sync=true)` 会调用 `Cache.get(key, Callable)`；
-- 适配器把 `Callable` 包成 `CacheLoader`，交给 `TwoLevelCache` 的单飞；
+- 适配器把 `Callable` 包成 `CacheLoader`，交给 `Cache4j` 的单飞；
 - 同一个 JVM 内同一个 key 只执行一次 loader；
 - 负缓存命中时直接返回 `null`，不调用 `Callable`。
 
@@ -329,7 +334,7 @@ SpringRedisValueStore implements RedisValueStore<V>   (cache4j-spring-redis)
         ↓
 RedisCentralCache                                     (cache4j-central-redis)
         ↓
-TwoLevelCache                                 (cache4j-core)
+Cache4j                                 (cache4j-core)
 ```
 
 它**不**实现版本语义、负缓存策略、TTL 抖动、热 key 判定与命中统计；这些在 `cache4j-central-redis` / `cache4j-core`。它**要**实现 key 布局、Lua、序列化——因为真正做 I/O 的是它。它也**不**决定底层客户端：Jedis、Lettuce 或其他实现由用户在 Spring Data Redis 侧选择。
@@ -622,7 +627,7 @@ Solon 的 `@Cache` / `@CachePut` / `@CacheRemove` 注解通过 `CacheService` �
 ```java
 public final class Cache4jCacheService implements CacheService {
 
-    private final TwoLevelCache<String, Object> cache; // identity key encoder
+    private final Cache4j<String, Object> cache; // identity key encoder
     // Solon 侧同样把编解码放在这一层（CacheService 存的是 Object，由本模块决定序列化）
 
     @Override
@@ -644,7 +649,7 @@ public final class Cache4jCacheService implements CacheService {
 
     @Override
     public <T> T getOrStore(String key, Type type, int seconds, Supplier<T> supplier) {
-        // 用 TwoLevelCache 的单飞，而不是默认的 get + store
+        // 用 Cache4j 的单飞，而不是默认的 get + store
         return cache.get(key, k -> supplier.get())
                 .map(v -> cast(v, type))
                 .orElse(null);
@@ -671,7 +676,7 @@ Solon 的 tags 用于批量删除（例如分页缓存）。两种实现方式�
 2. 若版本不兼容，在 `cache4j-solon` 内按同样语义实现：
    - `storeTag`：先 `store`，再把 key 加入 tag 列表；
    - `removeTag`：读取 tag 列表，逐个 `remove`，再删除 tag 列表本身；
-   - tag 列表本身也存进同一个 `TwoLevelCache`，享受本地/中央两层能力；
+   - tag 列表本身也存进同一个 `Cache4j`，享受本地/中央两层能力；
    - tag 列表不要无限增长；Solon 官方文档也提示 tags 不能关联太多 key，否则性能会很差。
 
 注册：
@@ -694,7 +699,7 @@ public class Cache4jSolonConfiguration {
 
     @Bean
     public CacheService cacheService(@Inject("${cache4j.solon}") Properties props) {
-        // 读取配置、构建 LocalCache / CentralCache / TwoLevelCache
+        // 读取配置、构建 LocalCache / CentralCache / Cache4j
         return new Cache4jCacheService(...);
     }
 }

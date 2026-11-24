@@ -3,6 +3,10 @@
 > 状态：**设计稿，未落地**。本文只定义方案与取舍，不含实现。
 > 关联：`DESIGN.md`（版本对账、门面编排）、`LOCAL.md`（本地 SPI）、`ADAPTERS.md`（框架适配）。
 
+> **实现状态（2026-11 重构后）**：门面实现改名为 `Cache4jImpl`、顶层接口统一为 `Cache4j`；
+> 策略仓库的读写已拆成 `CacheStrategyCache`（读，带自举缓存）与 `CacheStrategyAdministrator`（管理面）；
+> 统计与 `CacheLogger` 已移除。完整清单见 `DESIGN.md` §3.9 与 `REFACTOR.md` §9。
+
 ## 1. 背景与目标
 
 现状有两个缺口：
@@ -10,7 +14,7 @@
 1. **声明与初始化是硬编码**：每个 namespace 的策略（`NONE` / `STATIC` / `DYNAMIC`、`maxSize`、
    `localTtl`、`version`、`dynamic`）都要在装配代码里逐条手写 `LocalCacheSpec` / `CentralCacheSpec`。
    业务方只知道自己"要一个用户详情缓存"，不该关心 `reconcilePartitions` 这类参数。
-2. **策略不可热更**：`LocalCacheSpec` 与 `CentralCacheSpec` 是不可变记录，`DefaultTwoLevelCache`
+2. **策略不可热更**：`LocalCacheSpec` 与 `CentralCacheSpec` 是不可变记录，`Cache4jImpl`
    在构造时把本地缓存实例、分区索引、对账信号量都固化成字段。线上要把某个 namespace 从
    `NONE` 调成 `STATIC`（或反向），只能重启。
 
@@ -39,7 +43,7 @@
 | **运行时（Runtime）** | 一次定义所对应的全部可变对象：本地缓存实例、分区索引、对账信号量、生效 `partitions` |
 | **`configVersion`** | **缓存策略配置版本号**（运维视角，单调递增），用于乐观锁、审计与视图；**不是**缓存 key 的 `revision` |
 | **`revision`** | **缓存 key 版本号**（缓存体系既有机制），只用于判断副本是否落后、驱动对账 |
-| **句柄（Handle）** | 业务持有的 `TwoLevelCache` 引用。**始终不变**，内部指向当前 `Runtime` |
+| **句柄（Handle）** | 业务持有的 `Cache4j` 引用。**始终不变**，内部指向当前 `Runtime` |
 
 ## 3. 总体架构
 
@@ -56,7 +60,7 @@
                                             │ 装配                 │ StrategyRuntime  │
                                             ▼                     │ (AtomicReference)│
                                   ┌────────────────────┐          └────────┬─────────┘
-                                  │ 门面 TwoLevelCache │◄─── 读写全程用 r ─┘
+                                  │ 门面 Cache4j │◄─── 读写全程用 r ─┘
                                   └────────────────────┘
                                             ▲
                     多节点同步：门面自身是 STATIC 缓存，靠 key revision 对账传播（≤5s）
@@ -268,7 +272,7 @@ public final class Cache4jRuntimeHints implements RuntimeHintsRegistrar {
    `@Cacheable("user:detail")` 里写了字符串，没人引用 `UserCacheDecls` → `static` 块永不执行 →
    启动后该 namespace 没有策略 → 行为随"某处是否恰好引用了这个枚举"而变，**这是最坏的一类 bug**。
 2. **全局单例污染测试**：`Repository.global()` 是静态状态，两个测试类交叉注册后无法隔离，
-   并行测试更糟。本库其余部分刻意避免静态可变状态（`CacheLogger.DIAGNOSED` 是唯一的特例，
+   并行测试更糟。本库其余部分刻意避免静态可变状态（日志绑定自检是唯一的特例，
    且只写不读业务语义）。
 3. **注册顺序不确定**：`static` 块的执行时机取决于类初始化顺序。若 `values()` 里某个常量需要
    读取中央配置，会撞上"registry 还没建好"的窗口。
@@ -757,7 +761,7 @@ Lua(reportAndStatusAll):
 
 ### 6.1 现状约束（为什么不能只 set 一个字段）
 
-`DefaultTwoLevelCache` 现在的形态：
+`Cache4jImpl` 现在的形态：
 
 ```java
 private final LocalCache<V> local;                          // 实例与 spec 绑定
@@ -943,15 +947,15 @@ change(update):
 
 | 期 | 范围 | 产出 |
 |---|---|---|
-| **P1** | `CacheStrategyDecl` + `CacheDefinition` 下沉 + 声明加载器（文件约定 + `getEnumConstants`）+ `InMemoryCacheStrategyRepository` + `StrategyRuntime` 改造（`DefaultTwoLevelCache` 内部按 Runtime 组织） | 声明式初始化可用；**尚无热更**（Runtime 只有一代） |
+| **P1** | `CacheStrategyDecl` + `CacheDefinition` 下沉 + 声明加载器（文件约定 + `getEnumConstants`）+ `InMemoryCacheStrategyRepository` + `StrategyRuntime` 改造（`Cache4jImpl` 内部按 Runtime 组织） | 声明式初始化可用；**尚无热更**（Runtime 只有一代） |
 | **P2** | `change()` + 迁移矩阵 + 乐观锁 + 审计日志 + 指标 | 单节点热更可用 |
-| **P3** | `CachedCacheStrategyRepository`（门面自举缓存）+ 5s 版本对账传播（数据源由使用方提供，库不内置） | 多节点一致（≤5s） |
+| **P3** | `CacheStrategyCache`（门面自举缓存）+ 5s 版本对账传播（数据源由使用方提供，库不内置） | 多节点一致（≤5s） |
 | **P4** | Spring 扫描 + Actuator 端点 + `cache4j-starter` | 开箱可用 |
 | **P9（暂不排期）** | `RuntimeHintsRegistrar` + 模板生成 + native image 冒烟（可选：生成式零反射入口） | GraalVM 可部署（详见 §12） |
 
 **GraalVM 排在所有功能之后，现阶段只做"不给自己挖坑"的三条约束**（不做实现、不做 CI）：
 
-1. **不给库加 `--initialize-at-build-time`**（`CacheLogger` 的绑定探测会被固化，见 §12.6）；
+1. **不给库加 `--initialize-at-build-time`**（`SLF4J` 的绑定探测会被固化，见 §12.6）；
 2. **核心不引入运行期 classpath 扫描**，也不引入新的未登记反射用法（新增反射点必须先想清楚能否在 hints 里精确注册）；
 3. **声明与装配的元数据保持"静态可枚举"**：类名以字符串常量形式存在（文件清单 / 生成的常量表），
    而不是运行期推导出来的，这样将来补 hints 时是"照抄清单"而不是"重构发现机制"。
@@ -981,7 +985,7 @@ SpringRedisValueStore.java: RedisSerializer<V>               ← 业务提供，
 | 2 | `Class.forName` 的目标被裁掉 | 声明发现 | 本库 | 按静态清单逐类注册反射 |
 | 3 | `getEnumConstants()` 需要枚举类可达 | 声明发现 | 本库 | 同上（只需类型可达） |
 | 4 | 非枚举 provider 的无参构造器 | 声明发现的兼容分支 | 本库 | `MemberCategory.INVOKE_DECLARED_CONSTRUCTORS` |
-| 5 | SLF4J 绑定发现（`ServiceLoader`） | `CacheLogger` | 使用方 | 选有 native 支持的绑定（logback 官方支持）；SLF4J 2.x 自身有 provider hints |
+| 5 | SLF4J 绑定发现（`ServiceLoader`） | `SLF4J` | 使用方 | 选有 native 支持的绑定（logback 官方支持）；SLF4J 2.x 自身有 provider hints |
 | 6 | 值序列化 | `RedisSerializer<V>`（业务提供） | 使用方 | **本库设计上已规避**：库不持有值类型，无需注册任何业务类型 |
 | 7 | Redis 客户端（Lettuce / Netty） | `cache4j-spring-redis` | 使用方 / Boot | 用 Spring Boot 3 的 native 支持（Boot 已提供 Redis + Lettuce + Netty hints） |
 | 8 | Caffeine 内部机制 | `cache4j-local-caffeine` | 使用方 | 参考 Caffeine 官方 native 文档（可能要求对部分类做 build-time init）；**本文不写死，待实测** |
@@ -1071,8 +1075,8 @@ C 的实现方式二选一（P5 再定，见决策 S9）：
 
 ### 12.6 两个必须写进文档的告诫
 
-1. **不要给本库加 `--initialize-at-build-time`**：`CacheLogger` 首次调用会做 SLF4J 绑定探测，
-   `HashMapLocalCache` 等实现没有静态状态但 `CacheLogger.DIAGNOSED` 是静态的——构建期初始化的
+1. **不要给本库加 `--initialize-at-build-time`**：`SLF4J` 首次调用会做 SLF4J 绑定探测，
+   `HashMapLocalCache` 等实现没有静态状态但 `SLF4J.DIAGNOSED` 是静态的——构建期初始化的
    静态状态会在运行期沿用，可能导致日志绑定被固化到错误实现。保持默认的**运行期初始化**。
 2. **不承诺"零配置"**：除第 C 种生成式方式外，native image 都需要 hints。把"需要几行配置"
    说清楚，比说"支持 GraalVM"更有用。

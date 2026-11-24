@@ -13,6 +13,11 @@
 
 ---
 
+> **实现状态（2026-11 重构后）**：本文描述的设计基本仍然成立，但类名与外围设施已变——
+> 门面实现是 `Cache4jImpl`（原 `DefaultTwoLevelCache`），顶层接口统一为 `Cache4j`，
+> 统计与 `CacheLogger` 已移除，编码器只剩 `plain` 与 `delegate`。
+> 完整清单见 `DESIGN.md` §3.9「重构后的类地图」与 `REFACTOR.md` §9。
+
 ## 1. 中央缓存 SPI（通用契约在 `cache4j-core`，中央侧在 `cache4j-central`）
 
 `Cache`、`Lookup`、`CacheKey` 是 core 的通用契约（**编解码不在其中**，归适配层）；`CentralCache`、`CentralCacheSpec`、`CentralCacheProvider` 是中央侧 SPI（接口由 core 暴露），由 `cache4j-central` 负责实现与装配。中央侧 SPI 不认识 Redis，也不认识任何 Redis 客户端。
@@ -74,7 +79,7 @@ public record RevAndExpire(long revision, long expireAtMillis) {}
 约定：
 
 - `CentralCache` 继承的 `put` / `putIfAbsent` / `evict` / `clear` **必须**复用带版本的方法（`putAndGetRevision` 等）并在内部丢弃返回值；不存在"只写值、不更新版本"的中央写路径。
-- 中央缓存实现**不吞异常**：连接失败、命令失败、超时都抛 `CacheException`（`CENTRAL_UNAVAILABLE` / `CENTRAL_TIMEOUT`）。`failOpen` 是编排层（`cache4j-core` 的 `TwoLevelCache`）的策略，不是存储层策略。
+- 中央缓存实现**不吞异常**：连接失败、命令失败、超时都抛 `CacheException`（`CENTRAL_UNAVAILABLE` / `CENTRAL_TIMEOUT`）。`failOpen` 是编排层（`cache4j-core` 的 `Cache4j`）的策略，不是存储层策略。
 - `CentralCacheSpec.failOpen` 只是"该缓存名的默认降级策略"，由编排层读取；单独使用 `CentralCache` 时始终按严格模式处理。
 - **版本更新必须与写操作原子完成**：Redis 用 Lua 把 `SET data` 与 `HSET __rev field` 放在一个脚本里；内存实现用锁。
 - 写操作返回的新版本是本地更新的依据；实现不得返回旧版本，也不得在写失败时更新版本。
@@ -470,7 +475,7 @@ Duration effectiveTtl(Duration ttl) {
 
 - 不在 `RedisCentralCache` 内做重试；重试策略由具体客户端 / 连接工厂负责；
 - 不做熔断（v1）；需要时在应用层或框架适配层加 Resilience4j 等；
-- `failOpen` 的判断在 `TwoLevelCache` 完成。
+- `failOpen` 的判断在 `Cache4j` 完成。
 
 ### 5.7 热 key 协调（`RedisHotKeyCoordinator`）
 
@@ -777,7 +782,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 - `ping` 恒为 true；
 - 附带 `InMemoryHotKeyCoordinator`：窗口计数 + 状态机，供单机 / 测试使用；
 - 不跨进程，仅用于：
-  - `cache4j-core` 的 `TwoLevelCache` 单元测试；
+  - `cache4j-core` 的 `Cache4j` 单元测试；
   - 单机开发/演示；
   - 没有 Redis 时的显式降级（必须配置 `central.type=memory`，不能静默 fallback）。
 
@@ -859,4 +864,4 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 | 压缩 | 在 适配层在自己的值格式里加压缩位（`RedisCentralCache` 层不感知） |
 | 逻辑清空 | per-key 版本 + 批量对账：`clear` 删掉版本表（`DEL __rev`）后，下一轮对账会发现“中央缺字段”并清掉副本 |
 | 热 key 协调 | 实现 `HotKeyCoordinator`；Redis 实现位于 `cache4j-central-redis` |
-| 指标 | 包装 `CentralCache`，或在框架适配器读取 `CacheStatsSnapshot` |
+| 指标 | 统计已按重构决策移除；需要时可包装 `CentralCache` 在适配层自行计数 |

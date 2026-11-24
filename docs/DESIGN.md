@@ -75,7 +75,7 @@
 
 ```text
 cache4j (pom)
-├── cache4j-core                 内核：全套 SPI（Cache / LocalCache / CentralCache / 两个 Spec / Provider / HotKeyCoordinator）+ TwoLevelCache 接口 + DefaultTwoLevelCache 默认编排实现，仅依赖 standard4j
+├── cache4j-core                 内核：全套 SPI（Cache / LocalCache / CentralCache / 两个 Spec / Provider / HotKeyCoordinator）+ Cache4j 接口 + Cache4jImpl 默认编排实现，仅依赖 standard4j
 ├── cache4j-local                本地缓存实现：NONE/STATIC/DYNAMIC + 默认 HashMap 实现
 │   └── cache4j-local-caffeine   Caffeine 存储实现
 ├── cache4j-central              中央缓存 SPI：CentralCache / Spec / Provider + 测试用内存参考实现
@@ -95,7 +95,7 @@ standard4j ← cache4j-core ← cache4j-local ← cache4j-local-caffeine
                           ← cache4j-solon
 ```
 
-- `cache4j-core` 定义通用契约 `Cache` / `Lookup` / `CacheKey` / `CacheStats`，`LocalCache` / `CentralCache` 接口、两个 Spec、`CentralCacheProvider`、`HotKeyCoordinator`，以及 `TwoLevelCache` **接口** + `DefaultTwoLevelCache` 默认编排实现；它不依赖任何实现模块，业务可用自己的门面实现替换默认编排。
+- `cache4j-core` 定义通用契约 `Cache4j` / `Lookup` / `CacheKey`，`LocalCache` / `CentralCache` 接口、两个 Spec、`CentralCacheProvider`、`HotKeyCoordinator`，以及 `Cache4j` **接口** + `Cache4jImpl` 默认编排实现；它不依赖任何实现模块，业务可用自己的门面实现替换默认编排。
 - `cache4j-local` 与 `cache4j-central` **同级**，各自只依赖 `cache4j-core`，互不依赖；`cache4j-local-*` 依赖 `cache4j-local`，`cache4j-central-*` 依赖 `cache4j-central`，父子模块同级排列，不做聚合 `pom`。
 - `cache4j-central` 定义中央缓存 SPI：`CentralCache`、`CentralCacheSpec`、`CentralCacheProvider`、`HotKeyCoordinator`；附带的内存实现仅用于测试与单机，不作为生产存储。
 - `cache4j-central-redis` 定义 **Redis 语义层 + 泛型下行 SPI**：`RedisValueStore<V>`（泛型，无字节）、`RedisCentralCache<V>`、`RedisHotKeyCoordinator`、`RedisAccessException`；不依赖任何 Redis 客户端（Jedis / Lettuce / Redisson），也不依赖 Spring，更不关心序列化。
@@ -126,12 +126,12 @@ Redis 方向的三层 SPI：
 
 边界说明：
 
-- `cache4j-core` 里有 `LocalCache`、`CentralCache`、`LocalCacheSpec`、`CentralCacheSpec`、`HotKeyCoordinator`、`TwoLevelCache`，但**没有** Caffeine、HashMap 分段 LRU、Redis 命令、值格式实现；
+- `cache4j-core` 里有 `LocalCache`、`CentralCache`、`LocalCacheSpec`、`CentralCacheSpec`、`HotKeyCoordinator`、`Cache4j`，但**没有** Caffeine、HashMap 分段 LRU、Redis 命令、值格式实现；
 - `cache4j-core` 不认识任何具体实现类型，只面向接口；
 - 门面需要"同时看到两层"，但看到的是**接口**，不是实现模块，因此没有反向依赖；
 - `cache4j-local` / `cache4j-central` 只回答"本地/中央怎么存"，不回答"两层怎么配合"。
 
-`TwoLevelCache` 在 core 中承接：
+`Cache4j` 在 core 中承接：
 
 - 三种策略的读路径；
 - 版本对账（命名空间级信号量 + 批量 `HMGET` 比对）、副本覆盖与清理、合并 I/O 的编排；
@@ -164,11 +164,38 @@ Redis 方向的三层 SPI：
 
 ### 3.5 `cache4j-starter` 的定位（不放编排逻辑）
 
-`cache4j-starter` 只做两件事：**依赖聚合**（把 core / local / central 等模块拉进来，用户引一个坐标即可）和**默认装配**（按配置创建默认实现）。它**不**承载 `TwoLevelCache` 的编排逻辑：
+`cache4j-starter` 只做两件事：**依赖聚合**（把 core / local / central 等模块拉进来，用户引一个坐标即可）和**默认装配**（按配置创建默认实现）。它**不**承载 `Cache4j` 的编排逻辑：
 
-- 编排（读/写路径、版本校验、单飞、降级、热 key 协调）全部在 `cache4j-core` 的 `DefaultTwoLevelCache`，是框架无关的核心能力；
+- 编排（读/写路径、版本校验、单飞、降级、热 key 协调）全部在 `cache4j-core` 的 `Cache4jImpl`，是框架无关的核心能力；
 - 把编排放进 starter 会让非 Spring / 非 Solon 用户也得引一个名叫 "starter" 的模块，语义错乱；且 `cache4j-spring` / `cache4j-solon` 这些适配层会反过来依赖 starter，容易绕成环；
 - Spring 用户若希望"一个依赖搞定"，应另加 `cache4j-spring-boot-starter`（依赖 `cache4j-spring` + `cache4j-spring-redis`，遵循 Boot 命名惯例），而不是让 `cache4j-starter` 承担框架装配。
+
+---
+
+## 3.9 重构后的类地图（当前实现）
+
+> 重构（`docs/REFACTOR.md`）之后的实际结构。以下是**代码里真实存在的类**，读代码时以这节为准。
+
+| 层 | 接口 | 默认实现 | 职责 |
+|---|---|---|---|
+| 顶层 | `Cache4j<K,V>` | — | 三层共用的契约：`lookup` / `get` / `put` / `putIfAbsent` / `evict` / `clear` |
+| 本地 | `LocalCache<V>` | `HashMapLocalCache` / `CaffeineLocalCache` / `DynamicLocalCache` / `NoOpLocalCache` | 只负责"本地怎么存"，key 是编码后的 `CacheKey` |
+| 中央 | `CentralCache<V>` | `InMemoryCentralCache` / `RedisCentralCache` | 版本产生、负缓存、TTL 抖动 |
+| 门面 | — | **`Cache4jImpl<K,V>`** | 编排本地 + 中央；持有 `SingleFlight` 与 `Reconciler` |
+
+辅助组件：
+
+| 类 | 职责 | 说明 |
+|---|---|---|
+| `CacheStrategyProperty` | **一个 namespace 的全部配置**（37 个扁平字段） | 唯一配置定义；只允许包装类型与 `String`；不做 DTO / ORM |
+| `SingleFlight` / `LocalSingleFlight` | 单飞：同一 key 只有一个写者 | 独立契约，返回 `Lookup` 而非 `V`（保留三态） |
+| `Reconciler` | 版本对账 | 分区索引 + 信号量 + 批量比对；`maybeReconcile` 调用即对账 |
+| `CacheStrategyCache` | 策略**读**路径（带自举缓存） | 与下面共享同一个 `DefaultCacheStrategyRepository` |
+| `CacheStrategyAdministrator` | 策略**管理**面（分页 / 详情 / 变更） | 变更后写穿或 evict 自举缓存 |
+
+已删除的类（不要在新代码里引用）：`Cache`（旧顶层名）、`TwoLevelCache`、`DefaultTwoLevelCache`、
+`CacheStats` / `CacheCounters` / `CacheStatsSnapshot` / `NoopStats`、`CacheLogger`、
+`CachedCacheStrategyRepository`、`Envelope`、`KeyEncoders.canonical/tagged/identity`。
 
 ---
 
@@ -247,7 +274,6 @@ public interface Cache<K, V> extends AutoCloseable {
 
     void clear();
 
-    CacheStats stats();
 
     @Override
     default void close() {
@@ -321,7 +347,7 @@ public record LocalEntry<V>(V value, long revision, EntryKind kind) {
 
 另一个 key 变了版本，与本条无关；`clear` 删整张 `__rev` HASH，于是所有本地副本都因"版本不存在 ≠ 本地 revision"而重新回中央。
 
-#### 4.3.2 规范编码（`KeyEncoders.canonical()`）
+#### 4.3.2 规范编码（**已移除**，保留设计记录）
 
 目标：**确定性、跨进程稳定、可读**。
 
@@ -368,12 +394,12 @@ _c4j:{user:detail}:keep:s4
 `_c4j:{user:detail}:` 之后紧跟值本身，前缀分层照旧可读；类型与长度只是尾巴。
 代价是 key 变长、多参数时后缀更多。
 
-### 可选：`KeyEncoders.canonical()` —— 严格单射（元信息在前）
+### 可选：`KeyEncoders.canonical()` —— 严格单射（**已移除，仅存档**）
 
 需要"不同类型绝不撞 key"时显式选用：
 
 ```java
-Cache4jSpringOptions.builder().keyEncoder(KeyEncoders.canonical())
+// 已移除：Cache4jSpringOptions.builder().keyEncoder(KeyEncoders.canonical())
 ```
 
 编码单元 `<type><length>:<payload>`：`type` 是单字符类型标签，`length` 是 payload 的 UTF-8 字节长度，
@@ -396,7 +422,7 @@ Cache4jSpringOptions.builder().keyEncoder(KeyEncoders.canonical())
 
 规范化细节：
 
-- **类型进 key**（仅 `canonical()`）：`42L` → `l2:42`，`"42"` → `s2:42`，两者不相等；
+- **类型进 key**（`canonical()` 已移除，此处仅存档）：`42L` → `l2:42`，`"42"` → `s2:42`，两者不相等；
   默认的 `plain()` 不区分类型，这是与 Spring 原生一致的取舍。
 - **String 长度按 UTF-8 字节**，不是 `char` 数；保证 Redis key 的字节长度可控。
 - **BigDecimal**：去尾零、禁止科学计数法；`1.0` 与 `1.00` 编码相同。
@@ -440,7 +466,7 @@ public interface KeyEncoder {
 
 | 工厂方法 | 用途 |
 |---|---|
-| `KeyEncoders.canonical()` | 默认；上述规范编码 |
+| `KeyEncoders.plain()` | 默认；值原样、多参数用 `:` 连接 |
 | `KeyEncoders.identity()` | 仅接受 `String`，原样返回；Solon 等"key 已是字符串"的适配器使用 |
 | `KeyEncoders.legacyMicroapplet()` | 旧库格式兼容，仅迁移期使用 |
 | `KeyEncoders.delegate(Function<Object, String>)` | 业务自定义，需自行保证确定性与单射 |
@@ -463,7 +489,7 @@ Spring 的 `SimpleKey`、Solon 的自动 key 都由适配器转成参数数组�
 - 允许 `[A-Za-z0-9._:-]`；
 - 禁止 `{`、`}`（Redis hash tag 语法）、空白、控制字符；
 - 不区分大小写比较仅用于"重复缓存名"校验，实际存储保留原始大小写；
-- 同一个 `TwoLevelCache` 的 `CacheKey.namespace` 固定等于缓存名。
+- 同一个 `Cache4j` 的 `CacheKey.namespace` 固定等于缓存名。
 
 ### 4.4 编解码：不在本库核心
 
@@ -502,7 +528,7 @@ public interface CacheLoader<K, V> {
 - loader 内不要对同一个 key 调用同一个缓存的 `get(key, loader)`，否则可能自等待；不同 key 可以并发。
 - `CacheLoader` 可能被多个线程同时调用（不同 key），实现需线程安全。
 
-单飞算法（`cache4j-core` 的 `TwoLevelCache`）：
+单飞算法（`cache4j-core` 的 `Cache4j`）：
 
 ```text
 get(key, loader):
@@ -528,12 +554,19 @@ get(key, loader):
       return future.join()              // 等待 leader 的结果
 ```
 
-- 单飞范围：**单个 JVM、单个 `TwoLevelCache` 实例**；不同实例、不同节点之间不共享。
+- 单飞范围：**单个 JVM、单个 `Cache4j` 实例**；不同实例、不同节点之间不共享。
 - 等待者不重复回源；leader 失败时等待者收到同一异常。
 - v1 不设置独立的等待超时；loader 自身应设置 DB/HTTP 超时。后续可增加 `loadTimeout`，超时后等待者退化为自行回源（需重新评估击穿风险）。
 - 跨节点击穿由中央 TTL 抖动、负缓存、业务限流共同缓解；分布式锁列为 v2。
 
-### 4.6 统计
+### 4.6 统计（**当前版本已移除**）
+
+> **实现状态：已按重构决策 R1 全部删除**（`CacheStats` / `CacheCounters` / `CacheStatsSnapshot` /
+> `NoopStats` 及所有调用点）。本节保留设计思路供后续重新引入时参考；重新设计前不要照此实现。
+>
+> 现在可用的观测点只有两个方法返回值：`Reconciler.maybeReconcile` 对应的对账结果、
+> `LocalCache.putIfNewer` 的返回值（用于判断回填是否被丢弃）。日志走 SLF4J，
+> 级别只用 `debug` / `warn` / `error`。
 
 统计分三层，**互不重叠、绝不相加**。只有「审计层」参与 `hitRate` 等派生量；「控制层」用于调参，「诊断层」用于排障。
 
@@ -542,7 +575,7 @@ get(key, loader):
 ```java
 public interface CacheStats {
 
-    // ① 审计层：业务读的漏斗（只有 TwoLevelCache 记，子层归 0）
+    // ① 审计层：业务读的漏斗（只有 Cache4j 记，子层归 0）
     long requestCount();            // 业务读请求数（入口记一次，单飞 double-check 不重复记）
     long localHitCount();           // L1 命中真值
     long localNegativeHitCount();   // L1 命中"已确认不存在"
@@ -666,7 +699,7 @@ public class CacheException extends SystemException {
 
 ---
 
-## 5. 二级缓存编排（`cache4j-core` 的 `TwoLevelCache`）
+## 5. 二级缓存编排（`cache4j-core` 的 `Cache4j`）
 
 ### 5.1 读路径
 
@@ -775,7 +808,7 @@ void reconcile(String namespace) {
 }
 ```
 
-- **分区号是 key 的属性，首次访问即算出并保存**：`DefaultTwoLevelCache` 持有
+- **分区号是 key 的属性，首次访问即算出并保存**：`Cache4jImpl` 持有
   `Map<CacheKey, Integer> keyPartitions`，`lookup` / `put` / `putIfAbsent` / `evict` 入口先落一次
   `partitionOf(key)`（已保存则直接取，不再算 hash）；另有 `Map<Integer, Set<CacheKey>> localPartitions`
   （分区号 → 该分区内确实持有副本的 key，空桶惰性创建）记录副本归属，对账时直接
@@ -997,13 +1030,13 @@ void evict(K key) {
 
 ### 5.8 生命周期与并发
 
-- `TwoLevelCache` 持有一个本地缓存实例与一个中央缓存视图；`close()` 只关闭本地缓存，**不关闭**中央 provider（中央连接可能被多个缓存共享）。
+- `Cache4j` 持有一个本地缓存实例与一个中央缓存视图；`close()` 只关闭本地缓存，**不关闭**中央 provider（中央连接可能被多个缓存共享）。
 - `TwoLevelCacheManager` 负责持有并关闭 provider / 本地 provider；`close()` 幂等，先关缓存再关 provider。
 - 缓存内核**不创建任何定时任务/调度线程**；版本对账信号量（`nextSyncAtNanos`）与热 key 同步点都是状态字段，由访问线程读取和推进。
 - 本地实现自己的清理（如 HashMap 的惰性清理、Caffeine 的维护线程）由实现负责；它们不参与版本与热度语义，`close()` 必须停止并释放。
 - 所有缓存实例线程安全；`local` 与 `central` 的实现各自保证并发语义。
 - 单飞 map 在 `close()` 时清空；未完成的 future 以 `CacheException` 完成，避免等待者永久阻塞。
-- 禁止在 `CacheLoader` 内对同一个 `TwoLevelCache` 的同一个 key 递归调用 `get(key, loader)`；文档与测试都要覆盖这个约束。
+- 禁止在 `CacheLoader` 内对同一个 `Cache4j` 的同一个 key 递归调用 `get(key, loader)`；文档与测试都要覆盖这个约束。
 
 ### 5.9 `DYNAMIC` 跨节点热 key 协调
 
@@ -1146,8 +1179,8 @@ LocalCacheSpec localSpec = LocalCacheSpec.staticCache(
                 .reconcileBatchSize(1_000)
                 .build());
 
-TwoLevelCache<String, User> cache = TwoLevelCache.<String, User>builder("user:detail")
-        .keyEncoder(KeyEncoders.canonical())
+Cache4j<String, User> cache = Cache4j.<String, User>builder("user:detail")
+        .keyEncoder(KeyEncoders.plain())
         .localStrategy(LocalStrategy.STATIC)
         .local(LocalCaches.caffeine(localSpec))
         .central(redisProvider.create(
@@ -1161,7 +1194,7 @@ TwoLevelCache<String, User> cache = TwoLevelCache.<String, User>builder("user:de
         .build();
 ```
 
-> 说明：`LocalCacheSpec` / `CentralCacheSpec` 的具体字段见 LOCAL / CENTRAL 文档。**版本参数只存在于 `LocalCacheSpec.version`**，`TwoLevelCache` builder 不重复接收；编排层从本地 spec 读取 `VersionSpec` 并维护命名空间级信号量。`checkInterval` 是**整个命名空间的最大不一致窗口**，不是后台调度周期。
+> 说明：`LocalCacheSpec` / `CentralCacheSpec` 的具体字段见 LOCAL / CENTRAL 文档。**版本参数只存在于 `LocalCacheSpec.version`**，`Cache4j` builder 不重复接收；编排层从本地 spec 读取 `VersionSpec` 并维护命名空间级信号量。`checkInterval` 是**整个命名空间的最大不一致窗口**，不是后台调度周期。
 
 ### 6.2 配置校验（启动即失败）
 
@@ -1234,12 +1267,13 @@ TwoLevelCache<String, User> cache = TwoLevelCache.<String, User>builder("user:de
 1. **不跳节点算术平均**：多实例聚合用 `Σ分子 / Σ分母`，不能用 `Σ rate_i / n`（低流量节点的极端值会污染结果）；
 2. **不跨服务横向比**：`hitRate` 与访问分布强相关（热点集中 95%、长尾 30% 都很正常），只能纵向对比（同一服务、改动前后、同一时段）。
 
-框架适配器可把 `CacheStatsSnapshot` 绑定到 Micrometer / Solon 的监控接口，建议指标前缀分层：门面用 `cache4j.*`、存储诊断用 `cache4j.store.*`；核心不依赖任何监控库。
+框架适配器将来可把重新设计的统计快照绑定到 Micrometer / Solon 的监控接口，建议指标前缀分层：
+门面用 `cache4j.*`、存储诊断用 `cache4j.store.*`；核心不依赖任何监控库。（当前统计已移除，见 §4.6。）
 
 ### 7.2 日志
 
 **门面**：`org.slf4j`（`cache4j-core` 唯一的第三方依赖，只引 `slf4j-api`；实现由使用方提供，
-Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，格式分两类：
+Spring Boot 默认 Logback 即可）。统一走 SLF4J（**`CacheLogger` 已按重构决策 R3 删除**），格式为 `[主题]-操作-详情`：
 
 #### 一、缓存读写日志：`[主题]-业务操作-[key]-详细信息`
 
@@ -1298,7 +1332,7 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，格�
 
 | 主题 | 对应组件 |
 |---|---|
-| `统一中央缓存` | `DefaultTwoLevelCache`（编排门面：读/写/失效/清空/对账/降级/装配/关闭） |
+| `统一中央缓存` | `Cache4jImpl`（编排门面：读/写/失效/清空/对账/降级/装配/关闭） |
 | `静态本地缓存` | `STATIC` 策略下的本地存储（`HashMapLocalCache` / `CaffeineLocalCache`） |
 | `动态本地缓存` | `DynamicLocalCache`（热点门控、升热、冷却、上报） |
 | `缓存装配` | `TwoLevelCacheManager` / Spring 配置 |
@@ -1307,7 +1341,7 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，格�
 | `热key协调` | `RedisHotKeyCoordinator` / `InMemoryHotKeyCoordinator` |
 | `缓存key` | `KeyEncoders` |
 | `Spring缓存桥接` | `SpringCacheAdapter` / `Cache4jCacheErrorHandler` |
-| `日志` | `CacheLogger` 自检 |
+| `日志` | SLF4J 绑定自检（见下） |
 
 #### 级别
 
@@ -1318,7 +1352,7 @@ Spring Boot 默认 Logback 即可）。统一通过 `CacheLogger` 输出，格�
 | 版本对账失败、热 key 上报失败、loader 失败、缺 `dynamic.global` | **WARN** | 限流；含退避与原因 |
 | 缓存装配、缓存关闭、provider 关闭 | **INFO** | 每个缓存一行 + 一行汇总 |
 | 本地命中 / 未命中 / 回填 / 升热 / 冷却 / 对账轮次 / 上报批次 | **DEBUG** | 每次；即上面"一"类日志 |
-| 缓存命中计数 | 不打汇总日志 | 走 `CacheStats` |
+| 缓存命中计数 | 不打汇总日志 | 走统计（当前已移除，见 §4.6） |
 
 参数化日志统一用 `Supplier` 延迟拼接：关闭对应级别时不产生字符串构造开销。
 
@@ -1358,7 +1392,7 @@ cache4j **只产出消息体**（`[主题]-业务操作-[key]-详细信息` 或 
 - 单元测试模块 `defaultLogLevel=info`；集成测试模块 `cache4j-spring-redis-test` 整体 `info` +
   `org.slf4j.simpleLogger.log.com.asialjim.cache4j=debug`（不被 Lettuce / Netty 内部 DEBUG 刷屏）。
 
-**绑定缺失自检**：`CacheLogger` 首次初始化时若发现所有级别都不可用（通常是没加 SLF4J 绑定），
+**绑定缺失自检**：首个日志调用时若发现没有可用的 SLF4J 绑定（通常是没加实现），
 会向标准错误打印一次提示，而不是让日志静默消失：
 
 ```text
@@ -1477,7 +1511,7 @@ key 可能包含手机号、证件号等敏感信息；日志中只打印 `Cache
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | P0 | 本文档 + LOCAL / CENTRAL / ADAPTERS 设计 | 设计评审通过 |
-| P1 | 父工程 + `core`（含接口、`TwoLevelCache`、版本门控）+ `local`（HashMap）+ `central`（内存） | 契约测试、策略矩阵、单飞、版本机制测试通过 |
+| P1 | 父工程 + `core`（含接口、`Cache4j`、版本门控）+ `local`（HashMap）+ `central`（内存） | 契约测试、策略矩阵、单飞、版本机制测试通过 |
 | P2 | `local-caffeine` + `central-redis` | Caffeine/Redis 契约测试、版本 Lua、Testcontainers 通过 |
 | P2.5 | `DYNAMIC` 跨节点热 key 协调（内存 + Redis 窗口计数） | 50 节点模拟、补偿升热、中央降热测试通过 |
 | P3 | `spring` 适配 | 自动装配、`@Cacheable`、错误处理、属性绑定测试通过 |
@@ -1491,7 +1525,7 @@ key 可能包含手机号、证件号等敏感信息；日志中只打印 `Cache
 
 | ID | 决策 | 理由 | 备选 |
 |---|---|---|---|
-| D1 | 不设独立编排模块，`TwoLevelCache` 放在 `cache4j-core` | `core` 只依赖接口，不依赖实现；`local` / `central` 保持同级且互不依赖；模块数不膨胀 | 新增独立编排模块；或让 `local` 依赖 `central` |
+| D1 | 不设独立编排模块，`Cache4j` 放在 `cache4j-core` | `core` 只依赖接口，不依赖实现；`local` / `central` 保持同级且互不依赖；模块数不膨胀 | 新增独立编排模块；或让 `local` 依赖 `central` |
 | D2 | key 使用带类型标签的规范编码 | 修复 `42L` / `"42"` 碰撞；拒绝不稳定的 `Object.toString()` | 复用旧库无类型编码 |
 | D3 | **空值缓存两层都存**（同一个 `nullTtl` 控制），本地负副本 TTL ≤ `nullTtl` | 业务开 `nullTtl` 就是买了"空值也是数据"；只放中央会让 L1 对最易被打穿的那类查询完全失效（穿透只从 DB 转到 Redis）。用显式 `EntryKind` 而非 null 值表达，不破坏 `Lookup.Hit` 非空不变式 | 负缓存只放中央（原 D3）/ 本地用 null 隐式表达 |
 | D4 | 默认 `failOpen=true` | 缓存是优化，基础设施故障不应拖垮业务 | 默认严格 |

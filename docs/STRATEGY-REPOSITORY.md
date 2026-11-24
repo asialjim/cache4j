@@ -33,6 +33,10 @@
 
 # 第一部分：仓库契约（Repository Contract）
 
+> **实现状态（2026-11 重构后）**：门面实现改名为 `Cache4jImpl`、顶层接口统一为 `Cache4j`；
+> 策略仓库的读写已拆成 `CacheStrategyCache`（读，带自举缓存）与 `CacheStrategyAdministrator`（管理面）；
+> 统计与 `CacheLogger` 已移除。完整清单见 `DESIGN.md` §3.9 与 `REFACTOR.md` §9。
+
 ## 1. SPI 全景
 
 ```java
@@ -321,7 +325,7 @@ public sealed interface PolicyLookup {
 ```
         ┌───────────────────────────── 业务装配 ─────────────────────────────┐
         ▼                                                                    │
- CacheStrategyRepository（门面，库提供，CachedCacheStrategyRepository）        │
+ CacheStrategyRepository（门面，库提供，CacheStrategyCache）        │
         │                                                                    │
         ├─ 本地缓存：STATIC（30m，maxSize 默认 1000，可配，重启生效）  ← 本套缓存体系
         ├─ 中央缓存：TTL 3d（非空）/ 5m（空值），版本窗口 5s          ← 本套缓存体系
@@ -937,7 +941,7 @@ long brokenPolicyCount();              // 数据源里解析失败的记录数
 | 模块 | 内容 |
 |---|---|
 | `cache4j-core` | 全部 SPI 与模型：`CacheStrategyRepository`（门面接口）、**`CacheStrategyDataSource`（数据源 SPI）**、`CacheStrategyAdmin`、`NamespacePolicy`、`StoredPolicy`、`StrategyChange`、`ChangeResult`、`StrategyView`、`StrategySelfCacheOptions`、`PolicyLookup`（三态） |
-| `cache4j-core`（`core.strategy` 包） | 与仓库契约同包：`CachedCacheStrategyRepository`（门面实现：用本库的 `TwoLevelCache`（namespace=`_stg_`、`STATIC`）承载策略读取、写穿与 clear 兜底）、`StrategySelfCacheOptions`、`PolicyCodec` / `TextPolicyCodec`。**不新增模块**——它只用到 core 自己的接口（`LocalCache` / `CentralCache` / `TwoLevelCache`），放这里语义更直（策略仓库是核心能力，不是适配层） |
+| `cache4j-core`（`core.strategy` 包） | 与仓库契约同包：`CacheStrategyCache`（门面实现：用本库的 `Cache4j`（namespace=`_stg_`、`STATIC`）承载策略读取、写穿与 clear 兜底）、`StrategySelfCacheOptions`、`PolicyCodec` / `TextPolicyCodec`。**不新增模块**——它只用到 core 自己的接口（`LocalCache` / `CentralCache` / `Cache4j`），放这里语义更直（策略仓库是核心能力，不是适配层） |
 | `cache4j-spring-redis` | **不新增**：不开箱数据源（R8），也不加 `writeIfRevision`（业务端纯读、写穿用普通 `put`/`putIfNewer`）。数据源由使用者自己按 §20.2 实现 |
 | `cache4j-spring` | 端点（可选 Actuator）、`@CacheNamespace` 扫描接入 |
 | `cache4j-starter` | 默认装配与开关配置（含"仓库自身策略被配成 NONE/DYNAMIC 即启动失败"的校验） |
@@ -946,7 +950,7 @@ long brokenPolicyCount();              // 数据源里解析失败的记录数
 |---|---|
 | **P1** | 仓库门面 SPI + `CacheStrategyDataSource` SPI（`register`/`update`）+ `PolicyLookup` 三态 + 解析优先级 + 业务端装配 |
 | **P2** | 管理 SPI（分页/详情/change）+ 校验 + 审计日志 + 指标 |
-| **P3** | `CachedCacheStrategyRepository`（自举缓存两层）+ 5s 版本对账传播（多节点一致） |
+| **P3** | `CacheStrategyCache`（自举缓存两层）+ 5s 版本对账传播（多节点一致） |
 | **P4** | 管理服务侧能力（分页/详情/change/审计日志）+ `cache4j-starter` 装配 |
 
 ## 20. Redis 布局契约（两套，别混）
@@ -1027,7 +1031,7 @@ return next
 | R7 | 是否强制数据源支持 CAS | 尽力而为：只有 A（真 CAS）/ B（last-write-wins）两级，用 `StrategyView.casSupported` 暴露 |
 | R8 | 是否提供开箱数据源 | **不提供**，谁接谁实现；`cache4j-spring-redis` 不为策略新增任何能力 |
 | R9 | 写穿还是 clear | **写穿为主 + clear 兜底**：写穿（无条件 put）能堵住"旧值回填"窗口；写穿失败退化为 evict（让全网回源），两者都失败才 `APPLIED_STALE`。序列化走适配层的 `RedisSerializer<StoredPolicy>`，不想引 JSON 库可用 `PolicyCodec` |
-| R10 | 仓库门面放哪个模块 | 新模块 `cache4j-strategy` / **并入 `cache4j-core`** | **并入 core**：门面只依赖 core 自己的接口（`LocalCache` / `CentralCache` / `TwoLevelCache`），pom 里加 local/central 只是测试需要；少一个模块，且"策略仓库"本身就是核心能力而非适配层 |
+| R10 | 仓库门面放哪个模块 | 新模块 `cache4j-strategy` / **并入 `cache4j-core`** | **并入 core**：门面只依赖 core 自己的接口（`LocalCache` / `CentralCache` / `Cache4j`），pom 里加 local/central 只是测试需要；少一个模块，且"策略仓库"本身就是核心能力而非适配层 |
 | R11 | 门面的测试放哪 | core / local / **spring-redis-test** | **`cache4j-spring-redis-test`**：core 的测试不能依赖 local/central（反向依赖成环）；放 `cache4j-local` 虽然能跑，但语义不搭（那是本地缓存实现模块）。`cache4j-spring-redis-test` 本来就是"只含测试"的集成测试模块、依赖齐全，且本测试不依赖 Redis，任何环境都无条件执行 |
 
 ### 剩余问题（Q1–Q8）的结论
