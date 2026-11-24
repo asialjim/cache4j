@@ -86,7 +86,15 @@ MixedLocalCache4j     // 按当前策略路由到上面三者之一
 | `PolicyResolver` | 三层解析（仓库 → 声明 → 内建默认） |
 | `BuiltinDefaults` | 内建默认值 |
 
-目标收敛成两个：`CacheBlock`（声明）+ `CacheStrategy`（生效值，参数用 `Supplier` 表达，审计字段作为可选内嵌）。
+目标收敛成三个，各管一件事：
+
+| 目标类 | 职责 |
+|---|---|
+| `CacheBlock` | 代码里的声明（namespace / 初始策略 / 用途说明） |
+| `CacheStrategyProperty` | **配置载体**：扁平、只有包装类型与 String（见 §3 第 2 步） |
+| `CacheStrategy` | 生效值：持 `Property` + 若干 `Supplier`（运行期可读最新值）+ 审计字段 |
+
+`PolicyResolver` 的三层解析逻辑保留，但挪进 `CacheStrategy` 的构造过程；`StrategyView` 的运维标记（`orphan` / `broken` / `undeclared`）作为 `Administrator` 的视图字段，不再单独成类。
 
 ### 2.4 自举用自己的缓存实现
 
@@ -112,81 +120,169 @@ public final class CacheStrategyCache {
 
 ### 第 1 步：纯减法（零行为变化）
 
-| 动作 | 省 |
-|---|---:|
-| 统计三件套 → 只留 `CacheStats` 接口 + `NoopStats`（~30 行），具体计数实现移出 core | ~700 |
-| `KeyEncoders` 五套 → 留 `plain`（默认）+ `delegate`，删除 `canonical` / `tagged` / `identity` | ~400 |
-| `CacheLogger` 主题枚举 → 直接用 SLF4J，格式约定写进文档 | ~350 |
+| 动作 | 说明 | 省 |
+|---|---|---:|
+| **统计全部删除** | `CacheStats` / `CacheCounters` / `CacheStatsSnapshot` / `NoopStats` 整个删掉，连同所有 `stats().xxx()` 调用点。核心跑通后再重新设计统计 | ~800 |
+| 编码器收敛 | 只留 `plain`（默认）；删 `canonical` / `tagged` / `identity` | ~450 |
+| 日志主题删掉 | `CacheLogger` 整体移除，改用 SLF4J，按 `[主题]-操作-详情` 组织文案 | ~390 |
 
-**约 1 450 行；不改任何逻辑分支，只删不用的东西。**
+**合计约 1 640 行。**
 
-> 删除前要确认调用点：`canonical` / `tagged` 目前只有测试在用；`CacheLogger` 的主题枚举只有日志格式用途。
+统计删除的影响面（实测）：main 12 个文件引用、测试 9 个文件引用。需要逐个摘掉计数语句，但**不改变任何控制流**——所以风险仍然很低，只是改动点分散。
+
+> 统计删掉之后，"对账执行了几次""回填丢弃了几次"这类断言暂时没有载体。第 1 步的验收只能靠**行为断言**（例如"并发只触发一次对账"用打桩计数验证，不用库内统计）。
 
 ### 第 2 步：并结构（行为不变，需改测试）
 
-| 动作 | 省 |
-|---|---:|
-| 策略模型 6 类 → `CacheBlock` + `CacheStrategy`（审计字段内嵌） | ~800 |
-| `CachedCacheStrategyRepository` → `CacheStrategyCache`（读，自举）+ `CacheStrategyAdministor`（管理面） | ~250 |
-| `LocalCacheSpec` 四层 record → 各策略自己的构造参数 | ~300 |
+| 动作 | 说明 | 省 |
+|---|---|---:|
+| 策略模型 6 类 → 2 类 | `CacheStrategyDecl` / `NamespacePolicy` / `StoredPolicy` / `StrategyView` / `PolicyResolver` / `BuiltinDefaults` 收敛为 `CacheBlock`（声明）+ `CacheStrategy`（生效值）+ `CacheStrategyProperty`（配置载体） | ~800 |
+| 仓库读写分离 | `CachedCacheStrategyRepository` → `CacheStrategyCache`（读，自举）+ `CacheStrategyAdministrator`（管理面） | ~250 |
+| 配置载体扁平化 | `LocalCacheSpec` 四层嵌套 record → `CacheStrategyProperty` | ~300 |
 
-**约 1 350 行。运维能力（乐观锁 / 分页 / 视图标记）全部保留**，只是从"6 个类协作"变成"2 个类 + 1 个管理面"。
+**约 1 350 行。运维能力（乐观锁 / 分页 / 视图标记）全部保留**，只是从"6 个类协作"变成"2 个类 + 1 个管理面 + 1 个配置载体"。
 
-管理面与读路径的关系（组合，不是继承）：
+#### `CacheStrategyProperty` 的硬约束
 
-```text
-CacheStrategyCache          持有 Cache4j<String, CacheStrategy>
-      ↑ 持有
-CacheStrategyAdministor     持有 CacheStrategyCache + CacheStrategyDataSource
-      · 读：走 CacheStrategyCache（命中缓存）
-      · 写：直接 dataSource + 变更后 evict CacheStrategyCache
+> **字段类型只允许基础类型的包装类或 `String`。禁止出现 `Duration`、`List`、`Map` 或任何自定义对象。**
+
+理由：这个对象要能被"配置中心 / 数据库 / 文件"直接映射，任何嵌套对象都会把序列化复杂度转嫁给使用方。
+
+因此所有时间字段用 `Long` 毫秒，所有开关用 `Boolean`，所有枚举用 `String`（与 `LocalStrategy.name()` 对齐）：
+
+```java
+public class CacheStrategyProperty {
+
+    // ---- 标识
+    private String  namespace;              // 缓存命名空间
+    private String  description;            // 用途说明
+    private String  localStrategy;          // NONE / STATIC / DYNAMIC
+
+    // ---- 本地：容量与 TTL
+    private Long    localMaxSize;
+    private Long    localTtlMillis;
+    private Integer localNullTtlDivisor;    // 本地负副本 TTL = 中央空值 TTL / 该值
+
+    // ---- 本地：版本对账
+    private Long    versionCheckIntervalMillis;
+    private Long    versionJitterMillis;
+    private Long    versionRetryBackoffMillis;
+    private Integer reconcileBatchSize;
+    private Integer reconcilePartitions;
+
+    // ---- 本地：热 key 判定（仅 DYNAMIC）
+    private Long    hotThresholdQps;
+    private Long    coolQps;
+    private Long    hotWindowMillis;
+    private Integer hotWindowSlices;
+    private Integer maxHotKeys;
+    private Long    hotSyncIntervalMillis;
+    private Long    hotCooldownMillis;
+    private String  coordination;           // LOCAL / GLOBAL
+    private Integer sketchWidthBits;
+    private Integer sketchDepth;
+    private Integer hotReportPartitions;
+    private Integer hotReportBatchMax;
+    private Integer candidateCapacity;
+
+    // ---- 本地：中央侧阈值（仅 GLOBAL 协调）
+    private Long    globalWindowMillis;
+    private Long    globalHotQps;
+    private Long    globalCoolQps;
+    private Integer globalDemoteWindows;
+    private Integer globalStaleWindows;
+    private Integer globalClientEstimate;
+
+    // ---- 中央
+    private Long    centralTtlMillis;
+    private Long    centralNullTtlMillis;
+    private Boolean failOpen;
+}
 ```
+
+`null` 一律表示"用内建默认值"，由构造 `CacheStrategy` 时补齐——这样配置中心只存"改过的字段"即可。
 
 ### 第 3 步：换内核（高风险，收益最大）
 
-| 动作 | 省 |
-|---|---:|
-| `TwoLevelCache` + `LocalCache` + `CentralCache` → `Cache4j` 统一接口 + `MixedLocalCache4j` | ~650 |
-| `DefaultTwoLevelCache` 1 011 行 → `Cache4jImpl` ~150 行 + `AbstractVersionLocalCache4j`（对账/回填收敛） | — |
+| 动作 | 说明 | 省 |
+|---|---|---:|
+| 统一接口 | `Cache` / `TwoLevelCache` / `LocalCache` / `CentralCache` → `Cache4j` + `LocalCache4j` + `CentralCache4j`；**`TwoLevelCache` 直接删除，不留兼容适配器** | ~650 |
+| 拆分巨类 | `DefaultTwoLevelCache` 1 011 行 → `Cache4jImpl`（~150 行）+ `AbstractVersionLocalCache4j`（对账/回填收敛） | — |
+| 单飞独立 | `SingleFlight` 成为一等契约（见 §4） | — |
 
-**换来运行期切策略**（不需要重启），以及"同一份对账逻辑只写一次"。
+**换来运行期切策略**（不重启），以及"同一份对账逻辑只写一次"。
 
 > 这一步必须把 §6 的全部验收项搬过去当交付条件，缺一项就不算完成。
-
----
 
 ## 4. 机制落点
 
 | 机制 | 落点 | 说明 |
 |---|---|---|
 | 本地读写 / 容量 / TTL | `LocalCache4j` 各实现 | |
-| **对账（批量）** | `VersionLocalCache4j.reconcileIfDue()` | 持中央缓存，一次 `HMGET` 覆盖整个 namespace |
-| 单 key 版本 | `VersionLocalCache4j.version(key)` | 供回填校验，**不是**对账主路径 |
+| **对账** | `VersionLocalCache4j.reconcile()` | 持中央缓存，**调用即对账**（见下） |
+| 单 key 版本 | `VersionLocalCache4j.version(key)` | 供回填校验，不是对账主路径 |
 | **回填竞态** | `VersionLocalCache4j.backfillIfNewer(...)` | 版本仍等于读到的版本才回填 |
-| 负缓存的本地 TTL | 由 `CacheStrategy` 派生（`centralNullTtl / divisor`） | 写负副本时使用派生值 |
+| 负缓存的本地 TTL | 由 `CacheStrategyProperty` 派生（`centralNullTtl / divisor`） | 写负副本时使用派生值 |
 | **热 key 判定 / 升降热** | `DynamicLocalCache4j` | 依赖收窄为 `HotKeyCoordinator` |
 | **DYNAMIC 写准入** | `DynamicLocalCache4j.put` | 冷 key 不占本地（hotkey 统计的是读频次） |
-| **单飞** | `CentralCache4j.get(key, loader)` | loader 只在这一层被合并 |
+| **单飞** | `SingleFlight`（独立契约，见下） | 不由 `get` 隐式承担 |
 | 版本产生（时间戳） | 中央缓存 | 本地只读版本，不自增 |
 
-### 4.1 三条不能含糊的契约
+### 4.1 对账：调用即对账，禁止两段式
 
-**① 对账必须是批量的**
+```java
+/**
+ * 到点则当场对账后返回；未到点直接返回。
+ *
+ * <p>调用方<strong>不需要</strong>、也<strong>不允许</strong>先判断"该不该对账"再调用——
+ * 判断与执行必须封在实现内部，否则每个调用点都要复制一遍信号量逻辑，早晚不一致。</p>
+ *
+ * @return 本次是否真的执行了对账（仅供观测，不用于控制流）
+ */
+boolean reconcile();
+```
+
+对账本身仍然是**批量**的：
 
 ```text
 一次对账 = HMGET <ns>:__rev <本地已知的全部 key>     ← 一个 namespace 一次往返
 ```
 
-逐 key 查版本会让中央 QPS 随本地命中率上升而暴涨。这条在现有实现里是刻意设计（决策 D21），重构不得退化。
+逐 key 查版本会让中央 QPS 随本地命中率上升而暴涨，这是现有实现的刻意设计（决策 D21），不得退化。
 
-**② 单飞返回值的三态**
+### 4.2 单飞：独立契约，因为它是"唯一写者"语义
 
-`V get(K, Supplier<V>)` 无法区分"负命中"与"未命中"，穿透保护会在 `get` 路径上失效。两个可选：
+单飞不只是"合并请求"，它表达的是**同一个 key 在任一时刻只有一个写者**：
 
-- **A（推荐）**：`get` 返回 `Lookup<V>`；
-- **B**：`get` 保留返回 `V`，但内部保证"负命中时直接返回 null 且不调 loader"，并把这条写进契约。
+- **进程角度**：同一 key 只有一个线程执行 loader 并写缓存，其余线程等它的结果；
+- **集群角度**：同一 key 最终只有一份值落中央（由中央的原子写保证），不会出现两个节点各写一份互相覆盖。
 
-**③ 回填必须 CAS**
+因此它不该藏在 `get(key, loader)` 的语义里，而应是一个显式契约：
+
+```java
+public interface SingleFlight<K, V> {
+
+    /**
+     * 同一 key 在进程内只有一个线程执行 loader 并写缓存；其余线程等待并复用结果。
+     *
+     * <p>约定：</p>
+     * <ul>
+     *   <li>loader 抛异常时<strong>不缓存异常</strong>，本次所有等待者收到同一异常，下次重新尝试；</li>
+     *   <li>loader 返回 null 视为"确认不存在"，负结果同样被合并（不能因为 null 就击穿）；</li>
+     *   <li>不同 key 之间完全并行，不互相阻塞。</li>
+     * </ul>
+     *
+     * @return 加载结果（三态，与 lookup 一致）
+     */
+    Lookup<V> once(K key, Supplier<V> loader);
+}
+```
+
+放在 core，由门面组合：`本地 miss → 中央 miss → singleFlight.once(key, loader)`。
+
+独立之后有三个好处：可单测、可替换（要跨节点保护就换分布式锁实现）、以及**不与 `get` 的返回类型纠缠**（`once` 返回 `Lookup`，天然带三态，负缓存不会被压成 `null`）。
+
+### 4.3 回填必须 CAS
 
 ```text
 线程 A：中央读到 v1 → 准备回填
@@ -195,8 +291,6 @@ CacheStrategyAdministor     持有 CacheStrategyCache + CacheStrategyDataSource
 ```
 
 这是对账之外最容易被漏掉的竞态，只在并发下出现。必须进接口，否则没人会实现。
-
----
 
 ## 5. 接口草案
 
@@ -208,7 +302,7 @@ public interface Cache4j<K, V> {
     Cache4jKey key(K key);
 
     Lookup<V> lookup(K key);                      // 三态：Hit / Negative / Miss
-    V get(K key, Supplier<V> valueLoader);        // 见 §4.1 ②
+    V get(K key, Supplier<V> valueLoader);        // 内部经 SingleFlight 合并
     void put(K key, V value);
     boolean putIfAbsent(K key, V value);
     void evict(K key);
@@ -227,10 +321,10 @@ public interface VersionLocalCache4j<K, V> extends LocalCache4j<K, V> {
     /** 本地已知的全部 key —— 对账输入，载荷跟 maxSize 走 */
     Set<K> localKeys();
 
-    /** 到点才执行，内部用 namespace 级信号量 + CAS 防止并发重复对账 */
-    boolean reconcileIfDue();
+    /** 调用即对账：到点则执行，否则直接返回。调用方不做判断。 */
+    boolean reconcile();
 
-    /** 版本仍等于读到的版本才回填；否则丢弃并计数 */
+    /** 版本仍等于读到的版本才回填；否则丢弃 */
     boolean backfillIfNewer(K key, V value, long readRevision);
 }
 
@@ -239,12 +333,13 @@ public abstract class AbstractVersionLocalCache4j<K, V> implements VersionLocalC
 
     protected final CentralCache4j<K, V> central;   // 只用于读版本
     protected final CacheStrategy strategy;          // 含 checkInterval / jitter
+    protected final SingleFlight<K, V> singleFlight;
 
     private volatile long nextSyncAtNanos;
     private final AtomicBoolean syncing = new AtomicBoolean();
 
     @Override
-    public boolean reconcileIfDue() { /* 信号量 + 批量 + 逐条 evict */ }
+    public boolean reconcile() { /* 信号量 + 批量 + 逐条 evict */ }
 
     protected abstract LocalEntry<V> localEntry(K key);
     protected abstract void localEvict(K key);
@@ -255,17 +350,29 @@ public abstract class AbstractVersionLocalCache4j<K, V> implements VersionLocalC
 public interface DynamicLocalCache4j<K, V> extends VersionLocalCache4j<K, V> {
 }
 
-// ---------- 中央：单飞 + 版本产生
+// ---------- 中央：版本产生 + 原子写
 public interface CentralCache4j<K, V> extends Cache4j<K, V> {
     Cache4jKeyVersion keyVersion(K key);
 }
+
+// ---------- 单飞：唯一写者语义，独立契约
+public interface SingleFlight<K, V> {
+    Lookup<V> once(K key, Supplier<V> loader);
+}
 ```
 
-`StaticLocalCache4j` / `DynamicLocalCache4j` 继承 `VersionLocalCache4j`；`NoneLocalCache4j` 只实现 `LocalCache4j`（没有版本、不需要对账）。
+层次关系：
+
+```text
+Cache4jImpl  ──持有──►  MixedLocalCache4j  ──路由──►  NoneLocalCache4j
+       │                      │                     StaticLocalCache4j   （extends AbstractVersionLocalCache4j）
+       │                      │                     DynamicLocalCache4j  （extends AbstractVersionLocalCache4j，持 HotKeyCoordinator）
+       └──持有──►  CentralCache4j ──持有──►  SingleFlight
+```
+
+`NoneLocalCache4j` 只实现 `LocalCache4j`（没有版本、不需要对账）；`StaticLocalCache4j` / `DynamicLocalCache4j` 继承 `VersionLocalCache4j`。
 
 `DynamicLocalCache4j` 的实现持有 **`HotKeyCoordinator`**（不是 `CentralCache4j`）—— 后者的 `put/evict/clear` 能力它不该有。
-
----
 
 ## 6. 不能减的复杂度（本质复杂度清单）
 
@@ -292,7 +399,7 @@ public interface CentralCache4j<K, V> extends Cache4j<K, V> {
 
 | 步骤 | 验收 |
 |---|---|
-| 第 1 步 | 删除后 `mvn test` 257 全绿；无新增 `@Deprecated` 公共方法 |
+| 第 1 步 | 删除后 `mvn test` 全绿。**统计删掉后部分断言失去载体**，需先改造：把"对账执行次数""回填丢弃次数"这类断言改为测试内打桩计数（`AtomicLong` 在测试侧，不进公共 API） |
 | 第 2 步 | 策略仓库相关用例全绿；`Administrator` 的读走缓存、写直连数据源、变更后 evict 缓存 |
 | 第 3 步 | §6 全部十项都有对应用例；运行期改策略后**下一次访问生效**且无需重建缓存对象 |
 
@@ -310,10 +417,21 @@ public interface CentralCache4j<K, V> extends Cache4j<K, V> {
 
 ---
 
-## 8. 待定问题
+## 8. 决策记录
 
-1. **统计去留**：`CacheStats` 保留接口 + `NoopStats`，具体计数实现（`CacheCounters`）移出 core 是否可接受？现有 Spring 适配层依赖它做暴露。
-2. **`canonical` / `tagged` 编码器**：删除会影响"类型安全"能力，是否有外部使用者？（当前仅测试引用）
-3. **`CacheLogger` 的主题枚举**：删掉后日志格式靠文档约定，是否会影响现有的 `[主题]-子过程-信息` 检索习惯？
-4. **`LocalCacheSpec` 的替代形式**：改成各策略的构造参数后，"统一描述一个 namespace 的配置"由谁承担——`CacheStrategy` 还是新的 `CacheBlockSpec`？
-5. **第 3 步的迁移方式**：`TwoLevelCache` 接口是删掉还是保留为 `Cache4j` 的适配器（给已有使用者缓冲）？
+| # | 问题 | 决策 |
+|---|---|---|
+| R1 | 统计去留 | **先全部删除**（含接口）。核心跑通后再重新设计，避免"为了统计而统计"的结构复杂度 |
+| R2 | `canonical` / `tagged` / `identity` 编码器 | **删除**，只留 `plain`（默认） |
+| R3 | `CacheLogger` 主题枚举 | **删除**，直接用 SLF4J，按 `[主题]-操作-详情` 组织文案 |
+| R4 | namespace 配置载体 | 新增 **`CacheStrategyProperty`**；**字段只允许基础类型包装类或 `String`**，禁止嵌套对象；需覆盖本地 + 中央的全部属性 |
+| R5 | `TwoLevelCache` 是否保留兼容 | **直接删除**，不留适配器 |
+| R6 | 对账契约 | **单方法、调用即对账**；判断与执行封在实现内部，禁止调用方两段式 |
+| R7 | 单飞归属 | **独立契约 `SingleFlight`**，因为它是"唯一写者"语义（进程内单线程、集群内单份值） |
+
+### 仍待定
+
+1. `CacheStrategyProperty` 中"未设置"用 `null` 表示（由 `CacheStrategy` 构造时补默认值）是否够用？还是需要显式 `Optional` 语义？
+2. 统计删掉后，"并发只触发一次对账""回填被丢弃"这类验证靠什么承载——测试内打桩计数，还是先加一个极简的 `AtomicLong` 计数（不进公共 API）？
+3. 第 3 步迁移期间，是否需要一条"新旧实现并行、按配置开关切换"的过渡路径，还是直接切换？
+4. `SingleFlight` 需要暴露给框架适配层吗（例如 Spring 的 `sync = true`）？还是由 `Cache4jImpl` 内部持有即可？
