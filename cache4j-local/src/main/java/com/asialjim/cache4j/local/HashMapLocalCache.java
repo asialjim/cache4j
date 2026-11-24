@@ -32,7 +32,16 @@ import java.util.function.LongSupplier;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public final class HashMapLocalCache<V> implements StaticLocalCache<V> {
+/**
+ * {@code STATIC} 策略的本地缓存——<strong>HashMap 分段 LRU 存储</strong>。
+ *
+ * <p>非 {@code final}：{@link HashMapDynamicLocalCache} 继承它复用存储与 key 版本管理，
+ * 只覆写准入判定（{@code accepts} / {@code access} / {@code hotSync}）。</p>
+ *
+ * @param <V> 值类型
+ * @author Asial Jim
+ */
+public class HashMapLocalCache<V> implements StaticLocalCache<V> {
 
     private static final int SEGMENTS = 16;
 

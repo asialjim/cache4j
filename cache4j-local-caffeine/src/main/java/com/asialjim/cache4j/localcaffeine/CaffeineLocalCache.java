@@ -31,7 +31,16 @@ import java.util.function.LongSupplier;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public final class CaffeineLocalCache<V> implements StaticLocalCache<V> {
+/**
+ * {@code STATIC} 策略的本地缓存——<strong>Caffeine 存储</strong>。
+ *
+ * <p>非 {@code final}：{@link CaffeineDynamicLocalCache} 继承它复用存储与 key 版本管理，
+ * 只覆写准入判定（{@code accepts} / {@code access} / {@code hotSync}）。</p>
+ *
+ * @param <V> 值类型
+ * @author Asial Jim
+ */
+public class CaffeineLocalCache<V> implements StaticLocalCache<V> {
 
     /**
      * 永不过期的 TTL 表达（Caffeine 用纳秒计时）。
