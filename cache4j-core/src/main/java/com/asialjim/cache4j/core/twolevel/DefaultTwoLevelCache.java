@@ -73,7 +73,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     /**
      * 分区数（2 的幂）：由 {@code version.reconcilePartitions} 决定；分区号范围 {@code [0, partitions)}。
      */
-    private final int partitions;
+    private final Reconciler<V> reconciler;
 
     /**
      * 本地空值副本的除子 N：{@code localNullTtl = min(localTtl, centralNullTtl / N)}。
@@ -90,17 +90,14 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
      * <p>对账时直接 {@code get(partition)} 取，不必遍历 {@code local.keys()} 重算分区；
      * 存储层自己的过期/淘汰造成的"幽灵条目"会在对账比对阶段顺手剔除（见 {@code reconcile}）。</p>
      */
-    private final Map<Integer, Set<CacheKey>> localPartitions = new ConcurrentHashMap<>();
 
     /**
      * 命名空间级对账信号量：下一次对账时间点（纳秒）；0 表示尚未初始化。
      */
-    private volatile long nextCheckAtNanos;
 
     /**
      * 同一命名空间同一时刻只允许一个线程对账。
      */
-    private final AtomicBoolean reconciling = new AtomicBoolean();
 
     private DefaultTwoLevelCache(Builder<K, V> builder) {
         this.namespace = builder.namespace;
@@ -112,10 +109,10 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         this.nanoClock = builder.nanoClock;
         this.milliClock = builder.milliClock;
 
-        this.partitions = localSpec.version() == null ? 1 : localSpec.version().reconcilePartitions();
+        this.reconciler = new Reconciler<>(namespace, local, central, localSpec.version(), centralSpec);
         this.localNullTtlDivisor = Math.max(1, builder.localNullTtlDivisor);
         // 本地条目过期 / 淘汰 / 失效时立即清掉分区号与分区索引，不等下一次对账才发现
-        local.onEntryRemoved(this::forgetLocalPartition);
+        local.onEntryRemoved(reconciler::forget);
 
         LOG.debug("[{}]-{}-{}", "统一中央缓存", "装配", "namespace=" + namespace
                 + "，strategy=" + localSpec.strategy()
@@ -136,7 +133,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public Lookup<V> lookup(K key) {
         CacheKey cacheKey = encode(key);
-        partitionOf(cacheKey);                       // 首次访问即算出并保存分区号
+        reconciler.partitionOf(cacheKey);                       // 首次访问即算出并保存分区号
         ReadResult<V> result = read(cacheKey);
         return result.lookup();
     }
@@ -144,7 +141,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public Lookup<V> lookup(K key, CacheLoader<K, V> loader) {
         CacheKey cacheKey = encode(key);
-        partitionOf(cacheKey);                       // 与 lookup(K) 保持一致
+        reconciler.partitionOf(cacheKey);                       // 与 lookup(K) 保持一致
 
         ReadResult<V> first = read(cacheKey);
         if (first.source() != Source.NONE) {
@@ -183,7 +180,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public void put(K key, V value, Duration ttl) {
         CacheKey cacheKey = encode(key);
-        partitionOf(cacheKey);
+        reconciler.partitionOf(cacheKey);
         if (value == null) {
             writeNegativeOrEvict(cacheKey, ttl);
             return;
@@ -194,7 +191,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public boolean putIfAbsent(K key, V value, Duration ttl) {
         CacheKey cacheKey = encode(key);
-        partitionOf(cacheKey);
+        reconciler.partitionOf(cacheKey);
         Duration effective = ttl != null ? ttl : centralSpec.ttl();
         try {
             Optional<Long> revision = central.putIfAbsentAndGetRevision(cacheKey, value, effective)
@@ -216,7 +213,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public void evict(K key) {
         CacheKey cacheKey = encode(key);
-        partitionOf(cacheKey);
+        reconciler.partitionOf(cacheKey);
         try {
             central.evict(cacheKey);
         } catch (RuntimeException e) {
@@ -226,7 +223,8 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             LOG.warn("[{}]-{}-{}", "统一中央缓存", "失效", "中央失效失败，降级清理本地，key="
                     + cacheKey.masked() + "，原因=" + e.getMessage());
         } finally {
-            evictLocal(cacheKey);
+            reconciler.forget(cacheKey);
+            local.evict(cacheKey);
         }
     }
 
@@ -242,55 +240,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                     + "namespace=" + namespace + "，原因=" + e.getMessage());
         } finally {
             local.clear();
-            keyPartitions.clear();          // 整批清空由这里统一处理，存储层不逐条回调
-            localPartitions.clear();
-        }
-    }
-
-    /**
-     * 取 key 的分区号：<strong>第一次访问时计算并保存</strong>，之后直接命中缓存，不再算 hash。
-     *
-     * @param cacheKey key
-     * @return 分区号
-     */
-    private int partitionOf(CacheKey cacheKey) {
-        if (!local.available()) {
-            // NONE 策略没有本地副本，也就没有"分区"可言；保存分区号只会无界增长
-            return 0;
-        }
-        Integer saved = keyPartitions.get(cacheKey);
-        if (saved != null) {
-            return saved;
-        }
-        int partition = HashPartitions.of(cacheKey, partitions);
-        Integer previous = keyPartitions.putIfAbsent(cacheKey, partition);
-        return previous != null ? previous : partition;
-    }
-
-    /**
-     * 失效本地副本并同步分区索引。
-     *
-     * @param cacheKey key
-     */
-    private void evictLocal(CacheKey cacheKey) {
-        local.evict(cacheKey);        // 存储层会回调 forgetLocalPartition；这里再兜一次，幂等
-        forgetLocalPartition(cacheKey);
-    }
-
-    /**
-     * 忘掉某个 key 的分区信息（分区号 + 分区索引两处）。
-     *
-     * <p>本地条目消失时由存储层回调触发；对账发现幽灵条目时也直接调用。</p>
-     *
-     * @param cacheKey key
-     */
-    private void forgetLocalPartition(CacheKey cacheKey) {
-        Integer partition = keyPartitions.remove(cacheKey);
-        if (partition != null) {
-            Set<CacheKey> bucket = localPartitions.get(partition);
-            if (bucket != null) {
-                bucket.remove(cacheKey);
-            }
+            reconciler.clear();             // 整批清空由这里统一处理，存储层不逐条回调
         }
     }
 
@@ -338,7 +288,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             local.access(cacheKey);              // DYNAMIC 可能在此触发升热（装饰器自己记日志）
             promoted = !hotBefore && local.accepts(cacheKey);
             local.hotSync(cacheKey);
-            maybeReconcile(cacheKey, now);      // 用当前 key 选对账分区
+            reconciler.maybeReconcile(cacheKey, now);   // 用当前 key 选对账分区
 
             LocalEntry<V> entry = local.entry(cacheKey);
             if (entry != null) {
@@ -368,11 +318,13 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
             if (centralSpec.nullCachingEnabled()) {
                 backfill(cacheKey, LocalEntry.negative(centralLookup.revision()), promoted);
             } else {
-                evictLocal(cacheKey);
+                reconciler.forget(cacheKey);
+            local.evict(cacheKey);
             }
             return new ReadResult<>(Lookup.negative(), Source.CENTRAL);
         }
-        evictLocal(cacheKey);
+        reconciler.forget(cacheKey);
+        local.evict(cacheKey);
         return new ReadResult<>(Lookup.miss(), Source.NONE);
     }
 
@@ -483,11 +435,10 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         // 条件写入：本地已有更新版本时不覆盖（回填竞态）
         boolean written = local.putIfNewer(cacheKey, entry, chosen);
         if (accepted && written) {
-            localPartitions.computeIfAbsent(partitionOf(cacheKey), p -> ConcurrentHashMap.newKeySet())
-                    .add(cacheKey);
+            reconciler.track(cacheKey);
         } else if (!accepted) {
             // 本地不持有副本（DYNAMIC 冷 key）→ 分区号也不保留，避免无界增长
-            keyPartitions.remove(cacheKey);
+            reconciler.forget(cacheKey);
         }
         String subject = localSubject(localSpec.strategy());
 
@@ -565,167 +516,12 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                 throw e;
             }
         } finally {
-            evictLocal(cacheKey);
+            reconciler.forget(cacheKey);
+            local.evict(cacheKey);
         }
     }
 
     // ------------------------------------------------------------------ 版本对账
-
-    /**
-     * 命名空间级对账信号量：到点时由当前访问线程对账一次，且只处理
-     * 「当前访问的 key 所属分区」的本地副本（见 {@link LocalCacheSpec.VersionSpec#reconcilePartitions()}）。
-     *
-     * @param accessedKey 当前访问的 key（决定分区）
-     * @param now         当前纳秒
-     */
-    private void maybeReconcile(CacheKey accessedKey, long now) {
-        LocalCacheSpec.VersionSpec version = localSpec.version();
-        if (version == null) {
-            return;
-        }
-        long next = nextCheckAtNanos;
-        if (next == 0L) {
-            // 首次访问只设点，不做 I/O
-            nextCheckAtNanos = now + jittered(version);
-            return;
-        }
-        if (now - next < 0L) {
-            return;
-        }
-        if (!reconciling.compareAndSet(false, true)) {
-            return;
-        }
-        try {
-            ReconcileOutcome outcome = reconcile(version, accessedKey);
-            nextCheckAtNanos = now + jittered(version);
-            LOG.debug("[{}]-{}-{}", "统一中央缓存", "对账", "namespace=" + namespace
-                    + "，范围=" + outcome.describeScope()
-                    + "，对账完成，清除失效副本 " + outcome.invalidated() + " 条");
-        } catch (RuntimeException e) {
-            // 中央故障期不该比对账间隔更频繁地重试
-            nextCheckAtNanos = now + Math.max(version.retryBackoff().toNanos(),
-                    version.checkInterval().toNanos());
-            if (!centralSpec.failOpen()) {
-                throw e;
-            }
-            LOG.warn("[{}]-{}-{}", "统一中央缓存", "对账", "版本对账失败，按退避推迟，"
-                    + "namespace=" + namespace + "，退避=" + version.retryBackoff()
-                    + "，原因=" + e.getMessage());
-        } finally {
-            reconciling.set(false);
-        }
-    }
-
-    /**
-     * 一次对账。范围由本地规模决定：
-     *
-     * <ul>
-     *   <li><b>本地条目 ≤ 批大小</b>：直接全量对账（一次 {@code HMGET} 就装得下）；</li>
-     *   <li><b>本地条目 &gt; 批大小</b>：按 key 的 hash 取模分区，只对账「与当前访问 key 同模」的那些。</li>
-     * </ul>
-     *
-     * @param version     版本参数
-     * @param accessedKey 当前访问的 key（分区模式下决定分区号）
-     * @return 对账结果
-     */
-    private ReconcileOutcome reconcile(LocalCacheSpec.VersionSpec version, CacheKey accessedKey) {
-        int batchSize = version.reconcileBatchSize();
-        // 本地副本总数直接来自索引（O(分区数)），不用遍历 local.keys()
-        int localSize = 0;
-        for (Set<CacheKey> bucket : localPartitions.values()) {
-            localSize += bucket.size();
-        }
-        if (localSize == 0) {
-            return new ReconcileOutcome(0, true, 0, 1, 0);
-        }
-
-        // 本地装得下一批 → 全量；超出批大小 → 只取与访问 key 同模的分区
-        boolean wholeScope = localSize <= batchSize;
-        int partitions = wholeScope ? 1 : version.reconcilePartitions();
-        int partition = wholeScope ? 0 : partitionOf(accessedKey);   // 首次访问已算好，直接取
-
-        List<CacheKey> selected = new ArrayList<>(Math.min(localSize, batchSize));
-        if (wholeScope) {
-            for (Set<CacheKey> bucket : localPartitions.values()) {
-                selected.addAll(bucket);
-            }
-        } else {
-            Set<CacheKey> bucket = localPartitions.get(partition);
-            if (bucket != null) {
-                selected.addAll(bucket);
-            }
-        }
-        if (selected.isEmpty()) {
-            return new ReconcileOutcome(0, wholeScope, partition, partitions, 0);
-        }
-
-        int invalidated = 0;
-        for (int from = 0; from < selected.size(); from += batchSize) {
-            List<CacheKey> batch = selected.subList(from, Math.min(selected.size(), from + batchSize));
-            // 只取版本，不取数据值
-            Map<CacheKey, Long> latest = central.revisions(batch);
-            for (CacheKey cacheKey : batch) {
-                Long revision = latest.get(cacheKey);
-                if (revision == null) {
-                    // 中央已不再持有（删除 / 清空 / 数据过期）
-                    evictLocal(cacheKey);
-                    invalidated++;
-                    continue;
-                }
-                LocalEntry<V> entry = local.peek(cacheKey);    // 内部读，不计本地命中率
-                if (entry == null) {
-                    // 兜底：存储层尚未回调（如惰性过期未被访问）时，这里顺手剔除幽灵条目
-                    local.evict(cacheKey);
-                    forgetLocalPartition(cacheKey);
-                    continue;
-                }
-                if (entry.revision() != revision) {
-                    evictLocal(cacheKey);
-                    invalidated++;
-                }
-            }
-        }
-        return new ReconcileOutcome(invalidated, wholeScope, partition, partitions, selected.size());
-    }
-
-    /**
-     * 对账结果。
-     *
-     * @param invalidated 清除的本地副本数
-     * @param wholeScope  是否全量对账（本地条目 ≤ 批大小）
-     * @param partition   分区号（全量时为 0）
-     * @param partitions  分区数（全量时为 1）
-     * @param scopeSize   本次对账覆盖的 key 数
-     */
-    private record ReconcileOutcome(int invalidated, boolean wholeScope,
-                                    int partition, int partitions, int scopeSize) {
-
-        /**
-         * @return 适合写进日志的对账范围描述
-         */
-        String describeScope() {
-            return wholeScope ? "全量(" + scopeSize + " 条)" : partition + "/" + partitions;
-        }
-    }
-
-    /**
-     * 检查点抖动：在 {@code checkInterval ± jitter} 上取均匀分布。
-     *
-     * <p>{@code jitter} 是<strong>绝对时长</strong>（不是比例）：不同 {@code checkInterval}
-     * 下抖动幅度一致、可预测；校验保证 {@code jitter < checkInterval}，不会把窗口吃成负数。</p>
-     *
-     * @param version 版本参数
-     * @return 本次检查间隔（纳秒）
-     */
-    private long jittered(LocalCacheSpec.VersionSpec version) {
-        long base = version.checkInterval().toNanos();
-        long jitterNanos = version.jitter() == null ? 0L : version.jitter().toNanos();
-        if (jitterNanos <= 0L) {
-            return base;
-        }
-        long delta = ThreadLocalRandom.current().nextLong(-jitterNanos, jitterNanos + 1L);
-        return Math.max(1L, base + delta);
-    }
 
     // ------------------------------------------------------------------ 工具
 

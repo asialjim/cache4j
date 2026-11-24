@@ -221,16 +221,23 @@ class TwoLevelCacheConcurrencyTest {
     @SuppressWarnings("unchecked")
     private static Map<CacheKey, Integer> partitionsOf(TwoLevelCache<String, String> cache)
             throws Exception {
-        Field field = DefaultTwoLevelCache.class.getDeclaredField("keyPartitions");
+        Field holder = DefaultTwoLevelCache.class.getDeclaredField("reconciler");
+        holder.setAccessible(true);
+        Object reconciler = holder.get(cache);
+        Field field = reconciler.getClass().getDeclaredField("keyPartitions");
         field.setAccessible(true);
-        return (Map<CacheKey, Integer>) field.get(cache);
+        return (Map<CacheKey, Integer>) field.get(reconciler);
     }
 
     @SuppressWarnings("unchecked")
     private static int indexedKeys(TwoLevelCache<String, String> cache) throws Exception {
-        Field field = DefaultTwoLevelCache.class.getDeclaredField("localPartitions");
+        // 分区索引已下沉到 Reconciler：先取 reconciler，再取它的 localPartitions
+        Field holder = DefaultTwoLevelCache.class.getDeclaredField("reconciler");
+        holder.setAccessible(true);
+        Object reconciler = holder.get(cache);
+        Field field = reconciler.getClass().getDeclaredField("localPartitions");
         field.setAccessible(true);
-        Map<Integer, Set<CacheKey>> buckets = (Map<Integer, Set<CacheKey>>) field.get(cache);
+        Map<Integer, Set<CacheKey>> buckets = (Map<Integer, Set<CacheKey>>) field.get(reconciler);
         assertNotNull(buckets);
         return buckets.values().stream().mapToInt(Set::size).sum();
     }
