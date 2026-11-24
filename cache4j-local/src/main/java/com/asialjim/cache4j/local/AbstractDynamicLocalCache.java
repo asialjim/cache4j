@@ -9,6 +9,7 @@ import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
+import com.asialjim.cache4j.core.local.DynamicLocalCache;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
@@ -48,7 +49,7 @@ import java.util.function.LongSupplier;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public final class HotKeyAdmissionLocalCache<V> implements LocalCache<V> {
+public abstract class AbstractDynamicLocalCache<V> implements DynamicLocalCache<V> {
 
     private final LocalCache<V> delegate;
     private final LocalCacheSpec spec;
@@ -56,7 +57,7 @@ public final class HotKeyAdmissionLocalCache<V> implements LocalCache<V> {
     private final HotKeyCoordinator coordinator;
     private final FrequencySketch sketch;
     private final LongSupplier nanoClock;
-    private static final Logger LOG = LoggerFactory.getLogger(HotKeyAdmissionLocalCache.class);
+    private static final Logger LOG = LoggerFactory.getLogger(AbstractDynamicLocalCache.class);
 
 
     private final ConcurrentHashMap<CacheKey, HotEntry> hotKeys = new ConcurrentHashMap<>();
@@ -82,7 +83,7 @@ public final class HotKeyAdmissionLocalCache<V> implements LocalCache<V> {
      * @param coordinator 热 key 协调器；{@code coordination=GLOBAL} 时必填
      * @param nanoClock   单调时钟
      */
-    public HotKeyAdmissionLocalCache(LocalCache<V> delegate, LocalCacheSpec spec,
+    protected AbstractDynamicLocalCache(LocalCache<V> delegate, LocalCacheSpec spec,
                              HotKeyCoordinator coordinator, LongSupplier nanoClock) {
         this.delegate = delegate;
         this.spec = spec;
@@ -635,7 +636,7 @@ public final class HotKeyAdmissionLocalCache<V> implements LocalCache<V> {
 
         static HotEntry promoted(long now, long estimate) {
             return new HotEntry(now, now, 0L, HotKeyStatus.UNKNOWN,
-                    HotKeyAdmissionLocalCache.saturate(estimate));
+                    AbstractDynamicLocalCache.saturate(estimate));
         }
 
         HotEntry touch(long now, int estimate) {
