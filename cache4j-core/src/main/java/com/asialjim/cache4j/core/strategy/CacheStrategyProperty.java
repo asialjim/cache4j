@@ -241,6 +241,79 @@ public class CacheStrategyProperty {
      */
     private Boolean allowNoExpiry;
 
+    /**
+     * 从展开参数构造，<strong>保留 {@code null}</strong>（表示未设置）。
+     *
+     * <p>与 {@link #of(NamespacePolicy)} 的区别：那个填的是"已解析的生效值"（默认值已补齐），
+     * 这个填的是"记录里原样的值"——{@code null} 必须保持 {@code null}，序列化后仍是 {@code -}。</p>
+     *
+     * @param namespace           命名空间
+     * @param description         说明
+     * @param strategy            本地策略
+     * @param maxSize             本地容量
+     * @param localTtl            本地 TTL
+     * @param localNullTtlDivisor 本地负副本 TTL 除数
+     * @param version             版本对账参数
+     * @param dynamic             热 key 参数
+     * @param centralTtl          中央 TTL
+     * @param centralNullTtl      中央空值 TTL
+     * @param failOpen            中央故障是否降级
+     * @return 配置载体
+     */
+    public static CacheStrategyProperty ofRaw(String namespace, String description,
+                                              LocalStrategy strategy, Long maxSize,
+                                              Duration localTtl, Integer localNullTtlDivisor,
+                                              LocalCacheSpec.VersionSpec version,
+                                              LocalCacheSpec.DynamicSpec dynamic,
+                                              Duration centralTtl, Duration centralNullTtl,
+                                              Boolean failOpen) {
+        CacheStrategyProperty p = new CacheStrategyProperty();
+        p.setNamespace(namespace);
+        p.setDescription(description);
+        p.setLocalStrategy(strategy == null ? null : strategy.name());
+        p.setLocalTimeUnit("MILLISECONDS");
+        p.setCentralTimeUnit("MILLISECONDS");
+        p.setLocalMaxSize(maxSize);
+        p.setLocalTtl(localTtl == null ? null : localTtl.toMillis());
+        p.setLocalNullTtlDivisor(localNullTtlDivisor);
+        if (version != null) {
+            p.setVersionCheckInterval(version.checkInterval().toMillis());
+            p.setVersionJitter(version.jitter().toMillis());
+            p.setVersionRetryBackoff(version.retryBackoff().toMillis());
+            p.setReconcileBatchSize(version.reconcileBatchSize());
+            p.setReconcilePartitions(version.reconcilePartitions());
+        }
+        if (dynamic != null) {
+            p.setHotThresholdQps((long) dynamic.hotThresholdQps());
+            p.setCoolQps((long) dynamic.coolQps());
+            p.setHotWindow(dynamic.window().toMillis());
+            p.setHotWindowSlices(dynamic.windowSlices());
+            p.setMaxHotKeys(dynamic.maxHotKeys());
+            p.setHotSyncInterval(dynamic.syncInterval().toMillis());
+            p.setHotCooldown(dynamic.cooldown().toMillis());
+            p.setCoordination(dynamic.coordination() == null ? null : dynamic.coordination().name());
+            p.setSketchWidthBits(dynamic.sketchWidthBits());
+            p.setSketchDepth(dynamic.sketchDepth());
+            p.setHotReportPartitions(dynamic.hotReportPartitions());
+            p.setHotReportBatchMax(dynamic.hotReportBatchMax());
+            p.setCandidateCapacity(dynamic.candidateCapacity());
+            LocalCacheSpec.GlobalSpec global = dynamic.global();
+            if (global != null) {
+                p.setGlobalWindow(global.window().toMillis());
+                p.setGlobalHotQps(global.hotQps());
+                p.setGlobalCoolQps(global.coolQps());
+                p.setGlobalDemoteWindows(global.demoteWindows());
+                p.setGlobalStaleWindows(global.staleWindows());
+                p.setGlobalClientEstimate(global.clientEstimate());
+            }
+        }
+        p.setCentralTtl(centralTtl == null ? null : centralTtl.toMillis());
+        p.setCentralNullTtl(centralNullTtl == null ? null : centralNullTtl.toMillis());
+        p.setFailOpen(failOpen);
+        return p;
+    }
+
+
     // ------------------------------------------------------------------ 转换
 
     /**

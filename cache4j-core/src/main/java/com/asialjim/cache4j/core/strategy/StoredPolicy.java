@@ -64,8 +64,8 @@ public record StoredPolicy(
                         LocalCacheSpec.VersionSpec version, LocalCacheSpec.DynamicSpec dynamic,
                         Duration centralTtl, Duration centralNullTtl, Boolean failOpen,
                         long configVersion, long updatedAtMillis, String updatedBy, String reason) {
-        this(propertyOf(namespace, description, strategy, maxSize, localTtl, localNullTtlDivisor,
-                        version, dynamic, centralTtl, centralNullTtl, failOpen),
+        this(CacheStrategyProperty.ofRaw(namespace, description, strategy, maxSize, localTtl,
+                        localNullTtlDivisor, version, dynamic, centralTtl, centralNullTtl, failOpen),
                 configVersion, updatedAtMillis, updatedBy, reason);
     }
 
@@ -76,59 +76,6 @@ public record StoredPolicy(
      * 下次读出来还是 {@code null}。不能在这里补默认值——那会把"未设置"变成"显式设为默认值"，
      * 运维就分不清哪些是改过的。</p>
      */
-    private static CacheStrategyProperty propertyOf(String namespace, String description,
-                                                    LocalStrategy strategy, Long maxSize,
-                                                    Duration localTtl, Integer localNullTtlDivisor,
-                                                    LocalCacheSpec.VersionSpec version,
-                                                    LocalCacheSpec.DynamicSpec dynamic,
-                                                    Duration centralTtl, Duration centralNullTtl,
-                                                    Boolean failOpen) {
-        CacheStrategyProperty p = new CacheStrategyProperty();
-        p.setNamespace(namespace);
-        p.setDescription(description);
-        p.setLocalStrategy(strategy == null ? null : strategy.name());
-        p.setLocalTimeUnit("MILLISECONDS");
-        p.setCentralTimeUnit("MILLISECONDS");
-        p.setLocalMaxSize(maxSize);
-        p.setLocalTtl(localTtl == null ? null : localTtl.toMillis());
-        p.setLocalNullTtlDivisor(localNullTtlDivisor);
-        if (version != null) {
-            p.setVersionCheckInterval(version.checkInterval().toMillis());
-            p.setVersionJitter(version.jitter().toMillis());
-            p.setVersionRetryBackoff(version.retryBackoff().toMillis());
-            p.setReconcileBatchSize(version.reconcileBatchSize());
-            p.setReconcilePartitions(version.reconcilePartitions());
-        }
-        if (dynamic != null) {
-            p.setHotThresholdQps((long) dynamic.hotThresholdQps());
-            p.setCoolQps((long) dynamic.coolQps());
-            p.setHotWindow(dynamic.window().toMillis());
-            p.setHotWindowSlices(dynamic.windowSlices());
-            p.setMaxHotKeys(dynamic.maxHotKeys());
-            p.setHotSyncInterval(dynamic.syncInterval().toMillis());
-            p.setHotCooldown(dynamic.cooldown().toMillis());
-            p.setCoordination(dynamic.coordination() == null ? null : dynamic.coordination().name());
-            p.setSketchWidthBits(dynamic.sketchWidthBits());
-            p.setSketchDepth(dynamic.sketchDepth());
-            p.setHotReportPartitions(dynamic.hotReportPartitions());
-            p.setHotReportBatchMax(dynamic.hotReportBatchMax());
-            p.setCandidateCapacity(dynamic.candidateCapacity());
-            LocalCacheSpec.GlobalSpec global = dynamic.global();
-            if (global != null) {
-                p.setGlobalWindow(global.window().toMillis());
-                p.setGlobalHotQps(global.hotQps());
-                p.setGlobalCoolQps(global.coolQps());
-                p.setGlobalDemoteWindows(global.demoteWindows());
-                p.setGlobalStaleWindows(global.staleWindows());
-                p.setGlobalClientEstimate(global.clientEstimate());
-            }
-        }
-        p.setCentralTtl(centralTtl == null ? null : centralTtl.toMillis());
-        p.setCentralNullTtl(centralNullTtl == null ? null : centralNullTtl.toMillis());
-        p.setFailOpen(failOpen);
-        return p;
-    }
-
     /**
      * @return 命名空间
      */
