@@ -27,7 +27,7 @@ import java.util.Optional;
  * <ul>
  *   <li>所有实现必须线程安全；</li>
  *   <li>{@link #lookup} 不做回源；回源只发生在带 {@link CacheLoader} 的
- *       {@code TwoLevelCache.lookup(key, loader)} 中；</li>
+ *       {@code Cache4j.lookup(key, loader)} 中；</li>
  *   <li>{@code put(key, null)} 的语义见负缓存规则：启用空值缓存时写负副本，否则等价于
  *       {@link #evict}；</li>
  *   <li>{@link #putIfAbsent} 在中央不可用且 {@code failOpen=true} 时返回 {@code false}
@@ -112,6 +112,42 @@ public interface Cache4j<K, V> extends AutoCloseable {
      * 清空该缓存名下的全部数据。
      */
     void clear();
+
+    /**
+     * 读取缓存，未命中时用 loader 回源并回填；同一个 key 的并发回源只执行一次。
+     *
+     * <p>三层都可能实现它：门面做"本地 → 中央 → 回源"，中央做"回源 + 单飞"，
+     * 本地层通常直接委托给上层（默认抛 {@link UnsupportedOperationException}）。</p>
+     *
+     * @param key    key
+     * @param loader 回源加载器
+     * @return 三态结果
+     */
+    default Lookup<V> lookup(K key, CacheLoader<K, V> loader) {
+        throw new UnsupportedOperationException(
+                getClass().getName() + " 不支持带 loader 的读取");
+    }
+
+    /**
+     * @return 本地策略；非门面实现返回 {@code null}
+     */
+    default com.asialjim.cache4j.core.local.LocalStrategy strategy() {
+        return null;
+    }
+
+    /**
+     * @return 本地缓存视图（诊断用）；非门面实现返回 {@code null}
+     */
+    default com.asialjim.cache4j.core.local.LocalCache<V> local() {
+        return null;
+    }
+
+    /**
+     * @return 中央缓存视图；非门面实现返回 {@code null}
+     */
+    default com.asialjim.cache4j.core.central.CentralCache<V> central() {
+        return null;
+    }
 
     /**
      * 释放资源；默认无资源，幂等。

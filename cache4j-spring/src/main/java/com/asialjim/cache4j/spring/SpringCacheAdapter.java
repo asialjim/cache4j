@@ -2,14 +2,14 @@ package com.asialjim.cache4j.spring;
 
 import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.Lookup;
-import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
+import com.asialjim.cache4j.core.Cache4j;
 import org.springframework.cache.Cache;
 import org.springframework.cache.support.SimpleValueWrapper;
 
 import java.util.concurrent.Callable;
 
 /**
- * Spring {@link Cache} 到 {@link TwoLevelCache} 的桥接。
+ * Spring {@link Cache} 到 {@link Cache4j} 的桥接。
  *
  * <p>语义映射：</p>
  * <table border="1">
@@ -26,12 +26,12 @@ import java.util.concurrent.Callable;
  */
 public final class SpringCacheAdapter implements Cache {
 
-    private final TwoLevelCache<Object, Object> delegate;
+    private final Cache4j<Object, Object> delegate;
 
     /**
      * @param delegate 二级缓存门面
      */
-    public SpringCacheAdapter(TwoLevelCache<Object, Object> delegate) {
+    public SpringCacheAdapter(Cache4j<Object, Object> delegate) {
         this.delegate = delegate;
     }
 
@@ -102,7 +102,7 @@ public final class SpringCacheAdapter implements Cache {
     /**
      * @return 底层门面（便于业务做高级操作 / 取统计）
      */
-    public TwoLevelCache<Object, Object> unwrap() {
+    public Cache4j<Object, Object> unwrap() {
         return delegate;
     }
 

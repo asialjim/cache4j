@@ -62,7 +62,7 @@ public record LocalCacheSpec(
      * <p>空值副本只是"防穿透的临时标记"，比中央活得久毫无意义；让本地比中央<strong>更早</strong>
      * 放下标记，避免"中央已能重新回源、本地还在回答不存在"。</p>
      *
-     * <p>收敛成一处实现：编排层（{@code DefaultTwoLevelCache}）与运维视图
+     * <p>收敛成一处实现：编排层（{@code Cache4jImpl}）与运维视图
      * （{@code StrategyView}）都要这个值，各写一份必然漂移。</p>
      *
      * @param localTtl       本地非空副本存活（可空）

@@ -1,6 +1,6 @@
 package com.asialjim.cache4j.test;
 
-import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
+import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
@@ -35,7 +35,7 @@ class DynamicHotKeyRedisTest {
     private static final String NS = "it:hot:dynamic";
 
     private AnnotationConfigApplicationContext context;
-    private TwoLevelCache<Object, Object> cache;
+    private Cache4j<Object, Object> cache;
 
     @BeforeEach
     void setUp() {

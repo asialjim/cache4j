@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.spring;
 
+import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,7 +22,7 @@ import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
-import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
+import com.asialjim.cache4j.core.Cache4j;
 import org.springframework.util.ClassUtils;
 
 import java.util.ArrayList;
@@ -36,7 +37,7 @@ import java.util.Set;
  * 二级缓存管理器：按定义装配并持有若干命名缓存，负责生命周期。
  *
  * <p>装配顺序对每个命名缓存是：本地缓存（来自 {@code LocalCacheProvider}，带热 key 协调器）
- * → 中央缓存（来自 {@code CentralCacheProvider}）→ 门面 {@link TwoLevelCache}。</p>
+ * → 中央缓存（来自 {@code CentralCacheProvider}）→ 门面 {@link Cache4j}。</p>
  *
  * <p>{@link #close()} 幂等：先关缓存，再按需关闭中央 provider（连接可能被多个缓存共享，
  * 所以只在 {@link Cache4jSpringOptions#ownsCentralProvider()} 为真时关闭）。</p>
@@ -47,7 +48,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(TwoLevelCacheManager.class);
 
-    private final Map<String, TwoLevelCache<Object, Object>> caches;
+    private final Map<String, Cache4j<Object, Object>> caches;
     private final CentralCacheProvider centralProvider;
     private final boolean ownsCentralProvider;
     private final LocalCacheProvider localProvider;
@@ -61,7 +62,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
      */
     private final Set<String> undeclared = ConcurrentHashMap.newKeySet();
 
-    private TwoLevelCacheManager(Map<String, TwoLevelCache<Object, Object>> caches,
+    private TwoLevelCacheManager(Map<String, Cache4j<Object, Object>> caches,
                                  CentralCacheProvider centralProvider,
                                  boolean ownsCentralProvider,
                                  LocalCacheProvider localProvider,
@@ -86,7 +87,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
      * @return 管理器
      */
     public static TwoLevelCacheManager create(Cache4jSpringOptions options) {
-        Map<String, TwoLevelCache<Object, Object>> built = new LinkedHashMap<>();
+        Map<String, Cache4j<Object, Object>> built = new LinkedHashMap<>();
         if (!options.enabled()) {
             LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "已禁用（cache4j.enabled=false），不创建任何缓存");
             return new TwoLevelCacheManager(built, options.centralProvider(), false,
@@ -114,7 +115,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
             LocalCache<Object> local = options.localProvider().create(localSpec, coordinator);
             CentralCache<Object> central = options.centralProvider().create(definition.central());
 
-            TwoLevelCache<Object, Object> cache = TwoLevelCache.<Object, Object>builder(namespace)
+            Cache4j<Object, Object> cache = Cache4jImpl.<Object, Object>builder(namespace)
                     .keyEncoder(options.keyEncoder())
                     .local(local)
                     .central(central)
@@ -226,8 +227,8 @@ public final class TwoLevelCacheManager implements AutoCloseable {
      * @param name 缓存名
      * @return 缓存；关闭自动创建且未声明时返回空
      */
-    public Optional<TwoLevelCache<Object, Object>> cache(String name) {
-        TwoLevelCache<Object, Object> cached = caches.get(name);
+    public Optional<Cache4j<Object, Object>> cache(String name) {
+        Cache4j<Object, Object> cached = caches.get(name);
         if (cached != null) {
             return Optional.of(cached);
         }
@@ -235,7 +236,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
             return Optional.empty();
         }
         synchronized (caches) {
-            TwoLevelCache<Object, Object> again = caches.get(name);
+            Cache4j<Object, Object> again = caches.get(name);
             if (again != null) {
                 return Optional.of(again);
             }
@@ -249,14 +250,14 @@ public final class TwoLevelCacheManager implements AutoCloseable {
      * @param name 缓存名
      * @return 缓存
      */
-    private TwoLevelCache<Object, Object> createUndeclared(String name) {
+    private Cache4j<Object, Object> createUndeclared(String name) {
         undeclared.add(name);
         LOG.warn("[{}]-{}-{}", "缓存装配", "声明", name + " 未经 CacheStrategyDecl 声明，按内建默认创建，请补充到声明枚举"
                         + "（未声明 namespace 累计 " + undeclared.size() + " 个）");
         CacheDefinition definition = BuiltinDefaults.definitionOf(name, LocalStrategy.STATIC);
         LocalCache<Object> local = localProvider.create(definition.local(), coordinator);
         CentralCache<Object> central = undeclaredCentralProvider.create(definition.central());
-        TwoLevelCache<Object, Object> created = TwoLevelCache.<Object, Object>builder(name)
+        Cache4j<Object, Object> created = Cache4jImpl.<Object, Object>builder(name)
                 .keyEncoder(keyEncoder)
                 .local(local)
                 .central(central)
@@ -286,7 +287,7 @@ public final class TwoLevelCacheManager implements AutoCloseable {
     /**
      * @return 全部缓存视图
      */
-    public Collection<TwoLevelCache<Object, Object>> caches() {
+    public Collection<Cache4j<Object, Object>> caches() {
         return caches.values();
     }
 

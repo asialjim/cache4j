@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.asialjim.cache4j.core.CacheException;
+import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.CacheLoader;
@@ -49,9 +50,21 @@ import java.util.function.LongSupplier;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
+public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(DefaultTwoLevelCache.class);
+    /**
+     * 构造器入口。
+     *
+     * @param namespace 缓存名
+     * @param <K>       key 类型
+     * @param <V>       值类型
+     * @return 构建器
+     */
+    public static <K, V> Builder<K, V> builder(String namespace) {
+        return new Builder<>(namespace);
+    }
+
+    private static final Logger LOG = LoggerFactory.getLogger(Cache4jImpl.class);
 
     private final String namespace;
     private final KeyEncoder keyEncoder;
@@ -99,7 +112,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
      * 同一命名空间同一时刻只允许一个线程对账。
      */
 
-    private DefaultTwoLevelCache(Builder<K, V> builder) {
+    private Cache4jImpl(Builder<K, V> builder) {
         this.namespace = builder.namespace;
         this.keyEncoder = builder.keyEncoder;
         this.local = builder.local;
@@ -644,7 +657,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
          *
          * @return 门面
          */
-        public TwoLevelCache<K, V> build() {
+        public Cache4j<K, V> build() {
             if (local == null) {
                 throw invalid("local 不能为空（NONE 策略请使用 NoOpLocalCache）");
             }
@@ -666,7 +679,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
                     throw invalid("coordination=GLOBAL 必须提供 HotKeyCoordinator，不静默退化为单节点模式");
                 }
             }
-            return new DefaultTwoLevelCache<>(this);
+            return new Cache4jImpl<>(this);
         }
 
         private static CacheException invalid(String message) {

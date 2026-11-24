@@ -1,8 +1,9 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.Lookup;
-import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
+import com.asialjim.cache4j.core.Cache4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,7 +29,7 @@ public final class CacheStrategyCache implements CacheStrategyRepository {
 
     private final DefaultCacheStrategyRepository delegate;
 
-    private final TwoLevelCache<String, StoredPolicy> policyCache;
+    private final Cache4j<String, StoredPolicy> policyCache;
 
     /**
      * @param dataSource  策略数据源
@@ -61,7 +62,7 @@ public final class CacheStrategyCache implements CacheStrategyRepository {
                               java.util.function.LongSupplier milliClock) {
         this.dataSource = dataSource;
         this.delegate = new DefaultCacheStrategyRepository(dataSource);
-        this.policyCache = TwoLevelCache.<String, StoredPolicy>builder(StrategySelfCacheOptions.SELF_NAMESPACE)
+        this.policyCache = Cache4jImpl.<String, StoredPolicy>builder(StrategySelfCacheOptions.SELF_NAMESPACE)
                 .local(localCache)
                 .central(centralCache)
                 .nanoClock(nanoClock)
@@ -203,7 +204,7 @@ public final class CacheStrategyCache implements CacheStrategyRepository {
     /**
      * @return 自举缓存视图（测试与排障用；不要拿它做业务读写）
      */
-    public TwoLevelCache<String, StoredPolicy> selfCache() {
+    public Cache4j<String, StoredPolicy> selfCache() {
         return policyCache;
     }
 

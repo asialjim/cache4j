@@ -1,12 +1,13 @@
 package com.asialjim.cache4j.central.redis;
 
+import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
-import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
+import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.local.LocalCaches;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,7 +34,7 @@ class ReconcileFetchScopeTest {
     @DisplayName("本地条目 ≤ 批大小：直接全量对账（一次 HMGET 装得下）")
     void notLargerThanBatchMeansWholeScope() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        TwoLevelCache<String, String> cache = cache(store, 1_000, 16);   // 2 条 ≤ 批大小 1000
+        Cache4j<String, String> cache = cache(store, 1_000, 16);   // 2 条 ≤ 批大小 1000
 
         cache.put("a", "va");
         cache.put("b", "vb");
@@ -55,7 +56,7 @@ class ReconcileFetchScopeTest {
     void largerThanBatchMeansModuloPartition() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
         // 批大小 1、分区 2：本地 2 条 > 批大小 1 → 进入分区模式
-        TwoLevelCache<String, String> cache = cache(store, 1, 2);
+        Cache4j<String, String> cache = cache(store, 1, 2);
 
         String[] pair = twoKeysInDifferentPartitions(2);
         String visitor = pair[0];
@@ -78,7 +79,7 @@ class ReconcileFetchScopeTest {
     void partitionsReducePayload() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
         // 批大小 10 + 16 分区；maxSize 放大到 200 避免容量淘汰干扰载荷断言
-        TwoLevelCache<String, String> cache = cache(store, 10, 16, 200, Duration.ofMinutes(1));
+        Cache4j<String, String> cache = cache(store, 10, 16, 200, Duration.ofMinutes(1));
 
         for (int i = 0; i < 100; i++) {
             cache.put("k" + i, "v" + i);
@@ -106,7 +107,7 @@ class ReconcileFetchScopeTest {
     void reconcileFetchesAllKeysInBatches() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
         // reconcileBatchSize = 2，本地放 5 个 key → 3 批（2 + 2 + 1）
-        TwoLevelCache<String, String> cache = cache(store, 2, 1);   // 分区=1 退化：等价全量
+        Cache4j<String, String> cache = cache(store, 2, 1);   // 分区=1 退化：等价全量
 
         for (String id : new String[]{"a", "b", "c", "d", "e"}) {
             cache.put(id, "v" + id);
@@ -126,7 +127,7 @@ class ReconcileFetchScopeTest {
     @DisplayName("对账只取版本、不取数据值（不会读到 data key）")
     void reconcileDoesNotFetchValues() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        TwoLevelCache<String, String> cache = cache(store, 1_000);
+        Cache4j<String, String> cache = cache(store, 1_000);
 
         cache.put("a", "va");
         cache.lookup("a");
@@ -143,7 +144,7 @@ class ReconcileFetchScopeTest {
     @DisplayName("对账触发且本地命中：只有对账的 I/O，没有第二次读")
     void reconcileThenHitCostsOneIoGroup() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        TwoLevelCache<String, String> cache = cache(store, 1_000);
+        Cache4j<String, String> cache = cache(store, 1_000);
 
         cache.put("a", "va");
         cache.lookup("a");                       // 设检查点
@@ -159,7 +160,7 @@ class ReconcileFetchScopeTest {
     @DisplayName("对账触发且本地未命中：对账 + 读 = 两次 I/O")
     void reconcileThenMissCostsTwoIoGroups() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        TwoLevelCache<String, String> cache = cache(store, 1_000);
+        Cache4j<String, String> cache = cache(store, 1_000);
 
         cache.put("a", "va");
         cache.put("b", "vb");
@@ -182,7 +183,7 @@ class ReconcileFetchScopeTest {
     void ghostEntriesArePrunedByNextReconcile() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
         // 本地 TTL 1s；maxSize 足够大，排除容量淘汰的干扰
-        TwoLevelCache<String, String> cache = cache(store, 1_000, 16, 200, Duration.ofSeconds(1));
+        Cache4j<String, String> cache = cache(store, 1_000, 16, 200, Duration.ofSeconds(1));
 
         cache.put("a", "va");
         cache.put("b", "vb");
@@ -214,7 +215,7 @@ class ReconcileFetchScopeTest {
     @DisplayName("本地条目过期后两张表立即清理：下一次对账不再带上这个 key")
     void expiredEntryIsForgottenImmediately() {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        TwoLevelCache<String, String> cache = cache(store, 1_000, 16, 200, Duration.ofSeconds(1));
+        Cache4j<String, String> cache = cache(store, 1_000, 16, 200, Duration.ofSeconds(1));
 
         cache.put("a", "va");
         cache.put("b", "vb");
@@ -236,16 +237,16 @@ class ReconcileFetchScopeTest {
     // ------------------------------------------------------------------ 辅助
 
     @SuppressWarnings("unchecked")
-    private TwoLevelCache<String, String> cache(InMemoryValueStore<Object> store, int batchSize) {
+    private Cache4j<String, String> cache(InMemoryValueStore<Object> store, int batchSize) {
         return cache(store, batchSize, 1);
     }
 
-    private TwoLevelCache<String, String> cache(InMemoryValueStore<Object> store, int batchSize,
+    private Cache4j<String, String> cache(InMemoryValueStore<Object> store, int batchSize,
                                                 int partitions) {
         return cache(store, batchSize, partitions, 100, Duration.ofMinutes(1));
     }
 
-    private TwoLevelCache<String, String> cache(InMemoryValueStore<Object> store, int batchSize,
+    private Cache4j<String, String> cache(InMemoryValueStore<Object> store, int batchSize,
                                                 int partitions, int maxSize, Duration localTtl) {
         LocalCacheSpec localSpec = LocalCacheSpec.staticCache(NS, maxSize, localTtl,
                 new LocalCacheSpec.VersionSpec(
@@ -254,7 +255,7 @@ class ReconcileFetchScopeTest {
         CentralCache<String> central = new RedisCentralCache<>(
                 CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
-        return TwoLevelCache.<String, String>builder(NS)
+        return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)
                 .nanoClock(clock::nanos)
@@ -293,7 +294,7 @@ class ReconcileFetchScopeTest {
      * @param partitions 分区数
      * @return 期望的 field 数
      */
-    private long expectedPartitionPayload(TwoLevelCache<String, String> cache, String visitor,
+    private long expectedPartitionPayload(Cache4j<String, String> cache, String visitor,
                                           int partitions) {
         int wanted = HashPartitions.of(new CacheKey(NS, visitor),
                 partitions);

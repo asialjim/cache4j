@@ -2,7 +2,7 @@ package com.asialjim.cache4j.test;
 
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
-import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
+import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.localcaffeine.CaffeineLocalCacheProvider;
 import com.asialjim.cache4j.spring.Cache4jCachingConfiguration;
 import com.asialjim.cache4j.spring.Cache4jSpringOptions;
@@ -101,7 +101,7 @@ class SpringRedisTwoLevelCacheTest {
         assertEquals("user-42", service.find("42"), "第二次：本地命中");
         assertEquals(1, USER_LOADS.get(), "loader 只执行一次");
 
-        TwoLevelCache<Object, Object> cache = twoLevel(NS);
+        Cache4j<Object, Object> cache = twoLevel(NS);
 
         String revisionKey = "_c4j:{" + NS + "}:__rev";
         assertTrue(raw.sync().exists(revisionKey) > 0L, "版本表应落 Redis");
@@ -189,7 +189,7 @@ class SpringRedisTwoLevelCacheTest {
     // ------------------------------------------------------------------ 辅助
 
     @SuppressWarnings("unchecked")
-    private TwoLevelCache<Object, Object> twoLevel(String namespace) {
+    private Cache4j<Object, Object> twoLevel(String namespace) {
         TwoLevelCacheManager manager = context.getBean(TwoLevelCacheManager.class);
         return manager.cache(namespace)
                 .orElseThrow(() -> new IllegalStateException("未装配缓存：" + namespace));

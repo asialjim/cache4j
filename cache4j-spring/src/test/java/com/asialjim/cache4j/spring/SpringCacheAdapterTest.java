@@ -4,7 +4,7 @@ import com.asialjim.cache4j.central.InMemoryCentralCacheProvider;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
-import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
+import com.asialjim.cache4j.core.Cache4j;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -58,7 +58,7 @@ class SpringCacheAdapterTest {
     @DisplayName("管理器：声明的缓存名集合")
     void managerExposesNames() {
         assertEquals(java.util.List.of(NS), java.util.List.copyOf(cacheManager.getCacheNames()));
-        Optional<TwoLevelCache<Object, Object>> found = manager.cache(NS);
+        Optional<Cache4j<Object, Object>> found = manager.cache(NS);
         assertTrue(found.isPresent());
     }
 
@@ -71,8 +71,8 @@ class SpringCacheAdapterTest {
         assertTrue(manager.undeclaredNamespaces().contains("not-exists"),
                 "未声明的 namespace 必须被记录（告警与运维视图用）");
         // 第二次读到的是同一个底层缓存（Spring 包装器每次新建，但底层实例复用）
-        TwoLevelCache<Object, Object> first = manager.cache("not-exists").orElseThrow();
-        TwoLevelCache<Object, Object> second = manager.cache("not-exists").orElseThrow();
+        Cache4j<Object, Object> first = manager.cache("not-exists").orElseThrow();
+        Cache4j<Object, Object> second = manager.cache("not-exists").orElseThrow();
         assertSame(first, second, "未声明的 namespace 只应装配一次");
         assertNotNull(created);
     }

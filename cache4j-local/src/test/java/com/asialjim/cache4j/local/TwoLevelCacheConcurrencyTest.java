@@ -9,8 +9,8 @@ import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
-import com.asialjim.cache4j.core.twolevel.DefaultTwoLevelCache;
-import com.asialjim.cache4j.core.twolevel.TwoLevelCache;
+import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
+import com.asialjim.cache4j.core.Cache4j;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -61,7 +61,7 @@ class TwoLevelCacheConcurrencyTest {
      * @param version  版本配置
      * @return 门面（本地 HashMap 实现 + 内存中央）
      */
-    private TwoLevelCache<String, String> cache(String strategy, LocalCacheSpec.VersionSpec version) {
+    private Cache4j<String, String> cache(String strategy, LocalCacheSpec.VersionSpec version) {
         LocalCacheSpec.VersionSpec effective = version == null
                 ? LocalCacheSpec.VersionSpec.defaults() : version;
         LocalCacheSpec localSpec = switch (strategy) {
@@ -73,7 +73,7 @@ class TwoLevelCacheConcurrencyTest {
         LocalCache<String> local = LocalCaches.create(localSpec, null, nanos::get);
         CentralCache<String> central = new InMemoryCentralCache<>(
                 CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build(), millis::get);
-        return TwoLevelCache.<String, String>builder(NS)
+        return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)
                 .nanoClock(nanos::get)
@@ -84,7 +84,7 @@ class TwoLevelCacheConcurrencyTest {
     @Test
     @DisplayName("NONE 策略：访问再多 key 也不保存分区号（无内存泄漏）")
     void noneStrategyDoesNotTrackPartitions() throws Exception {
-        TwoLevelCache<String, String> cache = cache("NONE", null);
+        Cache4j<String, String> cache = cache("NONE", null);
         for (int i = 0; i < 200; i++) {
             cache.put("k" + i, "v" + i);
             cache.lookup("k" + i);
@@ -96,7 +96,7 @@ class TwoLevelCacheConcurrencyTest {
     @Test
     @DisplayName("单飞：并发回源只执行一次 loader，且每个请求都有结论（统计平账）")
     void singleFlightLoadsOnceAndBalancesStats() throws Exception {
-        TwoLevelCache<String, String> cache = cache("STATIC", null);
+        Cache4j<String, String> cache = cache("STATIC", null);
         AtomicInteger loads = new AtomicInteger();
         CacheLoader<String, String> loader = key -> {
             loads.incrementAndGet();
@@ -135,7 +135,7 @@ class TwoLevelCacheConcurrencyTest {
     @Test
     @DisplayName("并发读写失效：分区索引与本地副本始终保持一致")
     void concurrentOpsKeepIndexConsistent() throws Exception {
-        TwoLevelCache<String, String> cache = cache("STATIC", null);
+        Cache4j<String, String> cache = cache("STATIC", null);
         int threads = 8;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CountDownLatch start = new CountDownLatch(1);
@@ -176,7 +176,7 @@ class TwoLevelCacheConcurrencyTest {
     void concurrentReadsEventuallySeeFreshValue() throws Exception {
         LocalCacheSpec.VersionSpec version = new LocalCacheSpec.VersionSpec(
                 Duration.ofMillis(5), Duration.ZERO, Duration.ofMillis(5), 1_000, 16);
-        TwoLevelCache<String, String> cache = cache("STATIC", version);
+        Cache4j<String, String> cache = cache("STATIC", version);
 
         cache.put("42", "v1");
         assertEquals("v1", cache.lookup("42").optional().orElseThrow());
@@ -201,7 +201,7 @@ class TwoLevelCacheConcurrencyTest {
     @Test
     @DisplayName("containsKey 不算一次读：不动 request 计数")
     void containsKeyIsNotCountedAsRead() {
-        TwoLevelCache<String, String> cache = cache("STATIC", null);
+        Cache4j<String, String> cache = cache("STATIC", null);
         cache.put("42", "v1");
 
         assertTrue(cache.containsKey("42"));
@@ -219,9 +219,9 @@ class TwoLevelCacheConcurrencyTest {
     }
 
     @SuppressWarnings("unchecked")
-    private static Map<CacheKey, Integer> partitionsOf(TwoLevelCache<String, String> cache)
+    private static Map<CacheKey, Integer> partitionsOf(Cache4j<String, String> cache)
             throws Exception {
-        Field holder = DefaultTwoLevelCache.class.getDeclaredField("reconciler");
+        Field holder = Cache4jImpl.class.getDeclaredField("reconciler");
         holder.setAccessible(true);
         Object reconciler = holder.get(cache);
         Field field = reconciler.getClass().getDeclaredField("keyPartitions");
@@ -230,9 +230,9 @@ class TwoLevelCacheConcurrencyTest {
     }
 
     @SuppressWarnings("unchecked")
-    private static int indexedKeys(TwoLevelCache<String, String> cache) throws Exception {
+    private static int indexedKeys(Cache4j<String, String> cache) throws Exception {
         // 分区索引已下沉到 Reconciler：先取 reconciler，再取它的 localPartitions
-        Field holder = DefaultTwoLevelCache.class.getDeclaredField("reconciler");
+        Field holder = Cache4jImpl.class.getDeclaredField("reconciler");
         holder.setAccessible(true);
         Object reconciler = holder.get(cache);
         Field field = reconciler.getClass().getDeclaredField("localPartitions");
@@ -243,7 +243,7 @@ class TwoLevelCacheConcurrencyTest {
     }
 
     @SuppressWarnings("unused")
-    private static LocalEntry<String> entryOf(TwoLevelCache<String, String> cache, CacheKey key) {
+    private static LocalEntry<String> entryOf(Cache4j<String, String> cache, CacheKey key) {
         return cache.local().peek(key);
     }
 }

@@ -47,7 +47,7 @@ public interface CacheStrategyRepository {
     List<NamespacePolicy> all();
 
     /**
-     * 便捷方法：把生效配置转成装配定义，直接交给 {@code TwoLevelCache} 的装配器。
+     * 便捷方法：把生效配置转成装配定义，直接交给 {@code Cache4j} 的装配器。
      *
      * @return 装配定义列表（保持声明顺序）
      */
