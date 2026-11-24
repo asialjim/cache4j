@@ -1,6 +1,6 @@
 package com.asialjim.cache4j.core.central;
 
-import com.asialjim.cache4j.core.Cache;
+import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.Lookup;
 
@@ -27,7 +27,7 @@ import java.util.OptionalLong;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public interface CentralCache<V> extends Cache<CacheKey, V> {
+public interface CentralCache<V> extends Cache4j<CacheKey, V> {
 
     /**
      * 批量读；返回顺序与入参无关（按 key 索引）。

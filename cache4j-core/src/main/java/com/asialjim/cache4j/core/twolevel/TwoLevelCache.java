@@ -1,6 +1,6 @@
 package com.asialjim.cache4j.core.twolevel;
 
-import com.asialjim.cache4j.core.Cache;
+import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
@@ -17,7 +17,7 @@ import com.asialjim.cache4j.core.local.LocalStrategy;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public interface TwoLevelCache<K, V> extends Cache<K, V> {
+public interface TwoLevelCache<K, V> extends Cache4j<K, V> {
 
     /**
      * 读取缓存，未命中时用 loader 回源并回填；同一个 key 的并发回源只执行一次。

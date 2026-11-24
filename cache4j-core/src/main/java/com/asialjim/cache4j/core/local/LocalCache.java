@@ -1,6 +1,6 @@
 package com.asialjim.cache4j.core.local;
 
-import com.asialjim.cache4j.core.Cache;
+import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
@@ -27,7 +27,7 @@ import java.util.function.Consumer;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public interface LocalCache<V> extends Cache<CacheKey, LocalEntry<V>> {
+public interface LocalCache<V> extends Cache4j<CacheKey, LocalEntry<V>> {
 
     /**
      * @return 策略
