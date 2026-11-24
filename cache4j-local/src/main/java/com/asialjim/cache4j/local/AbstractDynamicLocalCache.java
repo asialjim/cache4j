@@ -30,21 +30,13 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.function.LongSupplier;
 
 /**
- * {@code DYNAMIC} 策略：本地只缓存<strong>读频次</strong>达标的 key。
+ * {@code DYNAMIC} 策略本地缓存的<strong>骨架</strong>：组合"热点准入"与"存储"。
  *
- * <h2>四条规则</h2>
- * <ol>
- *   <li>本地升热立即生效：本地窗口频次达到 {@code hotThresholdCount()}（= {@code hotThresholdQps × 窗口秒数}）
- *       直接升热，不等中央；</li>
- *   <li>本地不升热 ≠ 不热：到点的热同步事件里按<strong>分区</strong>批量上报，由中央裁决；</li>
- *   <li>降热只认中央 {@code COOLING}；</li>
- *   <li>预选阈值严格小于升热阈值（派生值，见 {@link LocalCacheSpec.DynamicSpec#candidateCount()}）；
- *       候选阶段"宁多勿少"，高估是安全方向。</li>
- * </ol>
+ * <p>准入判定（何时升热、何时降热、何时上报）全部委托给 {@link HotKeyAdmission}——
+ * 它不碰存储，所以同一份逻辑能服务 HashMap 与 Caffeine 两种实现。</p>
  *
- * <p><strong>频次只统计读</strong>：{@code put} / {@code evict} / {@code clear} / 对账 / 上报都不计频。
- * 因为 hotkey 的唯一目的是减少对 L2 的读，写必须穿透中央、本地有无副本都不影响 L2 写压力，
- * 所以写在这套机制里没有可优化的对象。</p>
+ * <p>本类只做两件事：把准入的判定接到 {@code LocalCache} 的钩子上
+ * （{@code accepts} / {@code access} / {@code hotSync} / {@code maintain}），其余全部委托给存储。</p>
  *
  * @param <V> 值类型
  * @author Asial Jim
@@ -53,29 +45,7 @@ public abstract class AbstractDynamicLocalCache<V> implements DynamicLocalCache<
 
     private final LocalCache<V> delegate;
     private final LocalCacheSpec spec;
-    private final LocalCacheSpec.DynamicSpec dynamic;
-    private final HotKeyCoordinator coordinator;
-    private final FrequencySketch sketch;
-    private final LongSupplier nanoClock;
-    private static final Logger LOG = LoggerFactory.getLogger(AbstractDynamicLocalCache.class);
-
-
-    private final ConcurrentHashMap<CacheKey, HotEntry> hotKeys = new ConcurrentHashMap<>();
-    private final ConcurrentLinkedQueue<CacheKey> lru = new ConcurrentLinkedQueue<>();
-    private final List<Set<CacheKey>> hotByPartition;
-    private final List<Map<CacheKey, Integer>> candidateByPartition;
-    private final ConcurrentHashMap<CacheKey, LongAdder> pendingDelta = new ConcurrentHashMap<>();
-
-    /**
-     * 每 key 的精确滑动窗口（16 片）。只对"值得精确统计"的 key 建状态：
-     * 由 CMS 粗筛（可能高估，宁多勿少）决定谁进来，容量上限 = {@code candidateCapacity}。
-     */
-    private final ConcurrentHashMap<CacheKey, HotWindow> windows = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<CacheKey, Long> cooldownUntilNanos = new ConcurrentHashMap<>();
-
-    private final AtomicLong accessCounter = new AtomicLong();
-    private final AtomicBoolean syncing = new AtomicBoolean();
-    private volatile long nextSyncAtNanos;
+    private final HotKeyAdmission admission;
 
     /**
      * @param delegate    存储层（HashMap / Caffeine），其 {@code spec} 与本对象一致
@@ -84,34 +54,57 @@ public abstract class AbstractDynamicLocalCache<V> implements DynamicLocalCache<
      * @param nanoClock   单调时钟
      */
     protected AbstractDynamicLocalCache(LocalCache<V> delegate, LocalCacheSpec spec,
-                             HotKeyCoordinator coordinator, LongSupplier nanoClock) {
+                                        HotKeyCoordinator coordinator, LongSupplier nanoClock) {
         this.delegate = delegate;
         this.spec = spec;
-        this.dynamic = spec.dynamic();
-        this.coordinator = coordinator;
-        this.nanoClock = nanoClock;
-        long now = nanoClock.getAsLong();
-        this.sketch = new FrequencySketch(dynamic.sketchWidth(), dynamic.sketchDepth(),
-                dynamic.window().toNanos(), now, nanoClock);
-        int partitions = dynamic.hotReportPartitions();
-        this.hotByPartition = new ArrayList<>(partitions);
-        this.candidateByPartition = new ArrayList<>(partitions);
-        for (int i = 0; i < partitions; i++) {
-            this.hotByPartition.add(ConcurrentHashMap.newKeySet());
-            this.candidateByPartition.add(new LinkedHashMap<>());
-        }
+        this.admission = new HotKeyAdmission(spec, coordinator, nanoClock, delegate::evict);
     }
 
-    // ------------------------------------------------------------------ LocalCache
+    // ------------------------------------------------------------------ 准入判定
+
+    @Override
+    public boolean accepts(CacheKey key) {
+        return admission.accepts(key);
+    }
+
+    @Override
+    public boolean coordinationReady() {
+        return admission.coordinationReady();
+    }
+
+    @Override
+    public boolean access(CacheKey key) {
+        return admission.access(key);
+    }
+
+    @Override
+    public void hotSync(CacheKey key) {
+        admission.hotSync(key);
+    }
+
+    @Override
+    public void maintain() {
+        delegate.maintain();
+        admission.sweepCooldown();
+    }
+
+    /**
+     * @return 当前热点 key 集合（观测用）
+     */
+    public java.util.Set<CacheKey> hotKeySet() {
+        return admission.hotKeySet();
+    }
+
+    // ------------------------------------------------------------------ 委托存储
 
     @Override
     public LocalStrategy strategy() {
-        return LocalStrategy.DYNAMIC;
+        return delegate.strategy();
     }
 
     @Override
     public boolean available() {
-        return true;
+        return delegate.available();
     }
 
     @Override
@@ -120,173 +113,8 @@ public abstract class AbstractDynamicLocalCache<V> implements DynamicLocalCache<
     }
 
     @Override
-    public boolean accepts(CacheKey key) {
-        return hotKeys.containsKey(key);
-    }
-
-    @Override
-    public boolean coordinationReady() {
-        return dynamic.coordination() != LocalCacheSpec.Coordination.GLOBAL || coordinator != null;
-    }
-
-    @Override
-    public Set<CacheKey> keys() {
+    public java.util.Set<CacheKey> keys() {
         return delegate.keys();
-    }
-
-    @Override
-    public boolean access(CacheKey key) {
-        long now = nanoClock.getAsLong();
-        sweepCooldownOccasionally(now);
-        // ① CMS 粗筛：共享草图、固定内存、只会高估 —— 在候选阶段这是安全方向
-        int approx = sketch.incrementAndEstimate(key, now);
-        // ② 精判：值得统计的 key 走它自己的滑动窗口（精确），否则退回 CMS 估计
-        long count = preciseCount(key, now, approx);
-
-        HotEntry hot = hotKeys.get(key);
-        if (hot != null) {
-            hotKeys.put(key, hot.touch(now, saturate(count)));
-            lru.offer(key);
-            pendingDeltaFor(key).increment();
-            return true;
-        }
-
-        boolean cooling = isCooling(key, now);
-        if (cooling && count >= dynamic.hotThresholdCount()) {
-            // 冷却期：频次够了也不许升热（抑制"降热→立刻又升热"的抖动）
-            LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "冷却期内拒绝升热，窗口计数=" + count
-                    + "，剩余冷却=" + cooldownRemainingMillis(key, now) + "ms");
-        }
-        if (!cooling && count >= dynamic.hotThresholdCount()) {
-            addDelta(key);
-            promote(key, count, now);
-            LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "触发热升，窗口计数=" + count
-                    + "（阈值=" + dynamic.hotThresholdCount() + "），热点集合大小=" + hotKeys.size());
-            return true;
-        }
-
-        long threshold = dynamic.candidateCount();
-        if (useCandidates() && count >= threshold) {
-            upsertCandidate(partitionOf(key), key, saturate(count));
-            pendingDeltaFor(key).increment();
-        } else {
-            removeCandidate(key);
-        }
-        return false;
-    }
-
-    /**
-     * 取该 key 的窗口内精确计数。
-     *
-     * <p>窗口状态只为"可能成为热点"的 key 建立：用 CMS 的估计值（只会高估）做粗筛，
-     * 达到候选阈值才建表，容量上限 {@code candidateCapacity}——这样长尾 key 只占共享草图的
-     * 固定内存，不会撑爆 per-key 表。表满后退回 CMS 估计（宁可少算，也不无界增长）。</p>
-     *
-     * <p>建表时以"粗筛阈值"作为窗口初始计数：既保留建表前已攒的访问量（否则低速热点要
-     * 再攒一整个窗口才升热），又不会把 CMS 的高估值直接灌进精确判定（否则一次高估就能误升热）。</p>
-     *
-     * @param key     key
-     * @param now     当前纳秒
-     * @param approx  CMS 估计值
-     * @return 窗口内累计次数
-     */
-    private long preciseCount(CacheKey key, long now, int approx) {
-        HotWindow window = windows.get(key);
-        if (window != null) {
-            return window.advanceAndIncrement(now);
-        }
-        if (approx < dynamic.candidateCount()) {
-            // 粗筛未过：不建状态
-            return approx;
-        }
-        if (windows.size() >= dynamic.candidateCapacity()) {
-            return approx;
-        }
-        // 建表时用粗筛阈值做种：既不会丢掉"进入精确统计之前"已经攒下的访问量，
-        // 也不会把 CMS 的高估值直接灌进来（否则一次高估就可能误升热）。
-        // 注意 approx 已包含本次访问，而紧接着还会 advanceAndIncrement 一次，所以种子里要减去本次。
-        int seed = saturate(Math.max(0L, Math.min(approx - 1L, dynamic.candidateCount() - 1L)));
-        HotWindow created = new HotWindow(dynamic.windowSlices(), dynamic.window().toNanos(), now, seed);
-        HotWindow previous = windows.putIfAbsent(key, created);
-        return (previous != null ? previous : created).advanceAndIncrement(now);
-    }
-
-    @Override
-    public void hotSync(CacheKey key) {
-        if (dynamic.coordination() != LocalCacheSpec.Coordination.GLOBAL || coordinator == null) {
-            return;
-        }
-        long now = nanoClock.getAsLong();
-        long next = nextSyncAtNanos;
-        if (next == 0L) {
-            nextSyncAtNanos = now + jitteredSyncInterval();
-            return;
-        }
-        if (now - next < 0L) {
-            return;
-        }
-        if (!syncing.compareAndSet(false, true)) {
-            return;
-        }
-        Map<CacheKey, Long> batch = new LinkedHashMap<>();
-        Map<CacheKey, Long> reported = null;
-        try {
-            int partition = partitionOf(key);
-            for (CacheKey hotKey : hotByPartition.get(partition)) {
-                batch.put(hotKey, takeDelta(hotKey));
-            }
-            for (CacheKey candidateKey : new ArrayList<>(candidateByPartition.get(partition).keySet())) {
-                batch.putIfAbsent(candidateKey, takeDelta(candidateKey));
-            }
-
-            reported = selectBatch(batch);
-
-            for (Map.Entry<CacheKey, Long> entry : reported.entrySet()) {
-                if (entry.getValue() == 0L) {
-                }
-            }
-
-            Map<CacheKey, HotKeyReport> reports = coordinator.reportAndStatusAll(spec.namespace(), reported);
-            applyCentralStatus(reports);
-            nextSyncAtNanos = now + jitteredSyncInterval();
-            final Map<CacheKey, Long> flushed = reported;
-            LOG.debug("[{}]-{}-{}", "动态本地缓存", "热key", "namespace=" + spec.namespace() + "，上报完成，分区=" + partitionOf(key)
-                    + "，上报 key 数=" + flushed.size());
-        } catch (RuntimeException e) {
-            // 只回填真正上报过的增量（被倾斜截断的那部分已单独回填）
-            if (reported != null) {
-                for (Map.Entry<CacheKey, Long> entry : reported.entrySet()) {
-                    restoreDelta(entry.getKey(), entry.getValue());
-                }
-            }
-            long backoff = spec.version() == null ? Duration.ofMillis(200).toNanos()
-                    : spec.version().retryBackoff().toNanos();
-            nextSyncAtNanos = now + backoff;
-            LOG.warn("[{}]-{}-{}", "动态本地缓存", "热key", "热 key 上报失败，整批回填并退避，"
-                    + "namespace=" + spec.namespace() + "，退避=" + backoff + "ms 级，原因=" + e.getMessage());
-        } finally {
-            syncing.set(false);
-        }
-    }
-
-    /**
-     * 倾斜保护：超出硬上限时按 pending 增量取 top-N，其余回填到下一轮。
-     *
-     * @param batch 候选批次
-     * @return 实际要上报的批次
-     */
-    private Map<CacheKey, Long> selectBatch(Map<CacheKey, Long> batch) {
-        int limit = dynamic.hotReportBatchMax();
-        if (batch.size() <= limit) {
-            return batch;
-        }
-        Map<CacheKey, Long> selected = topByDelta(batch, limit);
-        for (Map.Entry<CacheKey, Long> entry : batch.entrySet()) {
-            if (!selected.containsKey(entry.getKey())) {
-                restoreDelta(entry.getKey(), entry.getValue());
-            }
-        }
-        return selected;
     }
 
     @Override
@@ -301,366 +129,47 @@ public abstract class AbstractDynamicLocalCache<V> implements DynamicLocalCache<
 
     @Override
     public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        if (!hotKeys.containsKey(key)) {
+        if (!admission.accepts(key)) {
             // 冷 key 不落本地：写不计频次，也就不可能因为它"热"。需要 read-your-write 请用 STATIC。
-            // 日志由编排层按"调用方写入"还是"内部回填"分别记录（见 Cache4jImpl），
-            // 这里只负责计数，避免把读路径的回填误报成"写"。
             return;
         }
-        Duration effective = ttl;
-        delegate.put(key, value, effective);
+        delegate.put(key, value, ttl);
     }
 
     @Override
     public boolean putIfAbsent(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        if (!hotKeys.containsKey(key)) {
-            return false;
-        }
-        return delegate.putIfAbsent(key, value, ttl);
+        return admission.accepts(key) && delegate.putIfAbsent(key, value, ttl);
+    }
+
+    @Override
+    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
+        return admission.accepts(key) && delegate.putIfNewer(key, value, ttl);
+    }
+
+    @Override
+    public LocalEntry<V> peek(CacheKey key) {
+        return delegate.peek(key);
     }
 
     @Override
     public void evict(CacheKey key) {
         // 只失效数据，不动热点身份：热点由"读频次"决定，与值是否新鲜无关。
-        // 因此失效后下一次读仍按热 key 处理（本地 miss 就硬读中央并回填）。
         delegate.evict(key);
     }
 
     @Override
     public void clear() {
-        hotKeys.clear();
-        hotByPartition.forEach(Set::clear);
-        candidateByPartition.forEach(Map::clear);
-        pendingDelta.clear();
-        cooldownUntilNanos.clear();
-        windows.clear();
-        lru.clear();
+        admission.clear();
         delegate.clear();
     }
 
     @Override
-    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        if (!hotKeys.containsKey(key)) {
-            return false;
-        }
-        return delegate.putIfNewer(key, value, ttl);
-    }
-
-    @Override
-    public LocalEntry<V> peek(CacheKey key) {
-        return delegate.peek(key);      // 内部读：不记频次、不见证热点
-    }
-
-    @Override
     public void onEntryRemoved(java.util.function.Consumer<CacheKey> listener) {
-        // 只把"条目消失"透给编排层同步分区表；热点/预选状态属于访问频次，条目过期不影响热度判断
         delegate.onEntryRemoved(listener);
     }
 
     @Override
-    public void maintain() {
-        delegate.maintain();
-        long now = nanoClock.getAsLong();
-        cooldownUntilNanos.forEach((key, until) -> {
-            if (until <= now) {
-                cooldownUntilNanos.remove(key, until);
-            }
-        });
-    }
-
-    @Override
     public void close() {
-        clear();
         delegate.close();
-    }
-
-    // ------------------------------------------------------------------ 升 / 降热
-
-    /**
-     * 本地升热（容量满时按"最久未访问"淘汰，属容量管理而非语义降热）。
-     *
-     * @param key  key
-     * @param freq 触发时的估计频次
-     * @param now  当前纳秒
-     */
-    private void promote(CacheKey key, long freq, long now) {
-        while (hotKeys.size() >= dynamic.maxHotKeys()) {
-            CacheKey victim = pollLiveKeyFromLru();
-            if (victim == null) {
-                break;
-            }
-            if (hotKeys.remove(victim) != null) {
-                hotByPartition.get(partitionOf(victim)).remove(victim);
-                pendingDelta.remove(victim);
-                delegate.evict(victim);
-            }
-        }
-        hotKeys.put(key, HotEntry.promoted(now, freq));
-        hotByPartition.get(partitionOf(key)).add(key);
-        lru.offer(key);
-        removeCandidate(key);
-    }
-
-    /**
-     * 降热：只由中央 {@code COOLING} 触发。
-     *
-     * @param key key
-     * @param now 当前纳秒
-     */
-    private void demote(CacheKey key, long now) {
-        if (hotKeys.remove(key) == null) {
-            return;
-        }
-        hotByPartition.get(partitionOf(key)).remove(key);
-        pendingDelta.remove(key);
-        if (!dynamic.cooldown().isZero()) {
-            cooldownUntilNanos.put(key, now + dynamic.cooldown().toNanos());
-        }
-        delegate.evict(key);
-        LOG.debug("[{}]-{}-{}", "动态本地缓存", "热key", "降热，来源=中央 COOLING，key=" + key.masked()
-                + "，进入冷却=" + dynamic.cooldown() + "，热点集合大小=" + hotKeys.size());
-    }
-
-    /**
-     * @param key key
-     * @param now 当前纳秒
-     * @return 该 key 的本地窗口计数（无窗口时为 0）
-     */
-    private long localCount(CacheKey key, long now) {
-        HotWindow window = windows.get(key);
-        return window == null ? 0L : window.total(now);
-    }
-
-    private void applyCentralStatus(Map<CacheKey, HotKeyReport> reports) {
-        if (reports == null || reports.isEmpty()) {
-            return;
-        }
-        long now = nanoClock.getAsLong();
-        reports.forEach((key, report) -> {
-            HotKeyStatus status = report == null ? HotKeyStatus.UNKNOWN : report.status();
-            switch (status) {
-                case HOT -> {
-                    if (!hotKeys.containsKey(key) && !isCooling(key, now)) {
-                        // 中央只回传状态，本地记录自己的窗口计数（不回灌中央数值）
-                        promote(key, localCount(key, now), now);
-                        LOG.debug("[{}]-{}-{}", "动态本地缓存", "热key", "升热，来源=中央 HOT，key="
-                                + key.masked() + "，本地窗口计数=" + localCount(key, now)
-                                + "，热点集合大小=" + hotKeys.size());
-                    }
-                }
-                case COOLING -> {
-                    if (hotKeys.containsKey(key)) {
-                        demote(key, now);
-                    }
-                }
-                default -> {
-                    // ACTIVE / UNKNOWN：保持现状，不降热
-                }
-            }
-        });
-    }
-
-    private void forget(CacheKey key) {
-        if (hotKeys.remove(key) != null) {
-            hotByPartition.get(partitionOf(key)).remove(key);
-        }
-        removeCandidate(key);
-        pendingDelta.remove(key);
-        cooldownUntilNanos.remove(key);
-    }
-
-    private CacheKey pollLiveKeyFromLru() {
-        CacheKey candidate;
-        while ((candidate = lru.poll()) != null) {
-            if (hotKeys.containsKey(candidate)) {
-                return candidate;
-            }
-        }
-        return null;
-    }
-
-    // ------------------------------------------------------------------ 候选桶
-
-    private boolean useCandidates() {
-        return dynamic.coordination() == LocalCacheSpec.Coordination.GLOBAL;
-    }
-
-    private void upsertCandidate(int partition, CacheKey key, int freq) {
-        Map<CacheKey, Integer> bucket = candidateByPartition.get(partition);
-        synchronized (bucket) {
-            bucket.remove(key);
-            bucket.put(key, freq);
-            int capacity = Math.max(1, dynamic.candidateCapacity() / dynamic.hotReportPartitions());
-            while (bucket.size() > capacity) {
-                // 按估计值保留 top-B，不用 LRU/FIFO：预选的意义是"未来可能热"
-                CacheKey coldest = null;
-                int min = Integer.MAX_VALUE;
-                for (Map.Entry<CacheKey, Integer> entry : bucket.entrySet()) {
-                    if (entry.getValue() < min) {
-                        min = entry.getValue();
-                        coldest = entry.getKey();
-                    }
-                }
-                if (coldest == null) {
-                    break;
-                }
-                bucket.remove(coldest);
-                pendingDelta.remove(coldest);
-            }
-        }
-    }
-
-    private void removeCandidate(CacheKey key) {
-        Map<CacheKey, Integer> bucket = candidateByPartition.get(partitionOf(key));
-        synchronized (bucket) {
-            bucket.remove(key);
-        }
-    }
-
-    // ------------------------------------------------------------------ 增量缓冲
-
-    private LongAdder pendingDeltaFor(CacheKey key) {
-        LongAdder adder = pendingDelta.get(key);
-        if (adder != null) {
-            return adder;
-        }
-        int bound = dynamic.maxHotKeys() + dynamic.candidateCapacity();
-        if (pendingDelta.size() >= bound) {
-            return new LongAdder();
-        }
-        return pendingDelta.computeIfAbsent(key, ignored -> new LongAdder());
-    }
-
-    private void addDelta(CacheKey key) {
-        pendingDeltaFor(key).increment();
-    }
-
-    private long takeDelta(CacheKey key) {
-        LongAdder adder = pendingDelta.remove(key);
-        return adder == null ? 0L : adder.sumThenReset();
-    }
-
-    private void restoreDelta(CacheKey key, long delta) {
-        if (delta != 0L) {
-            pendingDelta.computeIfAbsent(key, ignored -> new LongAdder()).add(delta);
-        }
-    }
-
-    private Map<CacheKey, Long> topByDelta(Map<CacheKey, Long> batch, int limit) {
-        List<Map.Entry<CacheKey, Long>> entries = new ArrayList<>(batch.entrySet());
-        entries.sort(Map.Entry.<CacheKey, Long>comparingByValue(Comparator.reverseOrder()));
-        Map<CacheKey, Long> result = new LinkedHashMap<>();
-        for (int i = 0; i < entries.size() && i < limit; i++) {
-            result.put(entries.get(i).getKey(), entries.get(i).getValue());
-        }
-        return result;
-    }
-
-    // ------------------------------------------------------------------ 冷却
-
-    /**
-     * @param key key
-     * @param now 当前纳秒
-     * @return 剩余冷却毫秒数；不在冷却期返回 0
-     */
-    private long cooldownRemainingMillis(CacheKey key, long now) {
-        Long until = cooldownUntilNanos.get(key);
-        return until == null ? 0L : Math.max(0L, (until - now) / 1_000_000L);
-    }
-
-    private boolean isCooling(CacheKey key, long now) {
-        Long until = cooldownUntilNanos.get(key);
-        if (until == null) {
-            return false;
-        }
-        if (until <= now) {
-            cooldownUntilNanos.remove(key, until);
-            return false;
-        }
-        return true;
-    }
-
-    private void sweepCooldownOccasionally(long now) {
-        if ((accessCounter.incrementAndGet() & 0x3FFL) != 0L) {
-            return;
-        }
-        for (Map.Entry<CacheKey, Long> entry : cooldownUntilNanos.entrySet()) {
-            if (entry.getValue() <= now) {
-                cooldownUntilNanos.remove(entry.getKey(), entry.getValue());
-                return;
-            }
-        }
-        // 窗口状态清理：整窗无访问（累计归零）的 key 移出表，避免"曾经有希望"的 key 长期占槽
-        windows.entrySet().removeIf(entry -> entry.getValue().total(now) == 0L);
-    }
-
-    // ------------------------------------------------------------------ 分区与时钟
-
-    private int partitionOf(CacheKey key) {
-        return com.asialjim.cache4j.core.HashPartitions.of(key, dynamic.hotReportPartitions());
-    }
-
-    private long jitteredSyncInterval() {
-        return dynamic.syncInterval().toNanos();
-    }
-
-    private static Duration min(Duration... values) {
-        Duration result = null;
-        for (Duration value : values) {
-            if (value == null || value.isZero()) {
-                continue;
-            }
-            if (result == null || value.compareTo(result) < 0) {
-                result = value;
-            }
-        }
-        return result;
-    }
-
-    /**
-     * 热点条目。
-     *
-     * @param promotedAtNanos  升热时刻
-     * @param lastAccessNanos  最近访问时刻
-     * @param lastSyncNanos    最近一次上报时刻
-     * @param lastCentralStatus 最近一次中央返回的状态（仅观测）
-     * @param lastEstimate     最近一次估计频次
-     */
-    private record HotEntry(
-            long promotedAtNanos,
-            long lastAccessNanos,
-            long lastSyncNanos,
-            HotKeyStatus lastCentralStatus,
-            int lastEstimate
-    ) {
-
-        static HotEntry promoted(long now, long estimate) {
-            return new HotEntry(now, now, 0L, HotKeyStatus.UNKNOWN,
-                    AbstractDynamicLocalCache.saturate(estimate));
-        }
-
-        HotEntry touch(long now, int estimate) {
-            return new HotEntry(promotedAtNanos, now, lastSyncNanos, lastCentralStatus, estimate);
-        }
-    }
-
-    /**
-     * long → int 的饱和转换（窗口计数理论上可能超过 int，实际不会）。
-     *
-     * @param value 原始值
-     * @return 饱和后的 int
-     */
-    private static int saturate(long value) {
-        if (value > Integer.MAX_VALUE) {
-            return Integer.MAX_VALUE;
-        }
-        return value < 0L ? 0 : (int) value;
-    }
-
-    /**
-     * @return 当前热点 key 集合（观测用）
-     */
-    public Set<CacheKey> hotKeySet() {
-        return new LinkedHashSet<>(hotKeys.keySet());
     }
 }
