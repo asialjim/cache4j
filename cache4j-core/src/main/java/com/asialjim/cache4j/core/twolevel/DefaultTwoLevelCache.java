@@ -25,8 +25,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -63,7 +61,8 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     private final CentralCacheSpec centralSpec;
     private final LongSupplier nanoClock;
     private final LongSupplier milliClock;
-    private final ConcurrentHashMap<CacheKey, CompletableFuture<Lookup<V>>> inflight = new ConcurrentHashMap<>();
+    private final com.asialjim.cache4j.core.coordination.SingleFlight<CacheKey, V> singleFlight =
+            new com.asialjim.cache4j.core.coordination.LocalSingleFlight<>();
 
     /**
      * 每个 key 的分区号：<strong>首次访问该 key 时计算一次并保存在本地</strong>，之后对账直接取，
@@ -151,42 +150,23 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
         if (first.source() != Source.NONE) {
             return first.lookup();
         }
-        // 需要回源：本次请求的结论记为 miss（即使 double-check 命中，结论仍是"需要回源"）
-        CompletableFuture<Lookup<V>> mine = new CompletableFuture<>();
-        CompletableFuture<Lookup<V>> existing = inflight.putIfAbsent(cacheKey, mine);
-        if (existing != null) {
-            // 合并到别人的回源：同样要有结论，否则 request 数与命中/未命中数不平账
-            return await(existing);
-        }
-        try {
-            ReadResult<V> again = read(cacheKey);
+        // 需要回源：交给 SingleFlight 保证"同一 key 只有一个线程加载并写缓存"
+        return singleFlight.once(cacheKey, () -> {
+            ReadResult<V> again = read(cacheKey);    // 双检：等锁期间可能已被别人写入
             if (again.source() != Source.NONE) {
-                mine.complete(again.lookup());
                 return again.lookup();
             }
             V value;
             try {
                 value = loader.load(key);
             } catch (RuntimeException e) {
-                LOG.warn("[{}]-读-[{}]-{}", "统一中央缓存", cacheKey.masked(), "loader 执行失败，异常原样抛出，原因="
-                        + e.getClass().getSimpleName() + ":" + e.getMessage());
-                mine.completeExceptionally(e);
+                LOG.warn("[{}]-读-[{}]-{}", "统一中央缓存", cacheKey.masked(),
+                        "loader 执行失败，异常原样抛出，原因="
+                                + e.getClass().getSimpleName() + ":" + e.getMessage());
                 throw e;
             }
-            Lookup<V> loaded;
-            if (value == null) {
-                loaded = writeNegative(cacheKey);
-            } else {
-                loaded = writeValue(cacheKey, value, null);
-            }
-            mine.complete(loaded);
-            return loaded;
-        } catch (RuntimeException e) {
-            mine.completeExceptionally(e);
-            throw e;
-        } finally {
-            inflight.remove(cacheKey, mine);
-        }
+            return value == null ? writeNegative(cacheKey) : writeValue(cacheKey, value, null);
+        });
     }
 
     @Override
@@ -317,9 +297,7 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
     @Override
     public void close() {
         LOG.debug("[{}]-{}-{}", "统一中央缓存", "关闭", "namespace=" + namespace + "，关闭门面，取消进行中的回源");
-        inflight.forEach((key, future) ->
-                future.completeExceptionally(new CacheException(CacheResCode.UNKNOWN, "缓存已关闭")));
-        inflight.clear();
+        singleFlight.close();
         // 只关本地；中央连接可能被多个缓存共享，由 provider 负责
         local.close();
     }
@@ -761,17 +739,6 @@ public final class DefaultTwoLevelCache<K, V> implements TwoLevelCache<K, V> {
 
     private CacheKey encode(K key) {
         return new CacheKey(namespace, keyEncoder.encode(key));
-    }
-
-    private Lookup<V> await(CompletableFuture<Lookup<V>> future) {
-        try {
-            return future.join();
-        } catch (CompletionException e) {
-            if (e.getCause() instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-            throw e;
-        }
     }
 
     /**
