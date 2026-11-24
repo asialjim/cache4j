@@ -470,3 +470,75 @@ Cache4jImpl  ──持有──►  MixedLocalCache4j  ──路由──►  No
 ### 开工前只剩一件需要确认的事
 
 `AbstractVersionLocalCache4j` 里的 `AtomicLong reconcileCount` 是否要暴露 getter。倾向于**不暴露公共 API**（`reconcile()` 的返回值已够断言），仅在同包内可见；第 3 步之后如果确实需要，再作为统计的一部分重新设计。
+
+---
+
+## 9. 实际执行结果
+
+> 本节记录**做完了什么**、**与原计划的差异**、以及**为什么某几项没做**。前八节是计划，本节是账。
+
+### 9.1 三步的落地情况
+
+| 步骤 | 内容 | 状态 |
+|---|---|---|
+| 第 1 步 | 删除统计（4 类）、`CacheLogger`、多余编码器 | ✅ 完成 |
+| 第 2 步 | `CacheStrategyProperty` 扁平载体 + 仓库读写分离 + 两个 Policy 持 Property | ✅ 完成 |
+| 第 3 步 | 单飞独立、对账独立、顶层接口 `Cache4j`、门面改名 `Cache4jImpl`、删旧名 | ✅ 完成（除 3c-2） |
+
+第 3 步实际拆成了四块：
+
+| 块 | 内容 |
+|---|---|
+| 3a | `SingleFlight` + `LocalSingleFlight` |
+| 3b | `Reconciler`（对账从巨类抽出） |
+| 3c-1 | 顶层接口 `Cache4j`，三层统一继承 |
+| 3c-3 | `DefaultTwoLevelCache` → `Cache4jImpl`，删除 `TwoLevelCache` / `Cache` |
+
+### 9.2 量化对比
+
+| 指标 | 重构前 | 重构后 | 变化 |
+|---|---:|---:|---|
+| main 行数 | 12 924 | 12 338 | −586 |
+| 测试行数 | 7 962 | 7 919 | −43 |
+| 用例数 | 257 | 250 | −7（全是只测被删功能的） |
+| `cache4j-core` 最大类 | `DefaultTwoLevelCache` 1 011 行 | `CacheStrategyProperty` 877 行（纯字段样板） | 巨类消失 |
+| 编排实现 | 1 011 行单类 | `Cache4jImpl` 689 + `Reconciler` 279 | 职责拆开 |
+
+**行数只降了 4.5%**，但真正的变化在结构：
+- 配置定义从"四处各写一遍"变成"`CacheStrategyProperty` 一处"；
+- 对账、单飞从巨类里独立出来，各自可单测；
+- 三层共用 `Cache4j`，`DefaultTwoLevelCache` / `TwoLevelCache` / `Cache` 三个旧名消失。
+
+### 9.3 与原计划的差异
+
+| 原计划 | 实际 | 原因 |
+|---|---|---|
+| 策略模型 6 类 → 3 类（合并） | **没有合并**，只让两个 Policy 内部持 `CacheStrategyProperty` | `StoredPolicy`（持久化记录）、`NamespacePolicy`（生效值 + 解析元信息）、`StrategyView`（运维视图）职责不同，硬合并会让字段膨胀到 20+，是把三件事挤进一个类（R12 讨论结论） |
+| 对账下沉到 `VersionLocalCache4j` | 留在编排层，抽成 `Reconciler` | 对账要同时读本地副本与中央版本表；塞进 `LocalCache` 会让"本地层依赖中央层"，而两层在设计上平级 |
+| 3c-2 泛型迁移 `<V>` → `<K, V>` | **未做** | 见 9.4 |
+
+### 9.4 为什么没做 3c-2（`LocalCache<V>` → `LocalCache4j<K,V>`）
+
+现有设计是"门面统一编码一次 → `CacheKey` 贯穿本地与中央"，保证两层看到的 key 完全一致。
+`cache4j-2` 的"各层自己编码"是为了支持**本地 key 与中央 key 形态不同**（本地带版本、中央带 hash tag）。
+
+但这两个能力在当前实现里都用不上：
+- 版本在 `LocalEntry.revision` 里，不在 key 里；
+- hash tag 由 `RedisKeyFormatter` 统一处理，与本地无关。
+
+代价则是实打实的：6 个实现 + 30 个测试的签名全改，中间态无法编译。
+
+**结论**：等真的需要"本地 key 与中央 key 形态不同"时再做。届时改动清单是：
+1. `LocalCache<V>` → `LocalCache4j<K,V>`，内部持 `KeyEncoder` + namespace 自行编码；
+2. `CentralCache<V>` → `CentralCache4j<K,V>`，同理；
+3. `Cache4jImpl` 里所有 `local.xxx(cacheKey)` 改为 `local.xxx(key)`；
+4. `LocalCacheProvider.create(spec, coordinator)` 增加 `KeyEncoder` 参数。
+
+### 9.5 遗留项
+
+| 项 | 说明 |
+|---|---|
+| 统计 | 按 R1 全删，等核心稳定后重新设计（`reconcile()` / `backfillIfNewer()` 的返回值已留好观测点） |
+| `CacheStrategyProperty` 877 行 | 37 个字段的 getter/setter + equals/hashCode + 三种转换；样板为主，但它是"唯一定义"的代价 |
+| `PolicyCodec` 文本格式 | schema 从 1 升到 2（字段集合随 Property 扩展），旧文件读到会明确报错 |
+| 文档同步 | `DESIGN.md` / `LOCAL.md` / `CENTRAL.md` / `ADAPTERS.md` 里仍有旧实现的描述（如 CMS 双桶、`DefaultTwoLevelCache` 的类名），需要一轮回写 |
