@@ -262,8 +262,6 @@ class ReconcileFetchScopeTest {
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)
-                .nanoClock(clock::nanos)
-                .milliClock(clock::millis)
                 .build();
     }
 

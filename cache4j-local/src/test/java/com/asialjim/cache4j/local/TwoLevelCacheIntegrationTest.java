@@ -61,8 +61,6 @@ class TwoLevelCacheIntegrationTest {
                 .local(local)
                 .central(central)
                 .localNullTtlDivisor(localNullTtlDivisor)
-                .nanoClock(clock::nanos)
-                .milliClock(clock::millis)
                 .build();
     }
 

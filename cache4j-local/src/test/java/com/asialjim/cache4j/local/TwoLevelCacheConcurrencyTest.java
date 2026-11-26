@@ -78,8 +78,6 @@ class TwoLevelCacheConcurrencyTest {
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)
-                .nanoClock(nanos::get)
-                .milliClock(millis::get)
                 .build();
     }
 

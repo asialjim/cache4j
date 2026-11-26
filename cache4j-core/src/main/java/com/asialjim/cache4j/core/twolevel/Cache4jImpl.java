@@ -73,8 +73,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     private final CentralCache<V> central;
     private final LocalCacheSpec localSpec;
     private final CentralCacheSpec centralSpec;
-    private final LongSupplier nanoClock;
-    private final LongSupplier milliClock;
     private final com.asialjim.cache4j.core.coordination.SingleFlight<CacheKey, V> singleFlight =
             new com.asialjim.cache4j.core.coordination.LocalSingleFlight<>();
 
@@ -122,8 +120,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
                 : builder.central;
         this.localSpec = local.spec();
         this.centralSpec = central.spec();
-        this.nanoClock = builder.nanoClock;
-        this.milliClock = builder.milliClock;
 
         this.localNullTtlDivisor = Math.max(1, builder.localNullTtlDivisor);
 
@@ -435,13 +431,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     }
 
     /**
-     * @return 毫秒时钟，供子层（如中央实现）读取
-     */
-    long currentTimeMillis() {
-        return milliClock.getAsLong();
-    }
-
-    /**
      * 构建器。
      *
      * @param <K> key 类型
@@ -516,20 +505,10 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
          * @param value 单调时钟（测试用）
          * @return this
          */
-        public Builder<K, V> nanoClock(LongSupplier value) {
-            this.nanoClock = value;
-            return this;
-        }
-
         /**
          * @param value 毫秒时钟（测试用）
          * @return this
          */
-        public Builder<K, V> milliClock(LongSupplier value) {
-            this.milliClock = value;
-            return this;
-        }
-
         /**
          * 构建并做启动期校验。
          *

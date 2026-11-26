@@ -65,8 +65,6 @@ public final class CacheStrategyCache implements CacheStrategyRepository {
         this.policyCache = Cache4jImpl.<String, StoredPolicy>builder(StrategySelfCacheOptions.SELF_NAMESPACE)
                 .local(localCache)
                 .central(centralCache)
-                .nanoClock(nanoClock)
-                .milliClock(milliClock)
                 .build();
     }
 
