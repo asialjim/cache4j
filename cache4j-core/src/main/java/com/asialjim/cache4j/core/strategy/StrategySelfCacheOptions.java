@@ -1,6 +1,7 @@
 package com.asialjim.cache4j.core.strategy;
 
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.VersionSpec;
 import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
@@ -108,7 +109,7 @@ public final class StrategySelfCacheOptions {
     }
 
     public LocalCacheSpec localSpec() {
-        LocalCacheSpec.VersionSpec version = new LocalCacheSpec.VersionSpec(
+        VersionSpec version = new VersionSpec(
                 versionCheckInterval, Duration.ofMillis(100), Duration.ofMillis(200), 1_000, 16);
         return LocalCacheSpec.staticCache(SELF_NAMESPACE, maxSize, localTtl, version);
     }

@@ -2,6 +2,7 @@ package com.asialjim.cache4j.central.redis;
 
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
+import com.asialjim.cache4j.core.GlobalSpec;
 import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
@@ -50,7 +51,7 @@ public final class RedisCentralCacheProvider implements CentralCacheProvider {
      * @return provider
      */
     public static RedisCentralCacheProvider of(RedisValueStore<Object> store,
-                                               Function<String, LocalCacheSpec.GlobalSpec> globalSpecs) {
+                                               Function<String, GlobalSpec> globalSpecs) {
         HotKeyCoordinator coordinator = globalSpecs == null
                 ? null : new RedisHotKeyCoordinator(store, globalSpecs);
         return new RedisCentralCacheProvider(store, coordinator);

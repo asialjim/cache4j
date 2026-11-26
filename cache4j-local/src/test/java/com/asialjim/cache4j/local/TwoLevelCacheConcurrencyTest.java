@@ -1,5 +1,9 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.DynamicSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.central.InMemoryCentralCache;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheLoader;
@@ -63,13 +67,13 @@ class TwoLevelCacheConcurrencyTest {
      * @param version  版本配置
      * @return 门面（本地 HashMap 实现 + 内存中央）
      */
-    private Cache4j<String, String> cache(String strategy, LocalCacheSpec.VersionSpec version) {
-        LocalCacheSpec.VersionSpec effective = version == null
-                ? LocalCacheSpec.VersionSpec.defaults() : version;
+    private Cache4j<String, String> cache(String strategy, VersionSpec version) {
+        VersionSpec effective = version == null
+                ? VersionSpec.defaults() : version;
         LocalCacheSpec localSpec = switch (strategy) {
             case "NONE" -> LocalCacheSpec.noLocal(NS);
             case "DYNAMIC" -> LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1),
-                    effective, LocalCacheSpec.DynamicSpec.defaults());
+                    effective, DynamicSpec.defaults());
             default -> LocalCacheSpec.staticCache(NS, 1_000, Duration.ofMinutes(1), effective);
         };
         LocalCache<String> local = LocalCaches.create(localSpec.toStrategy(), null, nanos::get);
@@ -175,7 +179,7 @@ class TwoLevelCacheConcurrencyTest {
     @Test
     @DisplayName("对账 + 回填：中央更新后并发读最终拿到新值，且不读陈旧副本")
     void concurrentReadsEventuallySeeFreshValue() throws Exception {
-        LocalCacheSpec.VersionSpec version = new LocalCacheSpec.VersionSpec(
+        VersionSpec version = new VersionSpec(
                 Duration.ofMillis(5), Duration.ZERO, Duration.ofMillis(5), 1_000, 16);
         Cache4j<String, String> cache = cache("STATIC", version);
 

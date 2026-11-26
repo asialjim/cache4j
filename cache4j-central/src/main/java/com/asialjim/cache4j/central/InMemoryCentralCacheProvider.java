@@ -2,6 +2,7 @@ package com.asialjim.cache4j.central;
 
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
+import com.asialjim.cache4j.core.GlobalSpec;
 import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
@@ -35,7 +36,7 @@ public final class InMemoryCentralCacheProvider implements CentralCacheProvider 
      * @param globalSpecs    namespace → 中央阈值解析器；为 {@code null} 时不提供协调
      */
     public InMemoryCentralCacheProvider(LongSupplier milliClock,
-                                        Function<String, LocalCacheSpec.GlobalSpec> globalSpecs) {
+                                        Function<String, GlobalSpec> globalSpecs) {
         this.milliClock = milliClock;
         this.coordinator = globalSpecs == null ? null : new InMemoryHotKeyCoordinator(globalSpecs, milliClock);
     }

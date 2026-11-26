@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.spring;
 
+import com.asialjim.cache4j.core.CacheStrategy;
+
 import com.asialjim.cache4j.central.InMemoryCentralCacheProvider;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
@@ -39,9 +41,8 @@ class DeclarationAssemblyTest {
     @DisplayName("程序化定义与声明可以共存，各自保留自己的配置")
     void programmaticAndDeclarationCoexist() {
         CacheDefinition programmatic = CacheDefinition.of(
-                LocalCacheSpec.staticCache("manual:cache", 50, Duration.ofSeconds(20)),
-                CentralCacheSpec.builder("manual:cache").ttl(Duration.ofMinutes(5))
-                        .nullTtl(Duration.ofSeconds(10)).build());
+                CacheStrategy.staticCache("manual:cache", 50, Duration.ofSeconds(20))
+                        .withCentral(Duration.ofMinutes(5), Duration.ofSeconds(10), true));
         try (TwoLevelCacheManager manager = TwoLevelCacheManager.create(
                 options().cache(programmatic).declEnums(AutoDecls.class).build())) {
             assertEquals(Set.of("manual:cache", "auto:declared"), manager.names());
@@ -56,9 +57,8 @@ class DeclarationAssemblyTest {
     @DisplayName("同一 namespace 来自不同来源：启动失败（不静默取其一）")
     void conflictingSourcesFailFast() {
         CacheDefinition programmatic = CacheDefinition.of(
-                LocalCacheSpec.staticCache("auto:declared", 50, Duration.ofSeconds(20)),
-                CentralCacheSpec.builder("auto:declared").ttl(Duration.ofMinutes(5))
-                        .nullTtl(Duration.ofSeconds(10)).build());
+                CacheStrategy.staticCache("auto:declared", 50, Duration.ofSeconds(20))
+                        .withCentral(Duration.ofMinutes(5), Duration.ofSeconds(10), true));
         Cache4jSpringOptions options = options().cache(programmatic).declEnums(AutoDecls.class).build();
 
         IllegalStateException e = assertThrows(IllegalStateException.class,

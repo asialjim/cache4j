@@ -2,68 +2,33 @@ package com.asialjim.cache4j.core.strategy;
 
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 
 import java.util.Objects;
 
 /**
- * 一条命名缓存的装配描述：本地配置 + 中央配置。
+ * 一条命名缓存的装配描述：<strong>一份完整策略 + 一个装配期参数</strong>。
  *
- * <p>三处 namespace（自身、local、central）必须一致，否则装配必然错位。</p>
+ * <p>不再是"本地配置 + 中央配置"的容器——那两样已经合并成 {@link CacheStrategy}。
+ * 这里只多带一个装配期才需要的派生参数（本地负副本除子）。</p>
  *
- * @param namespace            缓存名
- * @param local                本地配置
- * @param central              中央配置
- * @param localNullTtlDivisor  本地空值副本的除子 N（默认 10）：
- *                             {@code localNullTtl = min(localTtl, centralNullTtl / N)}
+ * @param namespace           缓存名
+ * @param strategy            完整策略（本地 + 中央）
+ * @param localNullTtlDivisor 本地负副本除子 N：{@code min(localTtl, centralNullTtl / N)}
  * @author Asial Jim
  */
-public record CacheDefinition(String namespace, LocalCacheSpec local, CentralCacheSpec central,
-                              com.asialjim.cache4j.core.CacheStrategy strategy,
-                              int localNullTtlDivisor) {
+public record CacheDefinition(String namespace, CacheStrategy strategy, int localNullTtlDivisor) {
 
     /**
-     * 兼容构造器（策略由 local + central 合成，中央侧字段取真实值）。
-     */
-    public CacheDefinition(String namespace, LocalCacheSpec local, CentralCacheSpec central,
-                           int localNullTtlDivisor) {
-        this(namespace, local, central, synthesize(local, central), localNullTtlDivisor);
-    }
-
-    private static com.asialjim.cache4j.core.CacheStrategy synthesize(
-            LocalCacheSpec local, CentralCacheSpec central) {
-        return com.asialjim.cache4j.core.CacheStrategy.of(local, central);
-    }
-
-    /**
-     * 本地空值 TTL 除子的默认值。
+     * 本地负副本除子的默认值。
      */
     public static final int DEFAULT_NULL_TTL_DIVISOR = 10;
 
-    /**
-     * 紧凑构造器：非空 + namespace 一致性。
-     */
-    /**
-     * 便捷构造：除子取默认值。
-     *
-     * @param namespace 缓存名
-     * @param local     本地配置
-     * @param central   中央配置
-     */
-    public CacheDefinition(String namespace, LocalCacheSpec local, CentralCacheSpec central) {
-        this(namespace, local, central, DEFAULT_NULL_TTL_DIVISOR);
-    }
-
     public CacheDefinition {
         Objects.requireNonNull(namespace, "namespace");
-        Objects.requireNonNull(local, "local");
-        Objects.requireNonNull(central, "central");
-        if (!namespace.equals(local.namespace())) {
-            throw invalid("namespace 与 local spec 不一致：" + namespace + " vs " + local.namespace());
-        }
-        if (!namespace.equals(central.namespace())) {
-            throw invalid("namespace 与 central spec 不一致：" + namespace + " vs " + central.namespace());
+        Objects.requireNonNull(strategy, "strategy");
+        if (!namespace.equals(strategy.namespace())) {
+            throw invalid("namespace 与策略不一致：" + namespace + " vs " + strategy.namespace());
         }
         if (localNullTtlDivisor < 1) {
             throw invalid("localNullTtlDivisor 必须 >= 1：" + localNullTtlDivisor);
@@ -71,34 +36,45 @@ public record CacheDefinition(String namespace, LocalCacheSpec local, CentralCac
     }
 
     /**
-     * 便捷工厂：namespace 取自本地配置。
+     * 便捷工厂：除子取默认值。
      *
-     * @param local   本地配置
-     * @param central 中央配置
-     * @return 描述
+     * @param strategy 完整策略
+     * @return 装配描述
      */
-    public static CacheDefinition of(LocalCacheSpec local, CentralCacheSpec central) {
-        return new CacheDefinition(local.namespace(), local, central);
+    public static CacheDefinition of(CacheStrategy strategy) {
+        return new CacheDefinition(strategy.namespace(), strategy, DEFAULT_NULL_TTL_DIVISOR);
     }
 
     /**
-     * 便捷工厂：显式指定本地空值 TTL 除子。
+     * 便捷工厂：显式指定除子。
      *
-     * @param local                本地配置
-     * @param central              中央配置
-     * @param localNullTtlDivisor  除子
-     * @return 描述
+     * @param strategy            完整策略
+     * @param localNullTtlDivisor 除子
+     * @return 装配描述
      */
-    public static CacheDefinition of(LocalCacheSpec local, CentralCacheSpec central,
-                                     int localNullTtlDivisor) {
-        return new CacheDefinition(local.namespace(), local, central, localNullTtlDivisor);
+    public static CacheDefinition of(CacheStrategy strategy, int localNullTtlDivisor) {
+        return new CacheDefinition(strategy.namespace(), strategy, localNullTtlDivisor);
     }
 
     /**
-     * 整体校验（中央配置在构造期已校验，这里补本地配置的完整校验）。
+     * @return 本地配置视图（过渡期兼容旧调用面）
+     */
+    public com.asialjim.cache4j.core.local.LocalCacheSpec local() {
+        return com.asialjim.cache4j.core.local.LocalCacheSpec.of(strategy);
+    }
+
+    /**
+     * @return 中央配置视图（过渡期兼容旧调用面）
+     */
+    public com.asialjim.cache4j.core.central.CentralCacheSpec central() {
+        return com.asialjim.cache4j.core.central.CentralCacheSpec.of(strategy);
+    }
+
+    /**
+     * 主动校验（策略本身在构造时已校验，这里再走一遍本地视图的边界检查）。
      */
     public void validate() {
-        local.validate();
+        local().validate();
     }
 
     private static CacheException invalid(String message) {

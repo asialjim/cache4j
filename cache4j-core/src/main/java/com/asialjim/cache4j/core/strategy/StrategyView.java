@@ -1,5 +1,9 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.DynamicSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
@@ -45,8 +49,8 @@ public record StrategyView(
         Duration localTtl,
         Duration localNullTtl,
         int localNullTtlDivisor,
-        LocalCacheSpec.VersionSpec version,
-        LocalCacheSpec.DynamicSpec dynamic,
+        VersionSpec version,
+        DynamicSpec dynamic,
         boolean dynamicActive,
         Duration centralTtl,
         Duration centralNullTtl,

@@ -1,5 +1,9 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
+import com.asialjim.cache4j.core.DynamicSpec;
+
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
@@ -102,7 +106,7 @@ class CacheStrategyPropertyTest {
         assertEquals(Duration.ofMinutes(1), spec.ttl());
         assertEquals(Duration.ofMillis(500), spec.version().checkInterval());
 
-        LocalCacheSpec.DynamicSpec dynamic = spec.dynamic();
+        DynamicSpec dynamic = spec.dynamic();
         assertEquals(120, dynamic.hotThresholdQps());
         assertEquals(30, dynamic.coolQps());
         assertEquals(Duration.ofSeconds(2), dynamic.window());
@@ -112,7 +116,7 @@ class CacheStrategyPropertyTest {
         assertEquals(Duration.ofSeconds(9), dynamic.cooldown());
         assertEquals(com.asialjim.cache4j.core.Coordination.GLOBAL, dynamic.coordination());
 
-        LocalCacheSpec.GlobalSpec global = dynamic.global();
+        GlobalSpec global = dynamic.global();
         assertEquals(Duration.ofMillis(1_500), global.window());
         assertEquals(200L, global.hotQps());
         assertEquals(50L, global.coolQps());

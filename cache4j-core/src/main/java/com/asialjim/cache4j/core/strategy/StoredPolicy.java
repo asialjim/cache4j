@@ -1,5 +1,9 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.DynamicSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
@@ -61,7 +65,7 @@ public record StoredPolicy(
      */
     public StoredPolicy(String namespace, String description, LocalStrategy strategy,
                         Long maxSize, Duration localTtl, Integer localNullTtlDivisor,
-                        LocalCacheSpec.VersionSpec version, LocalCacheSpec.DynamicSpec dynamic,
+                        VersionSpec version, DynamicSpec dynamic,
                         Duration centralTtl, Duration centralNullTtl, Boolean failOpen,
                         long configVersion, long updatedAtMillis, String updatedBy, String reason) {
         this(CacheStrategyProperty.ofRaw(namespace, description, strategy, maxSize, localTtl,
@@ -121,14 +125,14 @@ public record StoredPolicy(
     /**
      * @return 版本对账参数
      */
-    public LocalCacheSpec.VersionSpec version() {
+    public VersionSpec version() {
         return property.versionSpec();
     }
 
     /**
      * @return 热 key 参数；非 DYNAMIC 返回 {@code null}
      */
-    public LocalCacheSpec.DynamicSpec dynamic() {
+    public DynamicSpec dynamic() {
         return property.getLocalStrategy() != null
                 && LocalStrategy.DYNAMIC.name().equals(property.getLocalStrategy())
                 ? property.dynamicSpec() : null;

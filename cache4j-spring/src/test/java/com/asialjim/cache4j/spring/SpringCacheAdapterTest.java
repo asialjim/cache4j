@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.spring;
 
+import com.asialjim.cache4j.core.CacheStrategy;
+
 import com.asialjim.cache4j.central.InMemoryCentralCacheProvider;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
@@ -40,8 +42,8 @@ class SpringCacheAdapterTest {
         Cache4jSpringOptions options = Cache4jSpringOptions.builder()
                 .centralProvider(new InMemoryCentralCacheProvider(), true)
                 .cache(CacheDefinition.of(
-                        LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1)),
-                        CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build()))
+                        CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1))
+                                .withCentral(Duration.ofMinutes(10), Duration.ZERO, true)))
                 .build();
         manager = TwoLevelCacheManager.create(options);
         cacheManager = new SpringCacheManagerAdapter(manager);

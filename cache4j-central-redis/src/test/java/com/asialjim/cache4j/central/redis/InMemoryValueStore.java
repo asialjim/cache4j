@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.central.redis;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.HotKeyReport;
@@ -37,7 +39,7 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
     private final ConcurrentHashMap<CacheKey, Entry<V>> data = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ConcurrentHashMap<CacheKey, Window>> hotState =
             new ConcurrentHashMap<>();
-    private final Function<String, LocalCacheSpec.GlobalSpec> globalSpecs;
+    private final Function<String, GlobalSpec> globalSpecs;
     private final LongSupplier milliClock;
     private final java.util.concurrent.atomic.AtomicInteger revisionsCalls =
             new java.util.concurrent.atomic.AtomicInteger();
@@ -50,7 +52,7 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
      * @param globalSpecs namespace → 中央阈值；为 {@code null} 时热 key 一律返回 {@code UNKNOWN}
      * @param milliClock  毫秒时钟
      */
-    public InMemoryValueStore(Function<String, LocalCacheSpec.GlobalSpec> globalSpecs,
+    public InMemoryValueStore(Function<String, GlobalSpec> globalSpecs,
                               LongSupplier milliClock) {
         this.globalSpecs = globalSpecs;
         this.milliClock = milliClock;
@@ -142,7 +144,7 @@ public final class InMemoryValueStore<V> implements RedisValueStore<V> {
 
     @Override
     public HotKeyReport reportHotKey(String namespace, CacheKey key, long delta) {
-        LocalCacheSpec.GlobalSpec globalSpec = globalSpecs == null ? null : globalSpecs.apply(namespace);
+        GlobalSpec globalSpec = globalSpecs == null ? null : globalSpecs.apply(namespace);
         if (globalSpec == null || globalSpec.window() == null || globalSpec.window().isZero()) {
             return HotKeyReport.unknown();
         }

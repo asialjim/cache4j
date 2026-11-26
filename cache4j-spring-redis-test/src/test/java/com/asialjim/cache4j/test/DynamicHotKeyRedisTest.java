@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.test;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
@@ -177,7 +179,7 @@ class DynamicHotKeyRedisTest {
         com.asialjim.cache4j.spring.Cache4jSpringOptions cache4jSpringOptions(
                 org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory factory) {
 
-            java.util.Map<String, com.asialjim.cache4j.core.local.LocalCacheSpec.GlobalSpec> globalSpecs =
+            java.util.Map<String, com.asialjim.cache4j.core.GlobalSpec> globalSpecs =
                     RedisTestEnvironment.globalSpecs();
             globalSpecs.put(NS, RedisTestEnvironment.hotGlobalSpec());
 
@@ -185,11 +187,9 @@ class DynamicHotKeyRedisTest {
                     .localProvider(com.asialjim.cache4j.localcaffeine.CaffeineLocalCacheProvider.INSTANCE)
                     .centralProvider(RedisTestEnvironment.centralProvider(factory, globalSpecs), true)
                     .cache(com.asialjim.cache4j.core.strategy.CacheDefinition.of(
-                            com.asialjim.cache4j.core.local.LocalCacheSpec.dynamicCache(
-                                    NS, 1_000, Duration.ofMinutes(1), RedisTestEnvironment.hotDynamicSpec()),
-                            com.asialjim.cache4j.core.central.CentralCacheSpec.builder(NS)
-                                    .ttl(Duration.ofMinutes(10))
-                                    .build()))
+                            com.asialjim.cache4j.core.CacheStrategy.dynamicCache(
+                                    NS, 1_000, Duration.ofMinutes(1), RedisTestEnvironment.hotDynamicSpec())
+                                    .withCentral(Duration.ofMinutes(10), Duration.ZERO, true)))
                     .build();
         }
     }

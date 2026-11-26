@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.central.redis;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,21 +26,21 @@ public final class RedisHotKeyCoordinator implements HotKeyCoordinator {
     private final RedisValueStore<Object> store;
     private static final Logger LOG = LoggerFactory.getLogger(RedisHotKeyCoordinator.class);
 
-    private final Function<String, LocalCacheSpec.GlobalSpec> globalSpecs;
+    private final Function<String, GlobalSpec> globalSpecs;
 
     /**
      * @param store       下行存储（适配层实现）
      * @param globalSpecs namespace → 中央阈值；未配置的 namespace 返回 {@code null}
      */
     public RedisHotKeyCoordinator(RedisValueStore<Object> store,
-                                  Function<String, LocalCacheSpec.GlobalSpec> globalSpecs) {
+                                  Function<String, GlobalSpec> globalSpecs) {
         this.store = store;
         this.globalSpecs = globalSpecs;
     }
 
     @Override
     public HotKeyReport reportAndStatus(String namespace, CacheKey key, long delta) {
-        LocalCacheSpec.GlobalSpec globalSpec = globalSpecs == null ? null : globalSpecs.apply(namespace);
+        GlobalSpec globalSpec = globalSpecs == null ? null : globalSpecs.apply(namespace);
         if (globalSpec == null) {
             // 不猜阈值：该 namespace 没配 dynamic.global
             LOG.warn("[{}]-{}-{}", "热key协调", "热key", "namespace 未配置 dynamic.global，"
@@ -50,7 +52,7 @@ public final class RedisHotKeyCoordinator implements HotKeyCoordinator {
 
     @Override
     public Map<CacheKey, HotKeyReport> reportAndStatusAll(String namespace, Map<CacheKey, Long> deltas) {
-        LocalCacheSpec.GlobalSpec globalSpec = globalSpecs == null ? null : globalSpecs.apply(namespace);
+        GlobalSpec globalSpec = globalSpecs == null ? null : globalSpecs.apply(namespace);
         if (globalSpec == null) {
             return deltas.keySet().stream()
                     .collect(java.util.stream.Collectors.toMap(key -> key, key -> HotKeyReport.unknown()));

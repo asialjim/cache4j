@@ -1,5 +1,9 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.DynamicSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.central.InMemoryCentralCache;
 import com.asialjim.cache4j.core.CacheKey;
@@ -91,8 +95,8 @@ class TwoLevelCacheIntegrationTest {
                 .build().toStrategy();
     }
 
-    private LocalCacheSpec.VersionSpec fastVersion() {
-        return new LocalCacheSpec.VersionSpec(Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), 1_000);
+    private VersionSpec fastVersion() {
+        return new VersionSpec(Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), 1_000);
     }
 
     // ------------------------------------------------------------------ 策略矩阵
@@ -124,7 +128,7 @@ class TwoLevelCacheIntegrationTest {
     @DisplayName("DYNAMIC：冷 key 不落本地，达到阈值后才升热并命中本地")
     void dynamicPromotesAfterThreshold() {
         // 低阈值：1 QPS × 1s 窗口 = 1 次即升热（默认 100 QPS / 5s 需要 500 次）
-        LocalCacheSpec.DynamicSpec low = new LocalCacheSpec.DynamicSpec(1, 0,
+        DynamicSpec low = new DynamicSpec(1, 0,
                 Duration.ofSeconds(1), 16, 1_000, Duration.ofSeconds(1), Duration.ofSeconds(30),
                 com.asialjim.cache4j.core.Coordination.LOCAL, null, 12, 4, 16, 16, 1_000);
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1),

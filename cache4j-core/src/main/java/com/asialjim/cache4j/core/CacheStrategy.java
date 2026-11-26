@@ -263,7 +263,7 @@ public record CacheStrategy(
      * @return 策略
      */
     public static CacheStrategy staticCache(String namespace, long maxSize, Duration ttl) {
-        return staticCache(namespace, maxSize, ttl, null, LocalCacheSpec.VersionSpec.defaults());
+        return staticCache(namespace, maxSize, ttl, null, VersionSpec.defaults());
     }
 
     /**
@@ -275,7 +275,7 @@ public record CacheStrategy(
      * @param version   版本参数
      * @return 策略
      */
-    public static CacheStrategy staticCache(String namespace, long maxSize, Duration ttl, LocalCacheSpec.VersionSpec version) {
+    public static CacheStrategy staticCache(String namespace, long maxSize, Duration ttl, VersionSpec version) {
         return staticCache(namespace, maxSize, ttl, null, version);
     }
 
@@ -290,10 +290,10 @@ public record CacheStrategy(
      * @return 策略
      */
     public static CacheStrategy staticCache(String namespace, long maxSize, Duration ttl, Duration nullTtl,
-                                            LocalCacheSpec.VersionSpec version) {
+                                            VersionSpec version) {
         return build(namespace, LocalStrategy.STATIC, maxSize, ttl,
                 nullTtl != null ? nullTtl : deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR),
-                version == null ? LocalCacheSpec.VersionSpec.defaults() : version, null);
+                version == null ? VersionSpec.defaults() : version, null);
     }
 
     /**
@@ -305,8 +305,8 @@ public record CacheStrategy(
      * @param dynamic   热度参数
      * @return 策略
      */
-    public static CacheStrategy dynamicCache(String namespace, long maxSize, Duration ttl, LocalCacheSpec.DynamicSpec dynamic) {
-        return dynamicCache(namespace, maxSize, ttl, null, LocalCacheSpec.VersionSpec.defaults(), dynamic);
+    public static CacheStrategy dynamicCache(String namespace, long maxSize, Duration ttl, DynamicSpec dynamic) {
+        return dynamicCache(namespace, maxSize, ttl, null, VersionSpec.defaults(), dynamic);
     }
 
     /**
@@ -320,7 +320,7 @@ public record CacheStrategy(
      * @return 策略
      */
     public static CacheStrategy dynamicCache(String namespace, long maxSize, Duration ttl,
-                                             LocalCacheSpec.VersionSpec version, LocalCacheSpec.DynamicSpec dynamic) {
+                                             VersionSpec version, DynamicSpec dynamic) {
         return dynamicCache(namespace, maxSize, ttl, null, version, dynamic);
     }
 
@@ -336,10 +336,10 @@ public record CacheStrategy(
      * @return 策略
      */
     public static CacheStrategy dynamicCache(String namespace, long maxSize, Duration ttl, Duration nullTtl,
-                                             LocalCacheSpec.VersionSpec version, LocalCacheSpec.DynamicSpec dynamic) {
+                                             VersionSpec version, DynamicSpec dynamic) {
         return build(namespace, LocalStrategy.DYNAMIC, maxSize, ttl,
                 nullTtl != null ? nullTtl : deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR),
-                version == null ? LocalCacheSpec.VersionSpec.defaults() : version, dynamic);
+                version == null ? VersionSpec.defaults() : version, dynamic);
     }
 
     /**
@@ -355,9 +355,9 @@ public record CacheStrategy(
      * @return 策略
      */
     private static CacheStrategy build(String namespace, LocalStrategy strategy, long maxSize, Duration ttl,
-                                       Duration nullTtl, LocalCacheSpec.VersionSpec version, LocalCacheSpec.DynamicSpec dynamic) {
-        LocalCacheSpec.VersionSpec v = version == null ? LocalCacheSpec.VersionSpec.defaults() : version;
-        LocalCacheSpec.GlobalSpec g = dynamic == null ? null : dynamic.global();
+                                       Duration nullTtl, VersionSpec version, DynamicSpec dynamic) {
+        VersionSpec v = version == null ? VersionSpec.defaults() : version;
+        GlobalSpec g = dynamic == null ? null : dynamic.global();
         return new CacheStrategy(
                 namespace, null, strategy, maxSize, ttl,
                 nullTtl != null ? nullTtl : Duration.ZERO,

@@ -1,5 +1,11 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.CacheStrategy;
+
+import com.asialjim.cache4j.core.DynamicSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
@@ -10,8 +16,8 @@ import java.time.Duration;
  * 内建默认：策略仓库没有该 namespace 的配置、且声明只给了"策略类型"时，用这套值补全参数。
  *
  * <p>只有<strong>一套</strong>默认（不开档位）。值的含义见 {@code docs/STRATEGY.md} §4.3；
- * 数值调整随热 key 判定改造一起切换（当前仍沿用 {@link LocalCacheSpec.VersionSpec#defaults()}
- * 与 {@link LocalCacheSpec.DynamicSpec#defaults()} 的取值）。</p>
+ * 数值调整随热 key 判定改造一起切换（当前仍沿用 {@link VersionSpec#defaults()}
+ * 与 {@link DynamicSpec#defaults()} 的取值）。</p>
  *
  * @author Asial Jim
  */
@@ -53,17 +59,12 @@ public final class BuiltinDefaults {
      * @return 装配定义
      */
     public static CacheDefinition definitionOf(String namespace, LocalStrategy strategy) {
-        LocalCacheSpec local = switch (strategy) {
-            case NONE -> LocalCacheSpec.noLocal(namespace);
-            case STATIC -> LocalCacheSpec.staticCache(namespace, MAX_SIZE, LOCAL_TTL);
-            case DYNAMIC -> LocalCacheSpec.dynamicCache(namespace, MAX_SIZE, LOCAL_TTL,
-                    LocalCacheSpec.VersionSpec.defaults(), LocalCacheSpec.DynamicSpec.defaults());
+        CacheStrategy built = switch (strategy) {
+            case NONE -> CacheStrategy.noLocal(namespace);
+            case STATIC -> CacheStrategy.staticCache(namespace, MAX_SIZE, LOCAL_TTL);
+            case DYNAMIC -> CacheStrategy.dynamicCache(namespace, MAX_SIZE, LOCAL_TTL,
+                    VersionSpec.defaults(), DynamicSpec.defaults());
         };
-        CentralCacheSpec central = CentralCacheSpec.builder(namespace)
-                .ttl(CENTRAL_TTL)
-                .nullTtl(CENTRAL_NULL_TTL)
-                .failOpen(true)
-                .build();
-        return CacheDefinition.of(local, central);
+        return CacheDefinition.of(built.withCentral(CENTRAL_TTL, CENTRAL_NULL_TTL, true));
     }
 }

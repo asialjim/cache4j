@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.central.redis;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
@@ -24,7 +26,7 @@ class RedisHotKeyCoordinatorTest {
 
     private final RedisCentralCacheTest.MutableClock clock = new RedisCentralCacheTest.MutableClock();
 
-    private RedisHotKeyCoordinator coordinator(LocalCacheSpec.GlobalSpec global) {
+    private RedisHotKeyCoordinator coordinator(GlobalSpec global) {
         InMemoryValueStore<Object> store = new InMemoryValueStore<>(
                 namespace -> NS.equals(namespace) ? global : null, clock::millis);
         return new RedisHotKeyCoordinator(store, namespace -> NS.equals(namespace) ? global : null);
@@ -37,7 +39,7 @@ class RedisHotKeyCoordinatorTest {
     @Test
     @DisplayName("达到全局阈值判 HOT")
     void becomesHot() {
-        RedisHotKeyCoordinator coordinator = coordinator(LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
+        RedisHotKeyCoordinator coordinator = coordinator(GlobalSpec.of(WINDOW, 10L, 1));
         HotKeyReport report = coordinator.reportAndStatus(NS, key("a"), 120L);
         assertEquals(HotKeyStatus.HOT, report.status());
 
@@ -46,21 +48,21 @@ class RedisHotKeyCoordinatorTest {
     @Test
     @DisplayName("未达阈值判 ACTIVE")
     void staysActive() {
-        RedisHotKeyCoordinator coordinator = coordinator(LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
+        RedisHotKeyCoordinator coordinator = coordinator(GlobalSpec.of(WINDOW, 10L, 1));
         assertEquals(HotKeyStatus.ACTIVE, coordinator.reportAndStatus(NS, key("a"), 10L).status());
     }
 
     @Test
     @DisplayName("从未见过且 delta=0 → UNKNOWN")
     void unknownWhenNeverSeen() {
-        RedisHotKeyCoordinator coordinator = coordinator(LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
+        RedisHotKeyCoordinator coordinator = coordinator(GlobalSpec.of(WINDOW, 10L, 1));
         assertEquals(HotKeyStatus.UNKNOWN, coordinator.reportAndStatus(NS, key("a"), 0L).status());
     }
 
     @Test
     @DisplayName("未配置 dynamic.global 的 namespace 不猜阈值")
     void missingGlobalSpecIsUnknown() {
-        RedisHotKeyCoordinator coordinator = coordinator(LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
+        RedisHotKeyCoordinator coordinator = coordinator(GlobalSpec.of(WINDOW, 10L, 1));
         CacheKey other = new CacheKey("other:ns", "s1:a");
         assertEquals(HotKeyStatus.UNKNOWN, coordinator.reportAndStatus("other:ns", other, 999L).status());
 
@@ -72,7 +74,7 @@ class RedisHotKeyCoordinatorTest {
     @Test
     @DisplayName("批量上报逐 key 返回结果")
     void batchReport() {
-        RedisHotKeyCoordinator coordinator = coordinator(LocalCacheSpec.GlobalSpec.of(WINDOW, 10L, 1));
+        RedisHotKeyCoordinator coordinator = coordinator(GlobalSpec.of(WINDOW, 10L, 1));
         Map<CacheKey, HotKeyReport> reports = coordinator.reportAndStatusAll(NS,
                 Map.of(key("hot"), 120L, key("cold"), 1L));
         assertEquals(HotKeyStatus.HOT, reports.get(key("hot")).status());
@@ -82,7 +84,7 @@ class RedisHotKeyCoordinatorTest {
     @Test
     @DisplayName("长时间无上报判 COOLING")
     void staleCoolsDown() {
-        LocalCacheSpec.GlobalSpec global = new LocalCacheSpec.GlobalSpec(WINDOW, 10L, 3L, 3, 2, 1);
+        GlobalSpec global = new GlobalSpec(WINDOW, 10L, 3L, 3, 2, 1);
         RedisHotKeyCoordinator coordinator = coordinator(global);
         assertEquals(HotKeyStatus.HOT, coordinator.reportAndStatus(NS, key("a"), 200L).status());
 

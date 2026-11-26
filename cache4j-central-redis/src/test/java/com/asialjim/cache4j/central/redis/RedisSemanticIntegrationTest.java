@@ -1,5 +1,11 @@
 package com.asialjim.cache4j.central.redis;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
+import com.asialjim.cache4j.core.DynamicSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.CentralCache;
@@ -59,13 +65,13 @@ class RedisSemanticIntegrationTest {
                 .build();
     }
 
-    private InMemoryValueStore<Object> store(LocalCacheSpec.GlobalSpec global) {
+    private InMemoryValueStore<Object> store(GlobalSpec global) {
         return new InMemoryValueStore<>(namespace -> NS.equals(namespace) ? global : null, clock::millis);
     }
 
     private LocalCacheSpec staticSpec() {
         return LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1),
-                new LocalCacheSpec.VersionSpec(Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), 1_000));
+                new VersionSpec(Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), 1_000));
     }
 
     @Test
@@ -113,16 +119,16 @@ class RedisSemanticIntegrationTest {
     @DisplayName("热 key：中央判 HOT 后，各节点补偿升热（集群口径闭环）")
     void globalPromotionAcrossNodes() {
         // QPS 口径：窗口 1s，全局 2 QPS → hotCount = 2 次；本地 2 QPS × 1s 窗口 = 2 次即升热
-        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(1), 2L, 1);
+        GlobalSpec global = GlobalSpec.of(Duration.ofSeconds(1), 2L, 1);
         InMemoryValueStore<Object> store = store(global);
         HotKeyCoordinator coordinator = new RedisHotKeyCoordinator(store,
                 namespace -> NS.equals(namespace) ? global : null);
 
-        LocalCacheSpec.DynamicSpec base = LocalCacheSpec.DynamicSpec.defaults();
-        LocalCacheSpec.DynamicSpec dynamic = new LocalCacheSpec.DynamicSpec(
+        DynamicSpec base = DynamicSpec.defaults();
+        DynamicSpec dynamic = new DynamicSpec(
                 2, 1, Duration.ofSeconds(1), 16, 1_000, base.syncInterval(), base.cooldown(),
                 com.asialjim.cache4j.core.Coordination.GLOBAL,
-                new LocalCacheSpec.GlobalSpec(Duration.ofSeconds(1), 2L, 1L, 3, 3, 1),
+                new GlobalSpec(Duration.ofSeconds(1), 2L, 1L, 3, 3, 1),
                 base.sketchWidthBits(), base.sketchDepth(), base.hotReportPartitions(),
                 base.hotReportBatchMax(), base.candidateCapacity());
         AtomicReference<LocalCacheSpec> holder = new AtomicReference<>(

@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.spring.redis;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -233,7 +235,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
 
     @Override
     public Map<CacheKey, HotKeyReport> reportHotKeyAll(String namespace, Map<CacheKey, Long> deltas) {
-        LocalCacheSpec.GlobalSpec global = globalSpecs == null ? null : globalSpecs.apply(namespace);
+        GlobalSpec global = globalSpecs == null ? null : globalSpecs.apply(namespace);
         if (global == null) {
             // 未配置 dynamic.global：不猜阈值
             Map<CacheKey, HotKeyReport> unknown = new HashMap<>(deltas.size() * 2);
@@ -284,7 +286,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
     /**
      * 全局阈值解析器（由适配层注入；未配置的 namespace 返回 {@code null}）。
      */
-    private java.util.function.Function<String, LocalCacheSpec.GlobalSpec> globalSpecs;
+    private java.util.function.Function<String, GlobalSpec> globalSpecs;
 
     /**
      * 设置中央阈值解析器（供热 key 上报使用）。
@@ -293,7 +295,7 @@ public final class SpringRedisValueStore<V> implements RedisValueStore<V> {
      * @return this
      */
     public SpringRedisValueStore<V> globalSpecs(
-            java.util.function.Function<String, LocalCacheSpec.GlobalSpec> globalSpecs) {
+            java.util.function.Function<String, GlobalSpec> globalSpecs) {
         this.globalSpecs = globalSpecs;
         return this;
     }

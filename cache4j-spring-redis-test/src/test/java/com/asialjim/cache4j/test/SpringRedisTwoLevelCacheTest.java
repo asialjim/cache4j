@@ -1,5 +1,9 @@
 package com.asialjim.cache4j.test;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
@@ -231,19 +235,19 @@ class SpringRedisTwoLevelCacheTest {
 
         @Bean
         Cache4jSpringOptions cache4jSpringOptions(LettuceConnectionFactory factory) {
-            Map<String, LocalCacheSpec.GlobalSpec> globalSpecs = RedisTestEnvironment.globalSpecs();
+            Map<String, GlobalSpec> globalSpecs = RedisTestEnvironment.globalSpecs();
             return Cache4jSpringOptions.builder()
                     // 用 Caffeine 做本地层（贴近生产组合）
                     .localProvider(CaffeineLocalCacheProvider.INSTANCE)
                     .centralProvider(RedisTestEnvironment.centralProvider(factory, globalSpecs), true)
-                    .cache(CacheDefinition.of(
-                            LocalCacheSpec.staticCache(NS, 1_000, Duration.ofMinutes(1),
-                                    new LocalCacheSpec.VersionSpec(
-                                            Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), 1_000)),
-                            CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build()))
-                    .cache(CacheDefinition.of(
-                            LocalCacheSpec.noLocal(NS_NONE),
-                            CentralCacheSpec.builder(NS_NONE).ttl(Duration.ofMinutes(10)).build()))
+                    .cache(CacheDefinition.of(com.asialjim.cache4j.core.CacheStrategy
+                            .staticCache(NS, 1_000, Duration.ofMinutes(1),
+                                    new VersionSpec(Duration.ofMillis(100), Duration.ZERO,
+                                            Duration.ofMillis(50), 1_000))
+                            .withCentral(Duration.ofMinutes(10), Duration.ZERO, true)))
+                    .cache(CacheDefinition.of(com.asialjim.cache4j.core.CacheStrategy
+                            .noLocal(NS_NONE)
+                            .withCentral(Duration.ofMinutes(10), Duration.ZERO, true)))
                     .build();
         }
 

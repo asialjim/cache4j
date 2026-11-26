@@ -1,5 +1,9 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
+import com.asialjim.cache4j.core.DynamicSpec;
+
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
@@ -45,9 +49,9 @@ class HashMapDynamicLocalCacheTest {
      *
      * @return 参数
      */
-    private static LocalCacheSpec.DynamicSpec lowThreshold() {
-        LocalCacheSpec.DynamicSpec d = LocalCacheSpec.DynamicSpec.defaults();
-        return new LocalCacheSpec.DynamicSpec(1, 0, Duration.ofSeconds(1), 16, 1_000,
+    private static DynamicSpec lowThreshold() {
+        DynamicSpec d = DynamicSpec.defaults();
+        return new DynamicSpec(1, 0, Duration.ofSeconds(1), 16, 1_000,
                 d.syncInterval(), d.cooldown(), d.coordination(), d.global(),
                 d.sketchWidthBits(), d.sketchDepth(), d.hotReportPartitions(),
                 d.hotReportBatchMax(), d.candidateCapacity());
@@ -58,9 +62,9 @@ class HashMapDynamicLocalCacheTest {
      *
      * @return 参数
      */
-    private static LocalCacheSpec.DynamicSpec highThreshold() {
-        LocalCacheSpec.DynamicSpec d = LocalCacheSpec.DynamicSpec.defaults();
-        return new LocalCacheSpec.DynamicSpec(100, 25, Duration.ofSeconds(1), 16, 1_000,
+    private static DynamicSpec highThreshold() {
+        DynamicSpec d = DynamicSpec.defaults();
+        return new DynamicSpec(100, 25, Duration.ofSeconds(1), 16, 1_000,
                 d.syncInterval(), d.cooldown(), d.coordination(), d.global(),
                 d.sketchWidthBits(), d.sketchDepth(), d.hotReportPartitions(),
                 d.hotReportBatchMax(), d.candidateCapacity());
@@ -72,16 +76,16 @@ class HashMapDynamicLocalCacheTest {
      * @param global 中央阈值
      * @return 参数
      */
-    private static LocalCacheSpec.DynamicSpec globalThreshold(LocalCacheSpec.GlobalSpec global) {
-        LocalCacheSpec.DynamicSpec d = LocalCacheSpec.DynamicSpec.defaults();
-        return new LocalCacheSpec.DynamicSpec(2, 1, Duration.ofSeconds(1), 16, 1_000,
+    private static DynamicSpec globalThreshold(GlobalSpec global) {
+        DynamicSpec d = DynamicSpec.defaults();
+        return new DynamicSpec(2, 1, Duration.ofSeconds(1), 16, 1_000,
                 d.syncInterval(), d.cooldown(), com.asialjim.cache4j.core.Coordination.GLOBAL, global,
                 d.sketchWidthBits(), d.sketchDepth(), d.hotReportPartitions(),
                 d.hotReportBatchMax(), d.candidateCapacity());
     }
 
     @SuppressWarnings("unchecked")
-    private VersionedLocalCache<String> dynamic(LocalCacheSpec.DynamicSpec dynamic, HotKeyCoordinator coordinator) {
+    private VersionedLocalCache<String> dynamic(DynamicSpec dynamic, HotKeyCoordinator coordinator) {
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
         return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec.toStrategy(), coordinator, clock::nanos);
     }
@@ -155,8 +159,8 @@ class HashMapDynamicLocalCacheTest {
     @DisplayName("GLOBAL 模式下，未升热但达到预选阈值的 key 进入候选桶")
     void candidateBucket() {
         // 候选阈值 = min(ceil(10 QPS / 1), 199) = 10 QPS → 10s 窗口内 100 次；升热阈值 200 QPS → 2000 次
-        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 10L, 1);
-        LocalCacheSpec.DynamicSpec dynamic = new LocalCacheSpec.DynamicSpec(
+        GlobalSpec global = GlobalSpec.of(Duration.ofSeconds(10), 10L, 1);
+        DynamicSpec dynamic = new DynamicSpec(
                 200, 50, Duration.ofSeconds(10), 16, 1_000, Duration.ofSeconds(1),
                 Duration.ofSeconds(30), com.asialjim.cache4j.core.Coordination.GLOBAL, global,
                 12, 4, 16, 16, 1_000);
@@ -182,8 +186,8 @@ class HashMapDynamicLocalCacheTest {
     @Test
     @DisplayName("一次到点的访问上报整批（当前分区）key，而不是单个 key")
     void hotSyncReportsWholePartition() {
-        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
-        LocalCacheSpec.DynamicSpec dynamic = globalThreshold(global);
+        GlobalSpec global = GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
+        DynamicSpec dynamic = globalThreshold(global);
         VersionedLocalCache<String> cache = dynamic(dynamic, stub());
 
         // 先把三个 key 升热
@@ -206,8 +210,8 @@ class HashMapDynamicLocalCacheTest {
     @Test
     @DisplayName("中央判定 COOLING 后降热，并进入冷却期阻止立即重新升热")
     void demotionStartsCooldown() {
-        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
-        LocalCacheSpec.DynamicSpec dynamic = globalThreshold(global);
+        GlobalSpec global = GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
+        DynamicSpec dynamic = globalThreshold(global);
         VersionedLocalCache<String> cache = dynamic(dynamic, stub());
         CacheKey key = key("a");
 
@@ -229,8 +233,8 @@ class HashMapDynamicLocalCacheTest {
     @Test
     @DisplayName("GLOBAL 模式缺少协调器时工厂直接报错（不静默退化）")
     void globalWithoutCoordinatorFails() {
-        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
-        LocalCacheSpec.DynamicSpec dynamic = globalThreshold(global);
+        GlobalSpec global = GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
+        DynamicSpec dynamic = globalThreshold(global);
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
         assertThrows(com.asialjim.cache4j.core.CacheException.class,
                 () -> LocalCaches.create(spec.toStrategy(), null, clock::nanos));

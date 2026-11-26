@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.spring.redis;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
 import com.asialjim.cache4j.central.redis.RedisAccessException;
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheKey;
@@ -106,7 +108,7 @@ class SpringRedisValueStoreTest {
             this.factory = lettuce;
 
             // QPS 口径：窗口 10s、10 QPS → hotCount = 100 次（与上报量 120 匹配）
-            LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 10L, 1);
+            GlobalSpec global = GlobalSpec.of(Duration.ofSeconds(10), 10L, 1);
             this.store = new SpringRedisValueStore<>(factory, RedisKeyFormatter.defaults(),
                     new StringRedisSerializer(), System::currentTimeMillis)
                     .globalSpecs(namespace -> NS.equals(namespace) ? global : null);

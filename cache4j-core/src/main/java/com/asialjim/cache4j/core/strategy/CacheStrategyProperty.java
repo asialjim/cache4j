@@ -1,6 +1,9 @@
 package com.asialjim.cache4j.core.strategy;
 
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.VersionSpec;
+import com.asialjim.cache4j.core.DynamicSpec;
+import com.asialjim.cache4j.core.GlobalSpec;
 import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
@@ -264,8 +267,8 @@ public class CacheStrategyProperty {
     public static CacheStrategyProperty ofRaw(String namespace, String description,
                                               LocalStrategy strategy, Long maxSize,
                                               Duration localTtl, Integer localNullTtlDivisor,
-                                              LocalCacheSpec.VersionSpec version,
-                                              LocalCacheSpec.DynamicSpec dynamic,
+                                              VersionSpec version,
+                                              DynamicSpec dynamic,
                                               Duration centralTtl, Duration centralNullTtl,
                                               Boolean failOpen) {
         CacheStrategyProperty p = new CacheStrategyProperty();
@@ -298,7 +301,7 @@ public class CacheStrategyProperty {
             p.setHotReportPartitions(dynamic.hotReportPartitions());
             p.setHotReportBatchMax(dynamic.hotReportBatchMax());
             p.setCandidateCapacity(dynamic.candidateCapacity());
-            LocalCacheSpec.GlobalSpec global = dynamic.global();
+            GlobalSpec global = dynamic.global();
             if (global != null) {
                 p.setGlobalWindow(global.window().toMillis());
                 p.setGlobalHotQps(global.hotQps());
@@ -336,7 +339,7 @@ public class CacheStrategyProperty {
         property.setLocalTtl(policy.localTtl() == null ? null : policy.localTtl().toMillis());
         property.setLocalNullTtlDivisor(policy.localNullTtlDivisor());
 
-        LocalCacheSpec.VersionSpec version = policy.version();
+        VersionSpec version = policy.version();
         if (version != null) {
             property.setVersionCheckInterval(version.checkInterval().toMillis());
             property.setVersionJitter(version.jitter().toMillis());
@@ -345,7 +348,7 @@ public class CacheStrategyProperty {
             property.setReconcilePartitions(version.reconcilePartitions());
         }
 
-        LocalCacheSpec.DynamicSpec dynamic = policy.dynamic();
+        DynamicSpec dynamic = policy.dynamic();
         if (dynamic != null) {
             property.setHotThresholdQps((long) dynamic.hotThresholdQps());
             property.setCoolQps((long) dynamic.coolQps());
@@ -360,7 +363,7 @@ public class CacheStrategyProperty {
             property.setHotReportPartitions(dynamic.hotReportPartitions());
             property.setHotReportBatchMax(dynamic.hotReportBatchMax());
             property.setCandidateCapacity(dynamic.candidateCapacity());
-            LocalCacheSpec.GlobalSpec global = dynamic.global();
+            GlobalSpec global = dynamic.global();
             if (global != null) {
                 property.setGlobalWindow(global.window().toMillis());
                 property.setGlobalHotQps(global.hotQps());
@@ -415,24 +418,24 @@ public class CacheStrategyProperty {
     /**
      * @return 版本对账参数
      */
-    public LocalCacheSpec.VersionSpec versionSpec() {
+    public VersionSpec versionSpec() {
         // 未配置时用默认检查间隔（不能留 0：策略要求正数）
         Duration checkInterval = versionCheckInterval == null
-                ? LocalCacheSpec.VersionSpec.defaults().checkInterval()
+                ? VersionSpec.defaults().checkInterval()
                 : duration(versionCheckInterval, localTimeUnit, TimeUnit.SECONDS);
-        return new LocalCacheSpec.VersionSpec(
+        return new VersionSpec(
                 checkInterval,
                 duration(versionJitter, localTimeUnit, TimeUnit.MILLISECONDS),
                 duration(versionRetryBackoff, localTimeUnit, TimeUnit.MILLISECONDS),
                 reconcileBatchSize == null ? 1_000 : reconcileBatchSize,
-                reconcilePartitions == null ? LocalCacheSpec.VersionSpec.DEFAULT_PARTITIONS : reconcilePartitions);
+                reconcilePartitions == null ? VersionSpec.DEFAULT_PARTITIONS : reconcilePartitions);
     }
 
     /**
      * @return 热 key 参数（仅 DYNAMIC 有值）
      */
-    public LocalCacheSpec.DynamicSpec dynamicSpec() {
-        return new LocalCacheSpec.DynamicSpec(
+    public DynamicSpec dynamicSpec() {
+        return new DynamicSpec(
                 intOf(hotThresholdQps, 100), intOf(coolQps, 25),
                 duration(hotWindow, localTimeUnit, TimeUnit.SECONDS),
                 intOf(hotWindowSlices, 16), intOf(maxHotKeys, 1_000),
@@ -541,7 +544,7 @@ public class CacheStrategyProperty {
         if (resolved == LocalStrategy.NONE) {
             return LocalCacheSpec.noLocal(namespace);
         }
-        LocalCacheSpec.VersionSpec version = versionSpec();
+        VersionSpec version = versionSpec();
         Duration localTtl = localTtlDuration();
         // 负副本的存活时长在这里算好：本地写路径直接用，不必运行时回头读中央配置
         Duration nullTtl = LocalCacheSpec.deriveNullTtl(localTtl, centralTtlDuration()
@@ -563,11 +566,11 @@ public class CacheStrategyProperty {
         return CentralCacheSpec.of(toStrategy());
     }
 
-    private LocalCacheSpec.GlobalSpec globalSpec() {
+    private GlobalSpec globalSpec() {
         if (globalWindow == null && globalHotQps == null) {
             return null;
         }
-        return new LocalCacheSpec.GlobalSpec(
+        return new GlobalSpec(
                 duration(globalWindow, localTimeUnit, TimeUnit.SECONDS),
                 globalHotQps == null ? 100L : globalHotQps,
                 globalCoolQps == null ? 25L : globalCoolQps,

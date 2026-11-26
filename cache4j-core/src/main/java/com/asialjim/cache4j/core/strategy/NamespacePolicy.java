@@ -1,5 +1,11 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.CacheStrategy;
+
+import com.asialjim.cache4j.core.DynamicSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
@@ -70,8 +76,8 @@ public record NamespacePolicy(
      */
     public NamespacePolicy(String namespace, String description, LocalStrategy strategy,
                            LocalStrategy declaredStrategy, long maxSize, Duration localTtl,
-                           int localNullTtlDivisor, LocalCacheSpec.VersionSpec version,
-                           LocalCacheSpec.DynamicSpec dynamic, Duration centralTtl,
+                           int localNullTtlDivisor, VersionSpec version,
+                           DynamicSpec dynamic, Duration centralTtl,
                            Duration centralNullTtl, boolean failOpen, long configVersion,
                            long updatedAtMillis, String updatedBy, String reason, Source source) {
         this(CacheStrategyProperty.ofRaw(namespace, description, strategy, maxSize, localTtl,
@@ -124,14 +130,14 @@ public record NamespacePolicy(
     /**
      * @return 版本对账参数
      */
-    public LocalCacheSpec.VersionSpec version() {
+    public VersionSpec version() {
         return property.versionSpec();
     }
 
     /**
      * @return {@code DYNAMIC} 参数；非 DYNAMIC 返回 {@code null}
      */
-    public LocalCacheSpec.DynamicSpec dynamic() {
+    public DynamicSpec dynamic() {
         return getStrategyNameIsDynamic() ? property.dynamicSpec() : null;
     }
 
@@ -220,18 +226,13 @@ public record NamespacePolicy(
         // 负副本的存活时长在这里算好（这里同时知道中央 nullTtl 与除子），
         // 本地缓存的写路径直接用，不必运行时回头读中央配置
         Duration nullTtl = LocalCacheSpec.deriveNullTtl(localTtl(), centralNullTtl(), localNullTtlDivisor());
-        LocalCacheSpec local = switch (strategy()) {
-            case NONE -> LocalCacheSpec.noLocal(namespace());
-            case STATIC -> LocalCacheSpec.staticCache(namespace(), maxSize(), localTtl(), nullTtl, version());
-            case DYNAMIC -> LocalCacheSpec.dynamicCache(namespace(), maxSize(), localTtl(), nullTtl, version(), dynamic());
+        CacheStrategy built = switch (strategy()) {
+            case NONE -> CacheStrategy.noLocal(namespace());
+            case STATIC -> CacheStrategy.staticCache(namespace(), maxSize(), localTtl(), nullTtl, version());
+            case DYNAMIC -> CacheStrategy.dynamicCache(namespace(), maxSize(), localTtl(), nullTtl, version(), dynamic());
         };
-        CentralCacheSpec central = CentralCacheSpec.builder(namespace())
-                .ttl(centralTtl())
-                .nullTtl(centralNullTtl())
-                .failOpen(failOpen())
-                .build();
-        CacheDefinition definition = CacheDefinition.of(local, central, localNullTtlDivisor());
-        definition.validate();
+        CacheDefinition definition = CacheDefinition.of(
+                built.withCentral(centralTtl(), centralNullTtl(), failOpen()), localNullTtlDivisor());
         return definition;
     }
 

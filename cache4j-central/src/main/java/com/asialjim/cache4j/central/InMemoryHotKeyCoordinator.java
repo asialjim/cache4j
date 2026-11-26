@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.central;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,7 +37,7 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
 
     private static final Logger LOG = LoggerFactory.getLogger(InMemoryHotKeyCoordinator.class);
 
-    private final Function<String, LocalCacheSpec.GlobalSpec> globalSpecs;
+    private final Function<String, GlobalSpec> globalSpecs;
     private final LongSupplier milliClock;
     private final ConcurrentHashMap<String, ConcurrentHashMap<CacheKey, Window>> state = new ConcurrentHashMap<>();
 
@@ -43,7 +45,7 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
      * @param globalSpecs namespace → 中央阈值解析器
      * @param milliClock  毫秒时钟
      */
-    public InMemoryHotKeyCoordinator(Function<String, LocalCacheSpec.GlobalSpec> globalSpecs,
+    public InMemoryHotKeyCoordinator(Function<String, GlobalSpec> globalSpecs,
                                      LongSupplier milliClock) {
         this.globalSpecs = globalSpecs;
         this.milliClock = milliClock;
@@ -52,7 +54,7 @@ public final class InMemoryHotKeyCoordinator implements HotKeyCoordinator {
     @Override
     public HotKeyReport reportAndStatus(String namespace, CacheKey key, long delta) {
         // 中央窗口计数与 QPS 阈值的换算：hotCount()/coolCount() = QPS × 窗口秒数
-        LocalCacheSpec.GlobalSpec globalSpec = globalSpecs.apply(namespace);
+        GlobalSpec globalSpec = globalSpecs.apply(namespace);
         if (globalSpec == null || globalSpec.window() == null || globalSpec.window().isZero()) {
             LOG.warn("[{}]-{}-{}", "热key协调", "热key", "namespace 未配置 dynamic.global，"
                     + "全局热 key 判定被跳过：namespace=" + namespace);

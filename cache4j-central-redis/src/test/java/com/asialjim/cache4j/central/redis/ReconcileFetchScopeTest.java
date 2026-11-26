@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.central.redis;
 
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.HashPartitions;
@@ -250,7 +252,7 @@ class ReconcileFetchScopeTest {
     private Cache4j<String, String> cache(InMemoryValueStore<Object> store, int batchSize,
                                                 int partitions, int maxSize, Duration localTtl) {
         LocalCacheSpec localSpec = LocalCacheSpec.staticCache(NS, maxSize, localTtl,
-                new LocalCacheSpec.VersionSpec(
+                new VersionSpec(
                         Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), batchSize, partitions));
         CentralCache<String> central = new RedisCentralCache<>(
                 CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build().toStrategy(),

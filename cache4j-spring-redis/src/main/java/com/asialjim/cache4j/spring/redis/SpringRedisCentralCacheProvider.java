@@ -5,6 +5,7 @@ import com.asialjim.cache4j.central.redis.RedisHotKeyCoordinator;
 import com.asialjim.cache4j.central.redis.RedisValueStore;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
+import com.asialjim.cache4j.core.GlobalSpec;
 import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
@@ -37,7 +38,7 @@ public final class SpringRedisCentralCacheProvider implements CentralCacheProvid
 
     private final LongSupplier milliClock;
 
-    private final Function<String, LocalCacheSpec.GlobalSpec> globalSpecs;
+    private final Function<String, GlobalSpec> globalSpecs;
 
     /**
      * @param connectionFactory Redis 连接工厂
@@ -61,7 +62,7 @@ public final class SpringRedisCentralCacheProvider implements CentralCacheProvid
                                            RedisKeyFormatter keyFormatter,
                                            RedisSerializer<Object> serializer,
                                            LongSupplier milliClock,
-                                           Function<String, LocalCacheSpec.GlobalSpec> globalSpecs) {
+                                           Function<String, GlobalSpec> globalSpecs) {
         this.connectionFactory = connectionFactory;
         this.keyFormatter = keyFormatter;
         this.serializer = serializer;

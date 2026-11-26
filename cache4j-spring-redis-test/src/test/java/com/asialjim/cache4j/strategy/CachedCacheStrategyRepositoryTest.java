@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.strategy;
 
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.central.InMemoryCentralCache;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
@@ -153,7 +155,7 @@ class CacheStrategyCacheTest {
     private static StoredPolicy stored(LocalStrategy strategy, long configVersion, String reason,
                                        Long maxSize) {
         return new StoredPolicy(NS, "运维说明", strategy, maxSize, Duration.ofSeconds(30), 10,
-                LocalCacheSpec.VersionSpec.defaults(), null,
+                VersionSpec.defaults(), null,
                 Duration.ofMinutes(30), Duration.ofSeconds(30), true,
                 configVersion, 1_700_000_000_000L, "ops", reason);
     }

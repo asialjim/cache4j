@@ -1,5 +1,9 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.DynamicSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
@@ -58,10 +62,10 @@ public final class PolicyResolver {
         long maxSize = stored.maxSize();
         Duration localTtl = stored.localTtl();
         int divisor = stored.localNullTtlDivisor();
-        LocalCacheSpec.VersionSpec version = stored.version();
-        LocalCacheSpec.DynamicSpec dynamic = stored.dynamic() != null
+        VersionSpec version = stored.version();
+        DynamicSpec dynamic = stored.dynamic() != null
                 ? stored.dynamic()
-                : (strategy == LocalStrategy.DYNAMIC ? LocalCacheSpec.DynamicSpec.defaults() : null);
+                : (strategy == LocalStrategy.DYNAMIC ? DynamicSpec.defaults() : null);
         Duration centralTtl = stored.centralTtl();
         Duration centralNullTtl = stored.centralNullTtl();
         boolean failOpen = stored.failOpen();

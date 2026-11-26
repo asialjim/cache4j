@@ -1,5 +1,9 @@
 package com.asialjim.cache4j.test;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
+import com.asialjim.cache4j.core.DynamicSpec;
+
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
@@ -87,7 +91,7 @@ public final class RedisTestEnvironment {
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static CentralCacheProvider centralProvider(RedisConnectionFactory factory,
-                                                       Map<String, LocalCacheSpec.GlobalSpec> globalSpecs) {
+                                                       Map<String, GlobalSpec> globalSpecs) {
         // 测试里缓存的值都是 String：Spring 的 StringRedisSerializer 即足够；
         // 生产可换成 JSON / Protobuf 等任意 RedisSerializer。
         RedisSerializer<Object> serializer = (RedisSerializer) new StringRedisSerializer();
@@ -106,8 +110,8 @@ public final class RedisTestEnvironment {
      *
      * @return 中央阈值
      */
-    public static LocalCacheSpec.GlobalSpec hotGlobalSpec() {
-        return new LocalCacheSpec.GlobalSpec(
+    public static GlobalSpec hotGlobalSpec() {
+        return new GlobalSpec(
                 Duration.ofSeconds(1),   // window
                 6L,                      // hotQps
                 4L,                      // coolQps
@@ -122,8 +126,8 @@ public final class RedisTestEnvironment {
      *
      * @return 热度参数
      */
-    public static LocalCacheSpec.DynamicSpec hotDynamicSpec() {
-        return new LocalCacheSpec.DynamicSpec(
+    public static DynamicSpec hotDynamicSpec() {
+        return new DynamicSpec(
                 3,                        // hotThresholdQps
                 1,                        // coolQps
                 Duration.ofSeconds(1),    // window
@@ -145,7 +149,7 @@ public final class RedisTestEnvironment {
      *
      * @return map
      */
-    public static Map<String, LocalCacheSpec.GlobalSpec> globalSpecs() {
+    public static Map<String, GlobalSpec> globalSpecs() {
         return new ConcurrentHashMap<>();
     }
 }

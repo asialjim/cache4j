@@ -1,5 +1,11 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.GlobalSpec;
+
+import com.asialjim.cache4j.core.DynamicSpec;
+
+import com.asialjim.cache4j.core.VersionSpec;
+
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
@@ -26,10 +32,10 @@ class TextPolicyCodecTest {
     @Test
     @DisplayName("完整字段往返等价")
     void roundTripFullPolicy() {
-        LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 4);
-        LocalCacheSpec.DynamicSpec dynamic = LocalCacheSpec.DynamicSpec.defaults().withGlobal(global);
+        GlobalSpec global = GlobalSpec.of(Duration.ofSeconds(10), 100L, 4);
+        DynamicSpec dynamic = DynamicSpec.defaults().withGlobal(global);
         StoredPolicy policy = new StoredPolicy("user:detail", "用户详情", LocalStrategy.DYNAMIC,
-                5_000L, Duration.ofSeconds(30), 10, LocalCacheSpec.VersionSpec.defaults(), dynamic,
+                5_000L, Duration.ofSeconds(30), 10, VersionSpec.defaults(), dynamic,
                 Duration.ofMinutes(30), Duration.ofSeconds(30), true,
                 7L, 1_700_000_000_000L, "ops:zhangsan", "扩容");
 
@@ -56,7 +62,7 @@ class TextPolicyCodecTest {
     @DisplayName("值里的换行与反斜杠被转义，不会破坏逐行格式")
     void escapesNewlinesAndBackslashes() {
         StoredPolicy policy = new StoredPolicy("x:y", "第一行\n第二行\\结尾", LocalStrategy.STATIC,
-                1_000L, Duration.ofSeconds(30), 10, LocalCacheSpec.VersionSpec.defaults(), null,
+                1_000L, Duration.ofSeconds(30), 10, VersionSpec.defaults(), null,
                 Duration.ofMinutes(30), Duration.ofSeconds(30), true, 1L, 0L, null, null);
 
         byte[] raw = codec.encode(policy);
