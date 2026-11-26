@@ -200,7 +200,7 @@ class CacheStrategyCacheTest {
                                                 AtomicLong clock) {
             StrategySelfCacheOptions options = StrategySelfCacheOptions.defaults();
             return new CacheStrategyCache(dataSource, options,
-                    LocalCaches.create(options.localSpec(), null, () -> clock.get() * 1_000_000L,
+                    LocalCaches.create(options.cacheStrategy(), null, () -> clock.get() * 1_000_000L,
                             central::revisions, central.cacheStrategy().failOpen()),
                     central,
                     () -> clock.get() * 1_000_000L,

@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
  *   <li>时间一律"数值 + 单位"：数值是 {@code Long}，单位由 {@link #localTimeUnit} /
  *       {@link #centralTimeUnit} 按层给出；</li>
  *   <li>枚举一律 {@code String}（与 {@code enum.name()} 对齐）；</li>
- *   <li>{@code null} 表示"未设置"，由 {@link #toLocalSpec()} / {@link #toCentralSpec()}
+ *   <li>{@code null} 表示"未设置"，由 {@link #toStrategy()}
  *       用内建默认值补齐——配置中心只需要存改过的字段。</li>
  * </ul>
  *
@@ -471,20 +471,32 @@ public class CacheStrategyProperty {
         return failOpen == null || failOpen;
     }
 
-    /**
-     * 还原为本地规格；{@code null} 字段用内建默认值补齐。
-     *
-     * @return 本地规格
-     */
-    /**
-     * 生成本 namespace 的<strong>运行期策略</strong>。
-     *
-     * <p>本类只承担"持久化 / 运维编辑"的角色（37 个扁平字段、包装类型、可空表示未设置）；
-     * 缓存实现一律使用 {@link CacheStrategy}——不可变、强类型、已校验。
-     * 转换只在这里发生一次，运行期不再做 {@code String→枚举} 与 {@code null} 兜底。</p>
-     *
-     * @return 运行期策略
-     */
+    private GlobalSpec globalSpec() {
+        if (globalWindow == null && globalHotQps == null) {
+            return null;
+        }
+        return new GlobalSpec(
+                duration(globalWindow, localTimeUnit, TimeUnit.SECONDS),
+                globalHotQps == null ? 100L : globalHotQps,
+                globalCoolQps == null ? 25L : globalCoolQps,
+                intOf(globalDemoteWindows, 1),
+                intOf(globalStaleWindows, 6),
+                intOf(globalClientEstimate, 1));
+    }
+
+    private static Duration duration(Long value, String unit, TimeUnit fallback) {
+        TimeUnit resolved = unit == null ? fallback : TimeUnit.valueOf(unit);
+        return Duration.of(value == null ? 0L : value, resolved.toChronoUnit());
+    }
+
+    private static int intOf(Long value, int fallback) {
+        return value == null ? fallback : value.intValue();
+    }
+
+    private static int intOf(Integer value, int fallback) {
+        return value == null ? fallback : value;
+    }
+
     public CacheStrategy toStrategy() {
         LocalStrategy resolved = (localStrategy == null || localStrategy.isBlank())
                 ? LocalStrategy.STATIC
@@ -533,52 +545,6 @@ public class CacheStrategyProperty {
                 centralTtlJitter == null ? 0D : centralTtlJitter,
                 failOpen != null && failOpen,
                 allowNoExpiry != null && allowNoExpiry);
-    }
-
-    public com.asialjim.cache4j.core.CacheStrategy toLocalSpec() {
-        LocalStrategy resolved = (localStrategy == null || localStrategy.isBlank())
-                ? LocalStrategy.STATIC
-                : LocalStrategy.valueOf(localStrategy);
-        if (resolved == LocalStrategy.NONE) {
-            return CacheStrategy.noLocal(namespace);
-        }
-        VersionSpec version = versionSpec();
-        Duration localTtl = localTtlDuration();
-        // 负副本的存活时长在这里算好：本地写路径直接用，不必运行时回头读中央配置
-        Duration nullTtl = CacheStrategy.deriveNullTtl(localTtl, centralTtlDuration()
-                        .equals(Duration.ZERO) ? null : centralNullTtlDuration(),
-                getLocalNullTtlDivisor() == null ? CacheStrategy.DEFAULT_NULL_TTL_DIVISOR
-                        : getLocalNullTtlDivisor());
-        if (resolved == LocalStrategy.STATIC) {
-            return CacheStrategy.staticCache(namespace, maxSize(), localTtl, nullTtl, version);
-        }
-        return CacheStrategy.dynamicCache(namespace, maxSize(), localTtl, nullTtl, version, dynamicSpec());
-    }
-
-    private GlobalSpec globalSpec() {
-        if (globalWindow == null && globalHotQps == null) {
-            return null;
-        }
-        return new GlobalSpec(
-                duration(globalWindow, localTimeUnit, TimeUnit.SECONDS),
-                globalHotQps == null ? 100L : globalHotQps,
-                globalCoolQps == null ? 25L : globalCoolQps,
-                intOf(globalDemoteWindows, 1),
-                intOf(globalStaleWindows, 6),
-                intOf(globalClientEstimate, 1));
-    }
-
-    private static Duration duration(Long value, String unit, TimeUnit fallback) {
-        TimeUnit resolved = unit == null ? fallback : TimeUnit.valueOf(unit);
-        return Duration.of(value == null ? 0L : value, resolved.toChronoUnit());
-    }
-
-    private static int intOf(Long value, int fallback) {
-        return value == null ? fallback : value.intValue();
-    }
-
-    private static int intOf(Integer value, int fallback) {
-        return value == null ? fallback : value;
     }
 
     // ------------------------------------------------------------------ getter / setter

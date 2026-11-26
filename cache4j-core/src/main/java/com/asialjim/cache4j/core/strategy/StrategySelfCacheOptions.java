@@ -90,25 +90,11 @@ public final class StrategySelfCacheOptions {
      * @return 策略
      */
     public CacheStrategy cacheStrategy() {
-        return localSpec().withCentral(centralSpec().centralTtl(), centralSpec().centralNullTtl(),
-                centralSpec().failOpen());
-    }
-
-    public com.asialjim.cache4j.core.CacheStrategy localSpec() {
+        // 一次构造 + 一次中央侧覆盖：不在中途造出"只有半边有值"的中间策略
         VersionSpec version = new VersionSpec(
                 versionCheckInterval, Duration.ofMillis(100), Duration.ofMillis(200), 1_000, 16);
-        return CacheStrategy.staticCache(SELF_NAMESPACE, maxSize, localTtl, version);
-    }
-
-    /**
-     * @return 自举缓存的中央配置
-     */
-    public com.asialjim.cache4j.core.CacheStrategy centralSpec() {
-        return CacheStrategy.builder(SELF_NAMESPACE)
-                .ttl(centralTtl)
-                .nullTtl(centralNullTtl)
-                .failOpen(true)
-                .build();
+        return CacheStrategy.staticCache(SELF_NAMESPACE, maxSize, localTtl, version)
+                .withCentral(centralTtl, centralNullTtl, true);
     }
 
     /**

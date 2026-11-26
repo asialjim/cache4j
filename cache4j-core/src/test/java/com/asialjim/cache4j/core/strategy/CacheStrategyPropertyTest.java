@@ -32,7 +32,7 @@ class CacheStrategyPropertyTest {
         property.setNamespace("user:detail");
         property.setLocalStrategy(LocalStrategy.STATIC.name());
 
-        com.asialjim.cache4j.core.CacheStrategy spec = property.toLocalSpec();
+        com.asialjim.cache4j.core.CacheStrategy spec = property.toStrategy();
         assertEquals(LocalStrategy.STATIC, spec.localStrategy());
         assertEquals(BuiltinDefaults.MAX_SIZE, spec.localMaxSize());
         assertEquals(BuiltinDefaults.LOCAL_TTL, spec.localTtl(), "未设置 TTL 时用内建默认");
@@ -53,7 +53,7 @@ class CacheStrategyPropertyTest {
         property.setCentralNullTtl(30L);
         property.setFailOpen(false);
 
-        assertEquals(Duration.ofSeconds(45), property.toLocalSpec().localTtl());
+        assertEquals(Duration.ofSeconds(45), property.toStrategy().localTtl());
 
         property.setCentralTimeUnit("SECONDS");
         com.asialjim.cache4j.core.CacheStrategy central = property.toStrategy();
@@ -69,7 +69,7 @@ class CacheStrategyPropertyTest {
         property.setNamespace("user:detail");
         property.setLocalStrategy(LocalStrategy.NONE.name());
 
-        com.asialjim.cache4j.core.CacheStrategy spec = property.toLocalSpec();
+        com.asialjim.cache4j.core.CacheStrategy spec = property.toStrategy();
         assertEquals(LocalStrategy.NONE, spec.localStrategy());
         assertEquals(0L, spec.localMaxSize());
         assertEquals(Duration.ofSeconds(5), spec.versionCheckInterval(), "NONE 也有一份默认版本参数");
@@ -101,7 +101,7 @@ class CacheStrategyPropertyTest {
         property.setGlobalStaleWindows(5);
         property.setGlobalClientEstimate(3);
 
-        com.asialjim.cache4j.core.CacheStrategy spec = property.toLocalSpec();
+        com.asialjim.cache4j.core.CacheStrategy spec = property.toStrategy();
         assertEquals(LocalStrategy.DYNAMIC, spec.localStrategy());
         assertEquals(Duration.ofMinutes(1), spec.localTtl());
         assertEquals(Duration.ofMillis(500), spec.versionCheckInterval());
@@ -135,11 +135,11 @@ class CacheStrategyPropertyTest {
         property.setHotWindow(2L);
 
         property.setLocalTimeUnit("SECONDS");
-        assertEquals(50, (int) property.toLocalSpec().hotThresholdQps(),
+        assertEquals(50, (int) property.toStrategy().hotThresholdQps(),
                 "窗口 2 秒时阈值仍是 50 QPS");
 
         property.setLocalTimeUnit("MINUTES");
-        assertEquals(50, (int) property.toLocalSpec().hotThresholdQps(),
+        assertEquals(50, (int) property.toStrategy().hotThresholdQps(),
                 "把窗口单位换成分钟，QPS 数值不该被改写成 50×60");
     }
 }
