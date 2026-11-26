@@ -1,6 +1,5 @@
 package com.asialjim.cache4j.core.twolevel;
 
-import com.asialjim.cache4j.core.local.NoneLocalCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -252,12 +251,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     }
 
     /**
-     * 回填：只有现有副本的 revision 不大于本次读到的 revision 时才覆盖。
-     *
-     * <p>比较与写入由 {@link LocalCache#putIfNewer} 原子完成，避免"读版本 → 写副本"之间
-     * 被另一个线程的更新版本抢先覆盖（D18 的竞态窗口）。</p>
-     */
-    /**
      * 回填正副本：<strong>不带 TTL</strong>——存活多久由本地策略决定（{@code strategy.localTtl()}）。
      *
      * <p>"该不该接、接不接得下"也由本地层判断（{@code putIfNewer} 内部含准入与版本比较），
@@ -286,27 +279,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         return putLocal(cacheKey, null, revision, null, "负副本回填到本地", false);
     }
 
-    /**
-     * 写本地（调用方写入与内部回填共用）。
-     *
-     * <p>日志语义靠 {@code process} 区分：调用方写入记 {@code 写}，读路径回填记 {@code 回填} ——
-     * 两者都会让"冷 key 不落本地"，但这是两件不同的事，不能都写成"写"。</p>
-     *
-     * @param cacheKey   key
-     * @param entry      条目
-     * @param effective  生效 TTL（可空）
-     * @param detail     详细信息
-     */
-    /**
-     * 写本地。
-     *
-     * @param cacheKey  key
-     * @param entry     条目
-     * @param effective 生效 TTL（可空）
-     * @param detail    详情文案
-     * @param writeOp   {@code true} 表示调用方写入（日志用"写"），{@code false} 表示内部回填（日志用"读"）
-     * @return 是否真的写入了本地
-     */
     /**
      * 写本地（调用方写入与内部回填共用）。
      *
