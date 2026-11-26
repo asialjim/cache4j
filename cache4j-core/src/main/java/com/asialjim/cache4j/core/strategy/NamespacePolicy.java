@@ -217,10 +217,13 @@ public record NamespacePolicy(
      * @return 装配定义
      */
     public CacheDefinition toDefinition() {
+        // 负副本的存活时长在这里算好（这里同时知道中央 nullTtl 与除子），
+        // 本地缓存的写路径直接用，不必运行时回头读中央配置
+        Duration nullTtl = LocalCacheSpec.deriveNullTtl(localTtl(), centralNullTtl(), localNullTtlDivisor());
         LocalCacheSpec local = switch (strategy()) {
             case NONE -> LocalCacheSpec.noLocal(namespace());
-            case STATIC -> LocalCacheSpec.staticCache(namespace(), maxSize(), localTtl(), version());
-            case DYNAMIC -> LocalCacheSpec.dynamicCache(namespace(), maxSize(), localTtl(), version(), dynamic());
+            case STATIC -> LocalCacheSpec.staticCache(namespace(), maxSize(), localTtl(), nullTtl, version());
+            case DYNAMIC -> LocalCacheSpec.dynamicCache(namespace(), maxSize(), localTtl(), nullTtl, version(), dynamic());
         };
         CentralCacheSpec central = CentralCacheSpec.builder(namespace())
                 .ttl(centralTtl())

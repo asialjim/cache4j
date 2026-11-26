@@ -67,8 +67,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     private final com.asialjim.cache4j.core.coordination.SingleFlight<CacheKey, V> singleFlight =
             new com.asialjim.cache4j.core.coordination.LocalSingleFlight<>();
 
-    private final int localNullTtlDivisor;
-
     private Cache4jImpl(Builder<K, V> builder) {
         this.namespace = builder.namespace;
         this.keyEncoder = builder.keyEncoder;
@@ -80,7 +78,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         this.localSpec = local.spec();
         this.centralSpec = central.spec();
 
-        this.localNullTtlDivisor = Math.max(1, builder.localNullTtlDivisor);
 
         LOG.debug("[{}]-{}-{}", "统一中央缓存", "装配", "namespace=" + namespace
                 + "，strategy=" + localSpec.strategy()
@@ -258,17 +255,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     }
 
     /**
-     * 本地空值副本的存活时长：{@code min(localTtl, centralNullTtl / N)}。
-     *
-     * <p>{@code centralNullTtl = ZERO}（不缓存空值）时不会被调用——那条路径直接不落本地。</p>
-     *
-     * @return 生效 TTL
-     */
-    private Duration localNullTtl() {
-        return LocalCacheSpec.deriveNullTtl(localSpec.ttl(), centralSpec.nullTtl(), localNullTtlDivisor);
-    }
-
-    /**
      * 回填：只有现有副本的 revision 不大于本次读到的 revision 时才覆盖。
      *
      * <p>比较与写入由 {@link LocalCache#putIfNewer} 原子完成，避免"读版本 → 写副本"之间
@@ -299,7 +285,8 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * @return 是否真的写入了本地
      */
     private boolean backfillNegative(CacheKey cacheKey, long revision) {
-        return putLocal(cacheKey, null, revision, localNullTtl(), "负副本回填到本地", false);
+        // 负副本的 TTL 由本地策略给出（LocalCacheSpec.nullTtl），这里不传
+        return putLocal(cacheKey, null, revision, null, "负副本回填到本地", false);
     }
 
     /**
@@ -372,7 +359,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
             return Lookup.miss();
         }
         // 本地负副本用派生 TTL：min(localTtl, centralNullTtl / N)，比中央更早放下标记
-        putLocal(cacheKey, null, revision, localNullTtl(), "写中央并写本地（空值）", true);
+        putLocal(cacheKey, null, revision, null, "写中央并写本地（空值）", true);
         return Lookup.negative();
     }
 
@@ -384,7 +371,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
                 return;
             }
             // 中央用调用方给的 TTL；本地负副本一律用派生值 min(localTtl, centralNullTtl / N)
-            putLocal(cacheKey, null, revision, localNullTtl(), "写中央并写本地（空值）", true);
+            putLocal(cacheKey, null, revision, null, "写中央并写本地（空值）", true);
             return;
         }
         central.evict(cacheKey);
@@ -420,7 +407,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         private KeyEncoder keyEncoder = com.asialjim.cache4j.core.KeyEncoders.plain();
         private LocalCache<V> local;
         private CentralCache<V> central;
-        private int localNullTtlDivisor = 10;
         private LongSupplier nanoClock = System::nanoTime;
         private LongSupplier milliClock = System::currentTimeMillis;
 
@@ -452,24 +438,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
          */
         public Builder<K, V> central(CentralCache<V> value) {
             this.central = value;
-            return this;
-        }
-
-        /**
-         * @param value 热 key 协调器；{@code DYNAMIC + GLOBAL} 时必填
-         * @return this
-         */
-        /**
-         * 本地空值副本的除子 N（默认 10）：{@code localNullTtl = min(localTtl, centralNullTtl / N)}。
-         *
-         * @param value 除子，必须 ≥ 1
-         * @return this
-         */
-        public Builder<K, V> localNullTtlDivisor(int value) {
-            if (value < 1) {
-                throw invalid("localNullTtlDivisor 必须 >= 1：" + value);
-            }
-            this.localNullTtlDivisor = value;
             return this;
         }
 

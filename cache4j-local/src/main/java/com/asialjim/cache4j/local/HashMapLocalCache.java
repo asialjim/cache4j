@@ -171,8 +171,13 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
 
     @Override
     public boolean putIfNewer(CacheKey key, V value, long revision, Duration ttl) {
+        // TTL 归本地策略管：负副本用 nullTtl，正副本用 ttl（可空 = spec.ttl()）
+        Duration effective = value == null ? spec.nullTtl() : ttl != null ? ttl : spec.ttl();
+        if (effective != null && effective.isZero()) {
+            return false;        // 不缓存负副本
+        }
         long now = nanoClock.getAsLong();
-        long expireAt = ttl == null ? Long.MAX_VALUE : now + ttl.toNanos();
+        long expireAt = effective == null ? Long.MAX_VALUE : now + effective.toNanos();
         Segment<V> segment = segmentOf(key);
         List<CacheKey> evicted = List.of();
         segment.lock.lock();

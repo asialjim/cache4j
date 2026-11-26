@@ -478,10 +478,16 @@ public class CacheStrategyProperty {
             return LocalCacheSpec.noLocal(namespace);
         }
         LocalCacheSpec.VersionSpec version = versionSpec();
+        Duration localTtl = localTtlDuration();
+        // 负副本的存活时长在这里算好：本地写路径直接用，不必运行时回头读中央配置
+        Duration nullTtl = LocalCacheSpec.deriveNullTtl(localTtl, centralTtlDuration()
+                        .equals(Duration.ZERO) ? null : centralNullTtlDuration(),
+                getLocalNullTtlDivisor() == null ? LocalCacheSpec.DEFAULT_NULL_TTL_DIVISOR
+                        : getLocalNullTtlDivisor());
         if (resolved == LocalStrategy.STATIC) {
-            return new LocalCacheSpec(namespace, resolved, maxSize(), localTtlDuration(), version, null);
+            return new LocalCacheSpec(namespace, resolved, maxSize(), localTtl, nullTtl, version, null);
         }
-        return new LocalCacheSpec(namespace, resolved, maxSize(), localTtlDuration(), version, dynamicSpec());
+        return new LocalCacheSpec(namespace, resolved, maxSize(), localTtl, nullTtl, version, dynamicSpec());
     }
 
     /**

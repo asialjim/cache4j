@@ -54,13 +54,17 @@ class TwoLevelCacheIntegrationTest {
 
     private Cache4j<String, String> build(LocalCacheSpec localSpec, CentralCache<String> central,
                                                  int localNullTtlDivisor) {
+        // 负副本 TTL 由本地策略给出：装配时按 centralNullTtl / N 算好塞进 spec
+        LocalCacheSpec spec = localSpec.nullTtl() != null ? localSpec
+                : LocalCacheSpec.staticCache(localSpec.namespace(), localSpec.maxSize(), localSpec.ttl(),
+                        LocalCacheSpec.deriveNullTtl(localSpec.ttl(), central.spec().nullTtl(),
+                                localNullTtlDivisor), localSpec.version());
         // 先有中央，再把「版本读取器」交给本地——对账是本地自己的事，但它需要问中央版本
-        LocalCache<String> local = LocalCaches.create(localSpec, null, clock::nanos,
+        LocalCache<String> local = LocalCaches.create(spec, null, clock::nanos,
                 central::revisions, central.spec().failOpen());
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)
-                .localNullTtlDivisor(localNullTtlDivisor)
                 .build();
     }
 

@@ -24,6 +24,13 @@ public record LocalCacheSpec(
         LocalStrategy strategy,
         long maxSize,
         Duration ttl,
+        /**
+         * 负副本（"确认不存在"）的存活时长：{@code min(localTtl, centralNullTtl / N)}。
+         *
+         * <p>装配时由 {@link #deriveNullTtl} 算好——本地缓存的写路径直接用，
+         * 不需要在运行时回头去读中央配置。<strong>{@code ZERO}</strong> 表示不缓存负副本。</p>
+         */
+        Duration nullTtl,
         VersionSpec version,
         DynamicSpec dynamic
 ) {
@@ -57,6 +64,11 @@ public record LocalCacheSpec(
     // ------------------------------------------------------------------ 工厂
 
     /**
+     * 未显式配置时的负副本除子。
+     */
+    public static final int DEFAULT_NULL_TTL_DIVISOR = 10;
+
+    /**
      * 派生本地空值副本的存活时长：{@code min(localTtl, centralNullTtl / divisor)}。
      *
      * <p>空值副本只是"防穿透的临时标记"，比中央活得久毫无意义；让本地比中央<strong>更早</strong>
@@ -88,7 +100,7 @@ public record LocalCacheSpec(
      * @return 配置
      */
     public static LocalCacheSpec noLocal(String namespace) {
-        return new LocalCacheSpec(namespace, LocalStrategy.NONE, 0L, null, null, null);
+        return new LocalCacheSpec(namespace, LocalStrategy.NONE, 0L, null, Duration.ZERO, null, null);
     }
 
     /**
@@ -100,7 +112,8 @@ public record LocalCacheSpec(
      * @return 配置
      */
     public static LocalCacheSpec staticCache(String namespace, long maxSize, Duration ttl) {
-        return new LocalCacheSpec(namespace, LocalStrategy.STATIC, maxSize, ttl, VersionSpec.defaults(), null);
+        return new LocalCacheSpec(namespace, LocalStrategy.STATIC, maxSize, ttl,
+                deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR), VersionSpec.defaults(), null);
     }
 
     /**
@@ -113,7 +126,23 @@ public record LocalCacheSpec(
      * @return 配置
      */
     public static LocalCacheSpec staticCache(String namespace, long maxSize, Duration ttl, VersionSpec version) {
-        return new LocalCacheSpec(namespace, LocalStrategy.STATIC, maxSize, ttl, version, null);
+        return staticCache(namespace, maxSize, ttl, null, version);
+    }
+
+    /**
+     * 构造 {@code STATIC} 策略配置，显式给出负副本 TTL。
+     *
+     * @param namespace 缓存名
+     * @param maxSize   条目上限
+     * @param ttl       本地 TTL
+     * @param nullTtl   负副本 TTL（可空 → 按默认除子派生）
+     * @param version   版本参数
+     * @return 配置
+     */
+    public static LocalCacheSpec staticCache(String namespace, long maxSize, Duration ttl, Duration nullTtl,
+                                             VersionSpec version) {
+        return new LocalCacheSpec(namespace, LocalStrategy.STATIC, maxSize, ttl,
+                nullTtl != null ? nullTtl : deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR), version, null);
     }
 
     /**
@@ -126,7 +155,8 @@ public record LocalCacheSpec(
      * @return 配置
      */
     public static LocalCacheSpec dynamicCache(String namespace, long maxSize, Duration ttl, DynamicSpec dynamic) {
-        return new LocalCacheSpec(namespace, LocalStrategy.DYNAMIC, maxSize, ttl, VersionSpec.defaults(), dynamic);
+        return new LocalCacheSpec(namespace, LocalStrategy.DYNAMIC, maxSize, ttl,
+                deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR), VersionSpec.defaults(), dynamic);
     }
 
     /**
@@ -141,7 +171,24 @@ public record LocalCacheSpec(
      */
     public static LocalCacheSpec dynamicCache(String namespace, long maxSize, Duration ttl,
                                               VersionSpec version, DynamicSpec dynamic) {
-        return new LocalCacheSpec(namespace, LocalStrategy.DYNAMIC, maxSize, ttl, version, dynamic);
+        return dynamicCache(namespace, maxSize, ttl, null, version, dynamic);
+    }
+
+    /**
+     * 构造 {@code DYNAMIC} 策略配置，显式给出负副本 TTL。
+     *
+     * @param namespace 缓存名
+     * @param maxSize   条目上限
+     * @param ttl       本地 TTL
+     * @param nullTtl   负副本 TTL（可空 → 按默认除子派生）
+     * @param version   版本参数
+     * @param dynamic   热度参数
+     * @return 配置
+     */
+    public static LocalCacheSpec dynamicCache(String namespace, long maxSize, Duration ttl, Duration nullTtl,
+                                              VersionSpec version, DynamicSpec dynamic) {
+        return new LocalCacheSpec(namespace, LocalStrategy.DYNAMIC, maxSize, ttl,
+                nullTtl != null ? nullTtl : deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR), version, dynamic);
     }
 
     // ------------------------------------------------------------------ 校验

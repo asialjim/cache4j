@@ -264,7 +264,6 @@ public final class TwoLevelCacheManager implements AutoCloseable {
                 .keyEncoder(keyEncoder)
                 .local(local)
                 .central(central)
-                .localNullTtlDivisor(definition.localNullTtlDivisor())
                 .build();
         synchronized (caches) {
             caches.put(name, created);
