@@ -7,7 +7,6 @@ import org.slf4j.LoggerFactory;
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.core.CacheKey;
-import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.KeyEncoder;
@@ -15,21 +14,13 @@ import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.FailOpenCentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
-import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 
 /**
@@ -76,39 +67,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     private final com.asialjim.cache4j.core.coordination.SingleFlight<CacheKey, V> singleFlight =
             new com.asialjim.cache4j.core.coordination.LocalSingleFlight<>();
 
-    /**
-     * 每个 key 的分区号：<strong>首次访问该 key 时计算一次并保存在本地</strong>，之后对账直接取，
-     * 不再重复算 hash。
-     */
-    private final Map<CacheKey, Integer> keyPartitions = new ConcurrentHashMap<>();
-
-    /**
-     * 分区数（2 的幂）：由 {@code version.reconcilePartitions} 决定；分区号范围 {@code [0, partitions)}。
-     */
-
-    /**
-     * 本地空值副本的除子 N：{@code localNullTtl = min(localTtl, centralNullTtl / N)}。
-     *
-     * <p>空值副本只是"防穿透的临时标记"，比中央活得久毫无意义；让本地比中央<strong>更早</strong>
-     * 放下这个标记，避免"中央已能重新回源、本地还在说不存在"。来自策略仓库的
-     * {@code NamespacePolicy.localNullTtlDivisor}，默认 10。</p>
-     */
     private final int localNullTtlDivisor;
-
-    /**
-     * 本地副本的<strong>分区索引</strong>：分区号 → 该分区内、确实持有副本的 key（空桶惰性创建）。
-     *
-     * <p>对账时直接 {@code get(partition)} 取，不必遍历 {@code local.keys()} 重算分区；
-     * 存储层自己的过期/淘汰造成的"幽灵条目"会在对账比对阶段顺手剔除（见 {@code reconcile}）。</p>
-     */
-
-    /**
-     * 命名空间级对账信号量：下一次对账时间点（纳秒）；0 表示尚未初始化。
-     */
-
-    /**
-     * 同一命名空间同一时刻只允许一个线程对账。
-     */
 
     private Cache4jImpl(Builder<K, V> builder) {
         this.namespace = builder.namespace;
