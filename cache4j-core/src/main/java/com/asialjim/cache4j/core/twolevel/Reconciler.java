@@ -3,8 +3,6 @@ package com.asialjim.cache4j.core.twolevel;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.LocalEntry;
-import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import org.slf4j.Logger;
@@ -12,11 +10,13 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 /**
  * 版本对账：把"本地副本是否仍是最新"这件事从编排类里独立出来。
@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * @param <V> 值类型
  * @author Asial Jim
  */
-final class Reconciler<V> {
+public final class Reconciler<V> {
 
     private static final Logger LOG = LoggerFactory.getLogger(Reconciler.class);
 
@@ -49,14 +49,19 @@ final class Reconciler<V> {
 
     private final LocalCache<V> local;
 
-    private final CentralCache<V> central;
+    /**
+     * 中央版本读取器：<strong>本地层不需要知道"中央"是什么</strong>，只需要"给我这批 key 的权威版本"。
+     *
+     * <p>由门面注入（{@code central::revisions}），本地层因此不依赖任何中央实现。</p>
+     */
+    private final Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader;
 
     /**
      * 版本参数；{@code null} 表示该 namespace 不做对账。
      */
     private final LocalCacheSpec.VersionSpec version;
 
-    private final CentralCacheSpec centralSpec;
+    private final boolean failOpen;
 
     private final int partitions;
 
@@ -74,13 +79,21 @@ final class Reconciler<V> {
 
     private final AtomicBoolean reconciling = new AtomicBoolean();
 
-    Reconciler(String namespace, LocalCache<V> local, CentralCache<V> central,
-               LocalCacheSpec.VersionSpec version, CentralCacheSpec centralSpec) {
+    /**
+     * @param namespace     命名空间
+     * @param local         所属的本地缓存（读 keys、失效条目）
+     * @param versionReader 中央版本读取器
+     * @param version       版本对账配置；{@code null} 表示不对账
+     * @param failOpen      中央不可用时是否放行
+     */
+    public Reconciler(String namespace, LocalCache<V> local,
+                      Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader,
+                      LocalCacheSpec.VersionSpec version, boolean failOpen) {
         this.namespace = namespace;
         this.local = local;
-        this.central = central;
+        this.versionReader = versionReader;
         this.version = version;
-        this.centralSpec = centralSpec;
+        this.failOpen = failOpen;
         this.partitions = version == null ? 1 : version.reconcilePartitions();
     }
 
@@ -90,7 +103,7 @@ final class Reconciler<V> {
      * @param cacheKey key
      * @return 分区号；本地不可用时恒为 0
      */
-    int partitionOf(CacheKey cacheKey) {
+    public int partitionOf(CacheKey cacheKey) {
         if (!local.available()) {
             // 没有本地副本也就没有"分区"可言；保存分区号只会无界增长
             return 0;
@@ -109,7 +122,7 @@ final class Reconciler<V> {
      *
      * @param cacheKey key
      */
-    void track(CacheKey cacheKey) {
+    public void track(CacheKey cacheKey) {
         localPartitions.computeIfAbsent(partitionOf(cacheKey), p -> ConcurrentHashMap.newKeySet())
                 .add(cacheKey);
     }
@@ -119,7 +132,7 @@ final class Reconciler<V> {
      *
      * @param cacheKey key
      */
-    void forget(CacheKey cacheKey) {
+    public void forget(CacheKey cacheKey) {
         Integer partition = keyPartitions.remove(cacheKey);
         if (partition != null) {
             Set<CacheKey> bucket = localPartitions.get(partition);
@@ -132,7 +145,7 @@ final class Reconciler<V> {
     /**
      * 整批清空索引（{@code local.clear()} 时调用，存储层不逐条回调）。
      */
-    void clear() {
+    public void clear() {
         keyPartitions.clear();
         localPartitions.clear();
     }
@@ -143,7 +156,7 @@ final class Reconciler<V> {
      * @param accessedKey 当前访问的 key（决定对账分区）
      * @param now         当前纳秒
      */
-    void maybeReconcile(CacheKey accessedKey, long now) {
+    public void maybeReconcile(CacheKey accessedKey, long now) {
         if (version == null) {
             return;
         }
@@ -169,7 +182,7 @@ final class Reconciler<V> {
             // 中央故障期不该比对账间隔更频繁地重试
             nextCheckAtNanos = now + Math.max(version.retryBackoff().toNanos(),
                     version.checkInterval().toNanos());
-            if (!centralSpec.failOpen()) {
+            if (!failOpen) {
                 throw e;
             }
             LOG.warn("[{}]-{}-{}", SUBJECT, "对账", "版本对账失败，按退避推迟，namespace=" + namespace
@@ -220,7 +233,7 @@ final class Reconciler<V> {
         for (int from = 0; from < selected.size(); from += batchSize) {
             List<CacheKey> batch = selected.subList(from, Math.min(selected.size(), from + batchSize));
             // 只取版本，不取数据值
-            Map<CacheKey, Long> latest = central.revisions(batch);
+            Map<CacheKey, Long> latest = versionReader.apply(batch);
             for (CacheKey cacheKey : batch) {
                 Long revision = latest.get(cacheKey);
                 if (revision == null) {

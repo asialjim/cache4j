@@ -123,7 +123,8 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         this.nanoClock = builder.nanoClock;
         this.milliClock = builder.milliClock;
 
-        this.reconciler = new Reconciler<>(namespace, local, central, localSpec.version(), centralSpec);
+        this.reconciler = new Reconciler<>(namespace, local, central::revisions, localSpec.version(),
+                centralSpec.failOpen());
         this.localNullTtlDivisor = Math.max(1, builder.localNullTtlDivisor);
         // 本地条目过期 / 淘汰 / 失效时立即清掉分区号与分区索引，不等下一次对账才发现
         local.onEntryRemoved(reconciler::forget);
