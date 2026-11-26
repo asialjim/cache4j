@@ -184,7 +184,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     public boolean containsKey(K key) {
         // 探测语义：不改访问频次、不计读指标、不触发回填
         CacheKey cacheKey = encode(key);
-        if (local.available() && local.peek(cacheKey) != null) {
+        if (local.peek(cacheKey) != null) {
             return true;
         }
         VersionedLookup<V> centralLookup = centralLookup(cacheKey);
@@ -292,31 +292,25 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     private record ReadResult<V>(Lookup<V> lookup, Source source) {
     }
 
+    /**
+     * 一次读：<strong>本地 → 中央</strong>，仅此而已。
+     *
+     * <p>本地层内部已经处理好自己的事——{@code NONE} 策略天然返回未命中（不开启本地 = 未命中）、
+     * {@code DYNAMIC} 冷 key 也返回未命中。因此这里<strong>不判断策略、不碰热 key</strong>：
+     * 两条路（本地不可用 / 本地可用但未命中）的后续完全一样，都是去查中央。</p>
+     *
+     * @param cacheKey key
+     * @return 读结果
+     */
     private ReadResult<V> read(CacheKey cacheKey) {
-        long now = nanoClock.getAsLong();
-        String localSubject = localSubject(localSpec.strategy());
-        boolean promoted = false;
+        reconciler.maybeReconcile(cacheKey, nanoClock.getAsLong());   // 对账（后续批次下沉到本地层）
 
-        if (local.available()) {
-            boolean hotBefore = local.accepts(cacheKey);
-            local.access(cacheKey);              // DYNAMIC 可能在此触发升热（装饰器自己记日志）
-            promoted = !hotBefore && local.accepts(cacheKey);
-            local.hotSync(cacheKey);
-            reconciler.maybeReconcile(cacheKey, now);   // 用当前 key 选对账分区
-
-            LocalEntry<V> entry = local.entry(cacheKey);
-            if (entry != null) {
-                LOG.debug("[{}]-读-[{}]-{}", localSubject, cacheKey.masked(), detailHit(hotBefore || promoted));
-                return entry.isNegative()
-                        ? new ReadResult<>(Lookup.negative(), Source.LOCAL)
-                        : new ReadResult<>(Lookup.hit(entry.value()), Source.LOCAL);
-            }
-            if (!promoted) {
-                // 本次访问触发升热时不记 miss 行：装饰器已记「触发热升」，回填时会记「热升回填到本地」
-                LOG.debug("[{}]-读-[{}]-{}", localSubject, cacheKey.masked(), detailMiss(hotBefore));
-            }
-        } else {
-            LOG.debug("[{}]-读-[{}]-{}", "统一中央缓存", cacheKey.masked(), "本地策略=NONE，硬读中央缓存");
+        Lookup<LocalEntry<V>> localLookup = this.local.lookup(cacheKey);
+        if (localLookup instanceof Lookup.Hit<LocalEntry<V>> hit) {
+            LocalEntry<V> entry = hit.value();
+            return entry.isNegative()
+                    ? new ReadResult<>(Lookup.negative(), Source.LOCAL)
+                    : new ReadResult<>(Lookup.hit(entry.value()), Source.LOCAL);
         }
 
         VersionedLookup<V> centralLookup = centralLookup(cacheKey);
@@ -325,43 +319,21 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         }
         if (centralLookup.lookup().isHit()) {
             backfill(cacheKey, LocalEntry.hit(centralLookup.lookup().optional().orElseThrow(),
-                    centralLookup.revision()), promoted);
+                    centralLookup.revision()));
             return new ReadResult<>(centralLookup.lookup(), Source.CENTRAL);
         }
         if (centralLookup.lookup().isNegative()) {
             if (centralSpec.nullCachingEnabled()) {
-                backfill(cacheKey, LocalEntry.negative(centralLookup.revision()), promoted);
+                backfill(cacheKey, LocalEntry.negative(centralLookup.revision()));
             } else {
                 reconciler.forget(cacheKey);
-            local.evict(cacheKey);
+                local.evict(cacheKey);
             }
             return new ReadResult<>(Lookup.negative(), Source.CENTRAL);
         }
         reconciler.forget(cacheKey);
         local.evict(cacheKey);
         return new ReadResult<>(Lookup.miss(), Source.NONE);
-    }
-
-    /**
-     * 本地命中时的详情文案。
-     *
-     * @param hot 是否热点（DYNAMIC）
-     * @return 文案
-     */
-    private String detailHit(boolean hot) {
-        return localSpec.strategy() == LocalStrategy.DYNAMIC ? "热key，命中" : "命中";
-    }
-
-    /**
-     * 本地未命中时的详情文案。
-     *
-     * @param hot 是否热点（DYNAMIC）
-     * @return 文案
-     */
-    private String detailMiss(boolean hot) {
-        return localSpec.strategy() == LocalStrategy.DYNAMIC
-                ? (hot ? "热key，miss，硬读中央缓存" : "冷key，miss，硬读中央缓存")
-                : "miss，硬读中央缓存";
     }
 
     private VersionedLookup<V> centralLookup(CacheKey cacheKey) {
@@ -394,18 +366,18 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * <p>比较与写入由 {@link LocalCache#putIfNewer} 原子完成，避免"读版本 → 写副本"之间
      * 被另一个线程的更新版本抢先覆盖（D18 的竞态窗口）。</p>
      */
-    private void backfill(CacheKey cacheKey, LocalEntry<V> entry, boolean promoted) {
-        if (!local.available()) {
-            return;
-        }
-        boolean written = putLocal(cacheKey, entry,
-                entry.isNegative() ? localNullTtl() : null,
-                promoted ? "热升回填到本地" : "回填到本地");
-        if (!written && local.accepts(cacheKey)) {
-            // 本地拒绝写入是另一件事（DYNAMIC 冷 key），这里只报"被更新版本挡下"
-            LOG.debug("[{}]-读-[{}]-{}", "统一中央缓存", cacheKey.masked(), "本地已有更新版本，丢弃本次回填，读到的版本="
-                    + entry.revision());
-        }
+    /**
+     * 回填本地。
+     *
+     * <p>"该不该接、接不接得下"由本地层自己判断（{@code putIfNewer} 内部含准入与版本比较），
+     * 门面只负责把中央读到的值交过去。</p>
+     *
+     * @param cacheKey key
+     * @param entry    条目
+     */
+    private void backfill(CacheKey cacheKey, LocalEntry<V> entry) {
+        putLocal(cacheKey, entry, entry.isNegative() ? localNullTtl() : null,
+                entry.isNegative() ? "负副本回填到本地" : "回填到本地");
     }
 
     /**
@@ -435,38 +407,22 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      */
     private boolean putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective,
                              String detail, boolean writeOp) {
-        if (!local.available()) {
-            if (writeOp) {
-                LOG.debug("[{}]-写-[{}]-{}", "统一中央缓存", cacheKey.masked(), "本地策略=NONE，仅写中央");
-            }
-            return false;
-        }
         Duration localTtl = localSpec.ttl();
         Duration chosen = effective != null && localTtl != null && effective.compareTo(localTtl) < 0
                 ? effective : localTtl;
 
-        boolean accepted = local.accepts(cacheKey);
-        // 条件写入：本地已有更新版本时不覆盖（回填竞态）
+        // 条件写入：准入（DYNAMIC 冷 key）与版本比较都在本地实现内部完成
         boolean written = local.putIfNewer(cacheKey, entry, chosen);
-        if (accepted && written) {
+        if (written) {
             reconciler.track(cacheKey);
-        } else if (!accepted) {
-            // 本地不持有副本（DYNAMIC 冷 key）→ 分区号也不保留，避免无界增长
+        } else {
+            // 本地不持有副本 → 分区号也不保留，避免无界增长
             reconciler.forget(cacheKey);
         }
-        String subject = localSubject(localSpec.strategy());
-
-        if (accepted) {
-            if (writeOp) {
-                LOG.debug("[{}]-写-[{}]-{}", subject, cacheKey.masked(), detail);
-            } else {
-                LOG.debug("[{}]-读-[{}]-{}", subject, cacheKey.masked(), detail);
-            }
-        } else if (writeOp) {
-            // 调用方写入被本地拒绝：这是"写"这条业务操作的结果
-            LOG.debug("[{}]-写-[{}]-{}", subject, cacheKey.masked(), "冷key，不落本地，仅写中央");
+        if (written) {
+            String subject = localSubject(localSpec.strategy());
+            LOG.debug("[{}]-{}-[{}]-{}", subject, writeOp ? "写" : "读", cacheKey.masked(), detail);
         }
-        // 回填被拒绝时不额外记：前面那条 "冷key，miss，硬读中央缓存" 已经说明了
         return written;
     }
 
