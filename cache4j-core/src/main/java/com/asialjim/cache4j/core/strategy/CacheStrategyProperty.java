@@ -1,6 +1,7 @@
 package com.asialjim.cache4j.core.strategy;
 
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
@@ -470,6 +471,65 @@ public class CacheStrategyProperty {
      *
      * @return 本地规格
      */
+    /**
+     * 生成本 namespace 的<strong>运行期策略</strong>。
+     *
+     * <p>本类只承担"持久化 / 运维编辑"的角色（37 个扁平字段、包装类型、可空表示未设置）；
+     * 缓存实现一律使用 {@link CacheStrategy}——不可变、强类型、已校验。
+     * 转换只在这里发生一次，运行期不再做 {@code String→枚举} 与 {@code null} 兜底。</p>
+     *
+     * @return 运行期策略
+     */
+    public CacheStrategy toStrategy() {
+        LocalStrategy resolved = (localStrategy == null || localStrategy.isBlank())
+                ? LocalStrategy.STATIC
+                : LocalStrategy.valueOf(localStrategy);
+        Duration localTtl = resolved == LocalStrategy.NONE ? null : localTtlDuration();
+        Duration centralTtl = centralTtlDuration();
+        Duration centralNullTtl = centralNullTtlDuration();
+        Duration nullTtl = resolved == LocalStrategy.NONE ? Duration.ZERO
+                : LocalCacheSpec.deriveNullTtl(localTtl, centralNullTtl,
+                        intOf(getLocalNullTtlDivisor(), LocalCacheSpec.DEFAULT_NULL_TTL_DIVISOR));
+        boolean dynamic = resolved == LocalStrategy.DYNAMIC;
+        return new CacheStrategy(
+                namespace,
+                description,
+                resolved,
+                resolved == LocalStrategy.NONE ? 0L : maxSize(),
+                localTtl,
+                nullTtl,
+                duration(versionCheckInterval, localTimeUnit, TimeUnit.SECONDS),
+                duration(versionJitter, localTimeUnit, TimeUnit.SECONDS),
+                duration(versionRetryBackoff, localTimeUnit, TimeUnit.SECONDS),
+                intOf(reconcileBatchSize, 1 << 6),
+                intOf(reconcilePartitions, 1 << 4),
+                dynamic && hotThresholdQps != null ? hotThresholdQps : 0L,
+                dynamic && coolQps != null ? coolQps : 0L,
+                dynamic ? duration(hotWindow, localTimeUnit, TimeUnit.SECONDS) : null,
+                intOf(hotWindowSlices, 16),
+                intOf(maxHotKeys, 1_000),
+                duration(hotSyncInterval, localTimeUnit, TimeUnit.SECONDS),
+                duration(hotCooldown, localTimeUnit, TimeUnit.SECONDS),
+                coordination == null ? com.asialjim.cache4j.core.Coordination.LOCAL
+                        : com.asialjim.cache4j.core.Coordination.valueOf(coordination),
+                intOf(sketchWidthBits, 14),
+                intOf(sketchDepth, 4),
+                intOf(hotReportPartitions, 16),
+                intOf(hotReportBatchMax, 64),
+                intOf(candidateCapacity, 1 << 12),
+                globalWindow == null ? null : duration(globalWindow, localTimeUnit, TimeUnit.SECONDS),
+                globalHotQps == null ? 100L : globalHotQps,
+                globalCoolQps == null ? 25L : globalCoolQps,
+                intOf(globalDemoteWindows, 1),
+                intOf(globalStaleWindows, 6),
+                intOf(globalClientEstimate, 1),
+                centralTtl,
+                centralNullTtl,
+                centralTtlJitter == null ? 0D : centralTtlJitter,
+                failOpen != null && failOpen,
+                allowNoExpiry != null && allowNoExpiry);
+    }
+
     public LocalCacheSpec toLocalSpec() {
         LocalStrategy resolved = (localStrategy == null || localStrategy.isBlank())
                 ? LocalStrategy.STATIC
