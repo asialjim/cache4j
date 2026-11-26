@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.CacheStrategy;
+
 import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.Lookup;
@@ -62,9 +64,36 @@ public final class CacheStrategyCache implements CacheStrategyRepository {
                               java.util.function.LongSupplier milliClock) {
         this.dataSource = dataSource;
         this.delegate = new DefaultCacheStrategyRepository(dataSource);
+        // 门面只接受工厂：这里把调用方给的两个实例包成工厂，语义仍是"由本类决定装配"
         this.policyCache = Cache4jImpl.<String, StoredPolicy>builder(StrategySelfCacheOptions.SELF_NAMESPACE)
-                .local(localCache)
-                .central(centralCache)
+                .strategy(selfOptions.cacheStrategy())
+                .localProvider(new com.asialjim.cache4j.core.local.LocalCacheProvider() {
+                    @Override
+                    public <V> com.asialjim.cache4j.core.local.LocalCache<V> create(
+                            CacheStrategy strategy, com.asialjim.cache4j.core.central.HotKeyCoordinator coordinator,
+                            java.util.function.Function<java.util.Collection<com.asialjim.cache4j.core.CacheKey>,
+                                    java.util.Map<com.asialjim.cache4j.core.CacheKey, Long>> versionReader,
+                            boolean failOpen, java.util.function.LongSupplier nanoClock) {
+                        @SuppressWarnings("unchecked")
+                        com.asialjim.cache4j.core.local.LocalCache<V> casted =
+                                (com.asialjim.cache4j.core.local.LocalCache<V>) localCache;
+                        return casted;
+                    }
+                })
+                .centralProvider(new com.asialjim.cache4j.core.central.CentralCacheProvider() {
+                    @Override
+                    public <V> com.asialjim.cache4j.core.central.CentralCache<V> create(CacheStrategy strategy) {
+                        @SuppressWarnings("unchecked")
+                        com.asialjim.cache4j.core.central.CentralCache<V> casted =
+                                (com.asialjim.cache4j.core.central.CentralCache<V>) centralCache;
+                        return casted;
+                    }
+
+                    @Override
+                    public void close() {
+                        // 生命周期由调用方持有
+                    }
+                })
                 .build();
     }
 

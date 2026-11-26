@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.local.LocalCacheProvider;
+
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.CacheStrategy;
@@ -19,7 +21,7 @@ public final class HashMapLocalCacheProvider implements LocalCacheProvider {
     public <V> LocalCache<V> create(CacheStrategy strategy, HotKeyCoordinator coordinator,
                                     java.util.function.Function<java.util.Collection<com.asialjim.cache4j.core.CacheKey>,
                                             java.util.Map<com.asialjim.cache4j.core.CacheKey, Long>> versionReader,
-                                    boolean failOpen) {
-        return LocalCaches.create(strategy, coordinator, System::nanoTime, versionReader, failOpen);
+                                    boolean failOpen, java.util.function.LongSupplier nanoClock) {
+        return LocalCaches.create(strategy, coordinator, nanoClock, versionReader, failOpen);
     }
 }

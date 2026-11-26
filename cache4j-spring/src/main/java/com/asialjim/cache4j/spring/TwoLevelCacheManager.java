@@ -16,7 +16,7 @@ import com.asialjim.cache4j.core.strategy.CacheDeclTranslator;
 import com.asialjim.cache4j.core.strategy.CacheCandidate;
 import com.asialjim.cache4j.core.strategy.BuiltinDefaults;
 import com.asialjim.cache4j.core.local.LocalStrategy;
-import com.asialjim.cache4j.local.LocalCacheProvider;
+import com.asialjim.cache4j.core.local.LocalCacheProvider;
 import com.asialjim.cache4j.core.KeyEncoder;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
@@ -110,16 +110,12 @@ public final class TwoLevelCacheManager implements AutoCloseable {
             }
             var strategy = definition.strategy();
 
-            // 先有中央，再把「版本读取器」交给本地：对账是本地副本的新鲜度问题，
-            // 但本地需要能问中央「这批 key 的权威版本是多少」
-            CentralCache<Object> central = options.centralProvider().create(strategy);
-            LocalCache<Object> local = options.localProvider()
-                    .create(strategy, coordinator, central::revisions, strategy.failOpen());
-
             Cache4j<Object, Object> cache = Cache4jImpl.<Object, Object>builder(namespace)
                     .keyEncoder(options.keyEncoder())
-                    .local(local)
-                    .central(central)
+                    .strategy(strategy)
+                    .localProvider(options.localProvider())
+                    .centralProvider(options.centralProvider())
+                    .hotKeyCoordinator(coordinator)
                     .build();
             built.put(namespace, cache);
             LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "namespace=" + namespace + "，装配完成，strategy=" + strategy.localStrategy()
@@ -255,13 +251,12 @@ public final class TwoLevelCacheManager implements AutoCloseable {
         LOG.warn("[{}]-{}-{}", "缓存装配", "声明", name + " 未经 CacheStrategyDecl 声明，按内建默认创建，请补充到声明枚举"
                         + "（未声明 namespace 累计 " + undeclared.size() + " 个）");
         CacheDefinition definition = BuiltinDefaults.definitionOf(name, LocalStrategy.STATIC);
-        CentralCache<Object> central = undeclaredCentralProvider.create(definition.strategy());
-        LocalCache<Object> local = localProvider.create(definition.strategy(), coordinator,
-                central::revisions, definition.strategy().failOpen());
         Cache4j<Object, Object> created = Cache4jImpl.<Object, Object>builder(name)
                 .keyEncoder(keyEncoder)
-                .local(local)
-                .central(central)
+                .strategy(definition.strategy())
+                .localProvider(localProvider)
+                .centralProvider(undeclaredCentralProvider)
+                .hotKeyCoordinator(coordinator)
                 .build();
         synchronized (caches) {
             caches.put(name, created);

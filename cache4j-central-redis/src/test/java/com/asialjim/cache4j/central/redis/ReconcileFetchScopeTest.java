@@ -257,13 +257,38 @@ class ReconcileFetchScopeTest {
         CentralCache<String> central = new RedisCentralCache<>(
                 CacheStrategy.builder(NS).ttl(Duration.ofMinutes(10)).build(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
-        @SuppressWarnings("unchecked")
-        VersionedLocalCache<String> local = (VersionedLocalCache<String>) (VersionedLocalCache)
-                LocalCaches.create(localSpec, null, clock::nanos, central::revisions,
-                        central.cacheStrategy().failOpen());
         return Cache4jImpl.<String, String>builder(NS)
-                .local(local)
-                .central(central)
+                .strategy(localSpec)
+                .nanoClock(clock::nanos)
+                .localProvider(new com.asialjim.cache4j.core.local.LocalCacheProvider() {
+                    @Override
+                    public <V> com.asialjim.cache4j.core.local.LocalCache<V> create(
+                            com.asialjim.cache4j.core.CacheStrategy st,
+                            com.asialjim.cache4j.core.central.HotKeyCoordinator coord,
+                            java.util.function.Function<java.util.Collection<com.asialjim.cache4j.core.CacheKey>,
+                                    java.util.Map<com.asialjim.cache4j.core.CacheKey, Long>> versionReader,
+                            boolean failOpen, java.util.function.LongSupplier nanoClock) {
+                        @SuppressWarnings("unchecked")
+                        com.asialjim.cache4j.core.local.LocalCache<V> created =
+                                (com.asialjim.cache4j.core.local.LocalCache<V>) LocalCaches.create(
+                                        st, coord, nanoClock, versionReader, failOpen);
+                        return created;
+                    }
+                })
+                .centralProvider(new com.asialjim.cache4j.core.central.CentralCacheProvider() {
+                    @Override
+                    public <V> com.asialjim.cache4j.core.central.CentralCache<V> create(
+                            com.asialjim.cache4j.core.CacheStrategy st) {
+                        @SuppressWarnings("unchecked")
+                        com.asialjim.cache4j.core.central.CentralCache<V> c =
+                                (com.asialjim.cache4j.core.central.CentralCache<V>) central;
+                        return c;
+                    }
+
+                    @Override
+                    public void close() {
+                    }
+                })
                 .build();
     }
 

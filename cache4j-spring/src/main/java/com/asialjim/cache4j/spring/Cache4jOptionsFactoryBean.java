@@ -1,10 +1,12 @@
 package com.asialjim.cache4j.spring;
 
+import com.asialjim.cache4j.core.local.LocalCacheProvider;
+
 import com.asialjim.cache4j.core.KeyEncoder;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
-import com.asialjim.cache4j.local.LocalCacheProvider;
+import com.asialjim.cache4j.core.local.LocalCacheProvider;
 import org.springframework.beans.factory.FactoryBean;
 
 import java.util.ArrayList;

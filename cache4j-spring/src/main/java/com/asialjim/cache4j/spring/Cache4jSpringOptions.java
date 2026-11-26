@@ -6,7 +6,7 @@ import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.core.strategy.CacheStrategyRepository;
 import com.asialjim.cache4j.local.HashMapLocalCacheProvider;
-import com.asialjim.cache4j.local.LocalCacheProvider;
+import com.asialjim.cache4j.core.local.LocalCacheProvider;
 
 import java.util.ArrayList;
 import java.util.Arrays;

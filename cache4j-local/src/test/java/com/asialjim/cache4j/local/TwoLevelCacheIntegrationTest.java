@@ -76,11 +76,38 @@ class TwoLevelCacheIntegrationTest {
                                         localNullTtlDivisor), VersionSpec.of(localSpec))
                                 .withCentral(centralSpec.centralTtl(), centralSpec.centralNullTtl(),
                                         centralSpec.failOpen());
-        LocalCache<String> local = LocalCaches.create(strategy, null, clock::nanos,
-                central::revisions, strategy.failOpen());
         return Cache4jImpl.<String, String>builder(NS)
-                .local(local)
-                .central(central)
+                .strategy(strategy)
+                .nanoClock(clock::nanos)
+                .localProvider(new com.asialjim.cache4j.core.local.LocalCacheProvider() {
+                    @Override
+                    public <V> com.asialjim.cache4j.core.local.LocalCache<V> create(
+                            com.asialjim.cache4j.core.CacheStrategy st,
+                            com.asialjim.cache4j.core.central.HotKeyCoordinator coordinator,
+                            java.util.function.Function<java.util.Collection<com.asialjim.cache4j.core.CacheKey>,
+                                    java.util.Map<com.asialjim.cache4j.core.CacheKey, Long>> versionReader,
+                            boolean failOpen, java.util.function.LongSupplier nanoClock) {
+                        @SuppressWarnings("unchecked")
+                        com.asialjim.cache4j.core.local.LocalCache<V> created =
+                                (com.asialjim.cache4j.core.local.LocalCache<V>) LocalCaches.create(
+                                        st, coordinator, nanoClock, versionReader, failOpen);
+                        return created;
+                    }
+                })
+                .centralProvider(new com.asialjim.cache4j.core.central.CentralCacheProvider() {
+                    @Override
+                    public <V> com.asialjim.cache4j.core.central.CentralCache<V> create(
+                            com.asialjim.cache4j.core.CacheStrategy st) {
+                        @SuppressWarnings("unchecked")
+                        com.asialjim.cache4j.core.central.CentralCache<V> c =
+                                (com.asialjim.cache4j.core.central.CentralCache<V>) central;
+                        return c;
+                    }
+
+                    @Override
+                    public void close() {
+                    }
+                })
                 .build();
     }
 

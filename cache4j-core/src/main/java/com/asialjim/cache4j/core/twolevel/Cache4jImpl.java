@@ -67,12 +67,14 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     private Cache4jImpl(Builder<K, V> builder) {
         this.namespace = builder.namespace;
         this.keyEncoder = builder.keyEncoder;
-        this.local = builder.local;
+        this.strategy = builder.strategy;   // 先赋值：下面创建 local/central 都要用它
+        // 中央先建：本地对账需要问中央版本
+        CentralCache<V> rawCentral = builder.centralProvider.create(strategy);
         // failOpen 的降级语义关在中央层里：编排层不需要在每个调用点上 try/catch
-        this.central = builder.central.cacheStrategy().failOpen()
-                ? new FailOpenCentralCache<>(builder.central)
-                : builder.central;
-        this.strategy = local.cacheStrategy();
+        this.central = strategy.failOpen() ? new FailOpenCentralCache<>(rawCentral) : rawCentral;
+        // 本地由策略决定实现（NONE / STATIC / DYNAMIC）——构建方只能给工厂，给不了实例
+        this.local = builder.localProvider.create(strategy, builder.hotKeyCoordinator,
+                central::revisions, strategy.failOpen(), builder.nanoClock);
 
 
         LOG.debug("[{}]-{}-{}", "统一中央缓存", "装配", "namespace=" + namespace
@@ -373,11 +375,12 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     public static final class Builder<K, V> {
 
         private final String namespace;
+        private CacheStrategy strategy;
+        private java.util.function.LongSupplier nanoClock = System::nanoTime;
         private KeyEncoder keyEncoder = com.asialjim.cache4j.core.KeyEncoders.plain();
-        private LocalCache<V> local;
-        private CentralCache<V> central;
-        private LongSupplier nanoClock = System::nanoTime;
-        private LongSupplier milliClock = System::currentTimeMillis;
+        private com.asialjim.cache4j.core.local.LocalCacheProvider localProvider;
+        private com.asialjim.cache4j.core.central.CentralCacheProvider centralProvider;
+        private com.asialjim.cache4j.core.central.HotKeyCoordinator hotKeyCoordinator;
 
         Builder(String namespace) {
             this.namespace = namespace;
@@ -393,20 +396,47 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         }
 
         /**
-         * @param value 本地缓存（含策略与版本配置）
+         * @param value 本地缓存<strong>工厂</strong>；具体实现由策略决定（NONE / STATIC / DYNAMIC）
          * @return this
          */
-        public Builder<K, V> local(LocalCache<V> value) {
-            this.local = value;
+        /**
+         * @param value 完整策略（本地 + 中央）；必需
+         * @return this
+         */
+        public Builder<K, V> strategy(CacheStrategy value) {
+            this.strategy = value;
+            return this;
+        }
+
+        public Builder<K, V> localProvider(com.asialjim.cache4j.core.local.LocalCacheProvider value) {
+            this.localProvider = value;
             return this;
         }
 
         /**
-         * @param value 中央缓存视图
+         * @param value 中央缓存<strong>工厂</strong>
          * @return this
          */
-        public Builder<K, V> central(CentralCache<V> value) {
-            this.central = value;
+        public Builder<K, V> centralProvider(com.asialjim.cache4j.core.central.CentralCacheProvider value) {
+            this.centralProvider = value;
+            return this;
+        }
+
+        /**
+         * @param value 热 key 协调器；{@code DYNAMIC + GLOBAL} 时必填
+         * @return this
+         */
+        /**
+         * @param value 单调时钟（测试注入；默认 {@code System.nanoTime}）
+         * @return this
+         */
+        public Builder<K, V> nanoClock(java.util.function.LongSupplier value) {
+            this.nanoClock = value;
+            return this;
+        }
+
+        public Builder<K, V> hotKeyCoordinator(com.asialjim.cache4j.core.central.HotKeyCoordinator value) {
+            this.hotKeyCoordinator = value;
             return this;
         }
 
@@ -429,20 +459,20 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
          * @return 门面
          */
         public Cache4j<K, V> build() {
-            if (local == null) {
-                throw invalid("local 不能为空（NONE 策略请使用 NoneLocalCache）");
+            if (strategy == null) {
+                throw invalid("strategy 不能为空");
             }
-            if (central == null) {
-                throw invalid("central 不能为空");
+            if (!strategy.namespace().equals(namespace)) {
+                throw invalid("namespace 不一致：builder=" + namespace + ", strategy=" + strategy.namespace());
             }
-            CacheStrategy ns = local.cacheStrategy();
-            if (!ns.namespace().equals(namespace)) {
-                throw invalid("namespace 不一致：builder=" + namespace + ", local=" + ns.namespace());
+            // 本地实现由策略决定：构建方只能给工厂，给不了"错的实例"
+            if (localProvider == null) {
+                throw invalid("localProvider 不能为空");
             }
-            if (!central.cacheStrategy().namespace().equals(namespace)) {
-                throw invalid("namespace 不一致：builder=" + namespace + ", central="
-                        + central.cacheStrategy().namespace());
+            if (centralProvider == null) {
+                throw invalid("centralProvider 不能为空");
             }
+            strategy.validate();
             return new Cache4jImpl<>(this);
         }
 
