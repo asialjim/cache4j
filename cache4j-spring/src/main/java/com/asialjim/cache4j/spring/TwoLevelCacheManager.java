@@ -112,8 +112,11 @@ public final class TwoLevelCacheManager implements AutoCloseable {
             LocalCacheSpec localSpec = definition.local();
             localSpec.validate();
 
-            LocalCache<Object> local = options.localProvider().create(localSpec, coordinator);
+            // 先有中央，再把「版本读取器」交给本地：对账是本地副本的新鲜度问题，
+            // 但本地需要能问中央「这批 key 的权威版本是多少」
             CentralCache<Object> central = options.centralProvider().create(definition.central());
+            LocalCache<Object> local = options.localProvider()
+                    .create(localSpec, coordinator, central::revisions, definition.central().failOpen());
 
             Cache4j<Object, Object> cache = Cache4jImpl.<Object, Object>builder(namespace)
                     .keyEncoder(options.keyEncoder())
@@ -255,8 +258,9 @@ public final class TwoLevelCacheManager implements AutoCloseable {
         LOG.warn("[{}]-{}-{}", "缓存装配", "声明", name + " 未经 CacheStrategyDecl 声明，按内建默认创建，请补充到声明枚举"
                         + "（未声明 namespace 累计 " + undeclared.size() + " 个）");
         CacheDefinition definition = BuiltinDefaults.definitionOf(name, LocalStrategy.STATIC);
-        LocalCache<Object> local = localProvider.create(definition.local(), coordinator);
         CentralCache<Object> central = undeclaredCentralProvider.create(definition.central());
+        LocalCache<Object> local = localProvider.create(definition.local(), coordinator,
+                central::revisions, definition.central().failOpen());
         Cache4j<Object, Object> created = Cache4jImpl.<Object, Object>builder(name)
                 .keyEncoder(keyEncoder)
                 .local(local)

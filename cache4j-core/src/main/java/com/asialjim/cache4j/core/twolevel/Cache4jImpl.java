@@ -87,7 +87,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     /**
      * 分区数（2 的幂）：由 {@code version.reconcilePartitions} 决定；分区号范围 {@code [0, partitions)}。
      */
-    private final Reconciler<V> reconciler;
 
     /**
      * 本地空值副本的除子 N：{@code localNullTtl = min(localTtl, centralNullTtl / N)}。
@@ -123,11 +122,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         this.nanoClock = builder.nanoClock;
         this.milliClock = builder.milliClock;
 
-        this.reconciler = new Reconciler<>(namespace, local, central::revisions, localSpec.version(),
-                centralSpec.failOpen());
         this.localNullTtlDivisor = Math.max(1, builder.localNullTtlDivisor);
-        // 本地条目过期 / 淘汰 / 失效时立即清掉分区号与分区索引，不等下一次对账才发现
-        local.onEntryRemoved(reconciler::forget);
 
         LOG.debug("[{}]-{}-{}", "统一中央缓存", "装配", "namespace=" + namespace
                 + "，strategy=" + localSpec.strategy()
@@ -148,7 +143,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     @Override
     public Lookup<V> lookup(K key) {
         CacheKey cacheKey = encode(key);
-        reconciler.partitionOf(cacheKey);                       // 首次访问即算出并保存分区号
         ReadResult<V> result = read(cacheKey);
         return result.lookup();
     }
@@ -156,7 +150,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     @Override
     public Lookup<V> lookup(K key, CacheLoader<K, V> loader) {
         CacheKey cacheKey = encode(key);
-        reconciler.partitionOf(cacheKey);                       // 与 lookup(K) 保持一致
 
         ReadResult<V> first = read(cacheKey);
         if (first.source() != Source.NONE) {
@@ -195,7 +188,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     @Override
     public void put(K key, V value, Duration ttl) {
         CacheKey cacheKey = encode(key);
-        reconciler.partitionOf(cacheKey);
         if (value == null) {
             writeNegativeOrEvict(cacheKey, ttl);
             return;
@@ -206,7 +198,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     @Override
     public boolean putIfAbsent(K key, V value, Duration ttl) {
         CacheKey cacheKey = encode(key);
-        reconciler.partitionOf(cacheKey);
         Duration effective = ttl != null ? ttl : centralSpec.ttl();
         try {
             Optional<Long> revision = central.putIfAbsentAndGetRevision(cacheKey, value, effective)
@@ -228,7 +219,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     @Override
     public void evict(K key) {
         CacheKey cacheKey = encode(key);
-        reconciler.partitionOf(cacheKey);
         try {
             central.evict(cacheKey);
         } catch (RuntimeException e) {
@@ -238,7 +228,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
             LOG.warn("[{}]-{}-{}", "统一中央缓存", "失效", "中央失效失败，降级清理本地，key="
                     + cacheKey.masked() + "，原因=" + e.getMessage());
         } finally {
-            reconciler.forget(cacheKey);
             local.evict(cacheKey);
         }
     }
@@ -255,7 +244,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
                     + "namespace=" + namespace + "，原因=" + e.getMessage());
         } finally {
             local.clear();
-            reconciler.clear();             // 整批清空由这里统一处理，存储层不逐条回调
         }
     }
 
@@ -304,7 +292,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * @return 读结果
      */
     private ReadResult<V> read(CacheKey cacheKey) {
-        reconciler.maybeReconcile(cacheKey, nanoClock.getAsLong());   // 对账（后续批次下沉到本地层）
 
         Lookup<LocalEntry<V>> localLookup = this.local.lookup(cacheKey);
         if (localLookup instanceof Lookup.Hit<LocalEntry<V>> hit) {
@@ -327,12 +314,10 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
             if (centralSpec.nullCachingEnabled()) {
                 backfill(cacheKey, LocalEntry.negative(centralLookup.revision()));
             } else {
-                reconciler.forget(cacheKey);
                 local.evict(cacheKey);
             }
             return new ReadResult<>(Lookup.negative(), Source.CENTRAL);
         }
-        reconciler.forget(cacheKey);
         local.evict(cacheKey);
         return new ReadResult<>(Lookup.miss(), Source.NONE);
     }
@@ -415,10 +400,8 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         // 条件写入：准入（DYNAMIC 冷 key）与版本比较都在本地实现内部完成
         boolean written = local.putIfNewer(cacheKey, entry, chosen);
         if (written) {
-            reconciler.track(cacheKey);
         } else {
             // 本地不持有副本 → 分区号也不保留，避免无界增长
-            reconciler.forget(cacheKey);
         }
         if (written) {
             String subject = localSubject(localSpec.strategy());
@@ -487,7 +470,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
                 throw e;
             }
         } finally {
-            reconciler.forget(cacheKey);
             local.evict(cacheKey);
         }
     }

@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.test;
 
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.Cache4j;
@@ -30,6 +31,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -182,8 +184,11 @@ class SpringRedisTwoLevelCacheTest {
         assertEquals("n-1", service.find("1"));
 
         assertEquals(1, NONE_LOADS.get(), "loader 只执行一次（第二次命中中央）");
-        // NONE 策略不落本地：本地副本为空
-        assertTrue(twoLevel(NS_NONE).local().keys().isEmpty(), "NONE 不应有本地副本");
+        // NONE 策略不落本地：它的本地实现是 NoneLocalCache，连 keys() 都没有
+        // （keys() 属于 VersionedLocalCache —— NONE 不存副本，也就没有版本簿记）
+        assertFalse(twoLevel(NS_NONE).local() instanceof VersionedLocalCache,
+                "NONE 不应是有版本簿记的本地缓存");
+        assertFalse(twoLevel(NS_NONE).local().available(), "NONE 本地不可用");
     }
 
     // ------------------------------------------------------------------ 辅助

@@ -6,6 +6,7 @@ import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -45,7 +46,7 @@ public abstract class LocalCacheContractTest {
      * @param maxSize 条目上限
      * @return 本地缓存
      */
-    protected abstract LocalCache<String> newCache(long maxSize);
+    protected abstract VersionedLocalCache<String> newCache(long maxSize);
 
     /**
      * 实现名（用于失败信息）。
@@ -64,7 +65,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("写入后可读，条目携带版本")
     void putAndLookup() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         cache.put(key("42"), LocalEntry.hit("u42", 7L), Duration.ofSeconds(10));
 
         LocalEntry<String> entry = cache.entry(key("42"));
@@ -76,7 +77,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("负副本可读回，不会被当成 Miss")
     void negativeEntryIsReadable() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         cache.put(key("404"), LocalEntry.negative(9L), Duration.ofSeconds(10));
 
         assertTrue(cache.entry(key("404")).isNegative(), implementation());
@@ -86,7 +87,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("TTL 到期后不可见")
     void shouldExpire() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         cache.put(key("42"), LocalEntry.hit("u42", 1L), Duration.ofSeconds(1));
 
         clock.advance(Duration.ofMillis(1_500));
@@ -98,7 +99,7 @@ public abstract class LocalCacheContractTest {
     @DisplayName("不超过容量上限（允许分段实现的少量超发）")
     void shouldRespectCapacity() {
         long maxSize = 16L;
-        LocalCache<String> cache = newCache(maxSize);
+        VersionedLocalCache<String> cache = newCache(maxSize);
         for (int i = 0; i < 200; i++) {
             String value = "v" + i;
             cache.put(key(value), LocalEntry.hit(value, i), Duration.ofMinutes(1));
@@ -110,7 +111,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("putIfAbsent 并发只有一个成功")
     void putIfAbsentIsAtomic() throws Exception {
-        LocalCache<String> cache = newCache(1_000);
+        VersionedLocalCache<String> cache = newCache(1_000);
         int threads = 8;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CountDownLatch start = new CountDownLatch(1);
@@ -141,7 +142,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("evict / clear 生效")
     void evictAndClear() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         cache.put(key("a"), LocalEntry.hit("va", 1L), Duration.ofMinutes(1));
         cache.put(key("b"), LocalEntry.hit("vb", 2L), Duration.ofMinutes(1));
 
@@ -155,7 +156,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("keys() 返回当前快照")
     void keysSnapshot() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         cache.put(key("a"), LocalEntry.hit("va", 1L), Duration.ofMinutes(1));
         cache.put(key("b"), LocalEntry.hit("vb", 2L), Duration.ofMinutes(1));
 
@@ -166,7 +167,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("STATIC 的 access 恒为 true（不记频）")
     void accessDoesNotGateStatic() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         assertTrue(cache.access(key("a")), implementation());
         assertTrue(cache.available());
         assertEquals(com.asialjim.cache4j.core.local.LocalStrategy.STATIC, cache.strategy());
@@ -175,14 +176,14 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("STATIC 接受任意 key 的写入（accepts 恒为 true）")
     void acceptsAnyKeyForStatic() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         assertTrue(cache.accepts(key("a")), implementation());
     }
 
     @Test
     @DisplayName("显式失效会通知条目消失")
     void explicitEvictNotifiesRemoval() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         List<CacheKey> removed = new CopyOnWriteArrayList<>();
         cache.onEntryRemoved(removed::add);
 
@@ -196,7 +197,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("TTL 过期会通知条目消失（惰性触发也算）")
     void expiredEntryNotifiesRemoval() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         List<CacheKey> removed = new CopyOnWriteArrayList<>();
         cache.onEntryRemoved(removed::add);
 
@@ -211,7 +212,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("覆盖写不算条目消失，不通知")
     void overwriteDoesNotNotifyRemoval() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         List<CacheKey> removed = new CopyOnWriteArrayList<>();
         cache.onEntryRemoved(removed::add);
 
@@ -224,7 +225,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("putIfNewer：本地已有更新版本时拒绝覆盖，同版本允许刷新")
     void putIfNewerKeepsNewerRevision() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         assertTrue(cache.putIfNewer(key("a"), LocalEntry.hit("v2", 2L), Duration.ofMinutes(1)),
                 implementation());
         assertFalse(cache.putIfNewer(key("a"), LocalEntry.hit("v1", 1L), Duration.ofMinutes(1)),
@@ -239,7 +240,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("peek 是内部读：不递增存储层命中/未命中")
     void peekDoesNotCountStoreStats() {
-        LocalCache<String> cache = newCache(100);
+        VersionedLocalCache<String> cache = newCache(100);
         cache.put(key("a"), LocalEntry.hit("va", 1L), Duration.ofMinutes(1));
 
 
@@ -256,7 +257,8 @@ public abstract class LocalCacheContractTest {
 
         cache.put(key("a"), LocalEntry.hit("va", 1L), Duration.ofMinutes(1));
         assertEquals(Lookup.Miss.class, cache.lookup(key("a")).getClass());
-        assertTrue(cache.keys().isEmpty());
+        // NONE 不在 VersionedLocalCache 层次里：没有 keys()、没有版本表、没有对账——
+        // 它连"持有 key"这个概念都不需要表达
     }
 
     /**

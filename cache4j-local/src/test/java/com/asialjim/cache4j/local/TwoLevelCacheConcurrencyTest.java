@@ -9,6 +9,7 @@ import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.core.Cache4j;
 import org.junit.jupiter.api.DisplayName;
@@ -29,6 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -82,15 +84,16 @@ class TwoLevelCacheConcurrencyTest {
     }
 
     @Test
-    @DisplayName("NONE 策略：访问再多 key 也不保存分区号（无内存泄漏）")
+    @DisplayName("NONE 策略：根本没有对账组件（无本地副本 = 无版本 = 无对账）")
     void noneStrategyDoesNotTrackPartitions() throws Exception {
         Cache4j<String, String> cache = cache("NONE", null);
         for (int i = 0; i < 200; i++) {
             cache.put("k" + i, "v" + i);
             cache.lookup("k" + i);
         }
-        assertTrue(partitionsOf(cache).isEmpty(),
-                "NONE 策略没有本地副本，不该留下任何分区号，实际=" + partitionsOf(cache).size());
+        // NONE 用的 NoneLocalCache 里没有 reconciler：它不存副本，也就不需要「副本是否最新」
+        assertThrows(NoSuchFieldException.class, () -> reconcilerOf(cache),
+                "NONE 策略不该持有对账组件");
     }
 
     @Test
@@ -165,7 +168,7 @@ class TwoLevelCacheConcurrencyTest {
         }
 
         int tracked = indexedKeys(cache);
-        int localSize = cache.local().keys().size();
+        int localSize = ((VersionedLocalCache<?>) cache.local()).keys().size();
         assertTrue(tracked >= localSize,
                 "索引应覆盖全部本地副本：索引=" + tracked + "，本地=" + localSize);
         assertEquals(partitionsOf(cache).size() > 0, tracked > 0 || localSize == 0);
@@ -218,12 +221,23 @@ class TwoLevelCacheConcurrencyTest {
         }
     }
 
+    /**
+     * 取对账组件：它现在住在<strong>本地缓存</strong>里（对账是本地副本的新鲜度问题），
+     * 所以从门面拿 local，再从 local 拿 reconciler。
+     */
+    private static Object reconcilerOf(Cache4j<String, String> cache) throws Exception {
+        Field holder = Cache4jImpl.class.getDeclaredField("local");
+        holder.setAccessible(true);
+        Object local = holder.get(cache);
+        Field field = local.getClass().getDeclaredField("reconciler");
+        field.setAccessible(true);
+        return field.get(local);
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<CacheKey, Integer> partitionsOf(Cache4j<String, String> cache)
             throws Exception {
-        Field holder = Cache4jImpl.class.getDeclaredField("reconciler");
-        holder.setAccessible(true);
-        Object reconciler = holder.get(cache);
+        Object reconciler = reconcilerOf(cache);
         Field field = reconciler.getClass().getDeclaredField("keyPartitions");
         field.setAccessible(true);
         return (Map<CacheKey, Integer>) field.get(reconciler);
@@ -231,10 +245,7 @@ class TwoLevelCacheConcurrencyTest {
 
     @SuppressWarnings("unchecked")
     private static int indexedKeys(Cache4j<String, String> cache) throws Exception {
-        // 分区索引已下沉到 Reconciler：先取 reconciler，再取它的 localPartitions
-        Field holder = Cache4jImpl.class.getDeclaredField("reconciler");
-        holder.setAccessible(true);
-        Object reconciler = holder.get(cache);
+        Object reconciler = reconcilerOf(cache);
         Field field = reconciler.getClass().getDeclaredField("localPartitions");
         field.setAccessible(true);
         Map<Integer, Set<CacheKey>> buckets = (Map<Integer, Set<CacheKey>>) field.get(reconciler);

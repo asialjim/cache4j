@@ -223,7 +223,7 @@ class FileStrategyRepositoryTest {
     private static CacheStrategyCache newCache(
             RedisConnectionFactory connectionFactory, FileStrategyDataSource dataSource) {
         StrategySelfCacheOptions self = StrategySelfCacheOptions.defaults();
-        LocalCache<StoredPolicy> local = new CaffeineLocalCache<>(self.localSpec(), System::nanoTime);
+        LocalCache<StoredPolicy> local = new CaffeineLocalCache<>(self.localSpec(), System::nanoTime, null, false);
         CentralCache<StoredPolicy> central = new RedisCentralCache<>(self.centralSpec(),
                 new SpringRedisValueStore<>(connectionFactory, RedisKeyFormatter.defaults(),
                         new StoredPolicySerializer()));

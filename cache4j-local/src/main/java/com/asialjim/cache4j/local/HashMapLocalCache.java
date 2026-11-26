@@ -6,9 +6,13 @@ import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.StaticLocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
+import com.asialjim.cache4j.core.twolevel.Reconciler;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
+import java.util.function.Function;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -41,7 +45,7 @@ import java.util.function.LongSupplier;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public class HashMapLocalCache<V> implements StaticLocalCache<V> {
+public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocalCache<V> {
 
     private static final int SEGMENTS = 16;
 
@@ -49,6 +53,13 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V> {
     private final Segment<V>[] segments;
     private final int perSegmentCapacity;
     private final LongSupplier nanoClock;
+
+    /**
+     * 版本对账：<strong>本地副本的新鲜度是本地自己的事</strong>，门面不需要知道。
+     *
+     * <p>它只依赖一个"给我这批 key 的权威版本"的函数，因此本地层不依赖任何中央实现。</p>
+     */
+    private final Reconciler<V> reconciler;
 
     /**
      * 条目消失（过期 / 容量淘汰 / 显式失效）时的通知，默认空实现。
@@ -61,7 +72,8 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V> {
      * @param nanoClock 单调时钟
      */
     @SuppressWarnings("unchecked")
-    public HashMapLocalCache(LocalCacheSpec spec, LongSupplier nanoClock) {
+    public HashMapLocalCache(LocalCacheSpec spec, LongSupplier nanoClock,
+                             Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader, boolean failOpen) {
         this.spec = spec;
         this.nanoClock = nanoClock;
         this.perSegmentCapacity = (int) Math.max(1L, (spec.maxSize() + SEGMENTS - 1) / SEGMENTS);
@@ -69,6 +81,9 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V> {
         for (int i = 0; i < SEGMENTS; i++) {
             segments[i] = new Segment<>();
         }
+        this.reconciler = new Reconciler<>(spec.namespace(), this, versionReader, spec.version(), failOpen);
+        // 条目过期 / 淘汰 / 失效时立即清掉分区号与分区索引，不等下一次对账才发现
+        onEntryRemoved(reconciler::forget);
     }
 
     @Override
@@ -115,6 +130,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V> {
     public Lookup<LocalEntry<V>> lookup(CacheKey key) {
         Segment<V> segment = segmentOf(key);
         long now = nanoClock.getAsLong();
+        reconciler.maybeReconcile(key, now);        // 对账搭在读路径上，本地自行决定时机
         boolean expired = false;
         segment.lock.lock();
         try {
@@ -150,6 +166,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V> {
         segment.lock.lock();
         try {
             segment.map.put(key, new TimedEntry<>(value, expireAt));
+            reconciler.track(key);        // 登记对账分区（首次访问即算分区号）
             evicted = trimSegment(segment);
         } finally {
             segment.lock.unlock();
@@ -171,6 +188,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V> {
                 return false;
             }
             segment.map.put(key, new TimedEntry<>(value, expireAt));
+            reconciler.track(key);        // 登记对账分区（首次访问即算分区号）
             evicted = trimSegment(segment);
             return true;
         } finally {
@@ -192,6 +210,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V> {
                 return false;
             }
             segment.map.put(key, new TimedEntry<>(value, expireAt));
+            reconciler.track(key);        // 登记对账分区（首次访问即算分区号）
             evicted = trimSegment(segment);
             return true;
         } finally {
@@ -214,6 +233,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V> {
 
     @Override
     public void clear() {
+        reconciler.clear();
         for (Segment<V> segment : segments) {
             segment.lock.lock();
             try {

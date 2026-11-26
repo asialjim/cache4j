@@ -16,8 +16,10 @@ public final class HashMapLocalCacheProvider implements LocalCacheProvider {
      */
     public static final HashMapLocalCacheProvider INSTANCE = new HashMapLocalCacheProvider();
 
-    @Override
-    public <V> LocalCache<V> create(LocalCacheSpec spec, HotKeyCoordinator coordinator) {
-        return LocalCaches.create(spec, coordinator);
+    public <V> LocalCache<V> create(LocalCacheSpec spec, HotKeyCoordinator coordinator,
+                                    java.util.function.Function<java.util.Collection<com.asialjim.cache4j.core.CacheKey>,
+                                            java.util.Map<com.asialjim.cache4j.core.CacheKey, Long>> versionReader,
+                                    boolean failOpen) {
+        return LocalCaches.create(spec, coordinator, System::nanoTime, versionReader, failOpen);
     }
 }

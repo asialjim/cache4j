@@ -5,6 +5,10 @@ import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 
+import com.asialjim.cache4j.core.CacheKey;
+import java.util.Collection;
+import java.util.Map;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /**
@@ -25,7 +29,7 @@ public final class LocalCaches {
      * @return 本地缓存
      */
     public static <V> LocalCache<V> create(LocalCacheSpec spec) {
-        return create(spec, null, System::nanoTime);
+        return create(spec, null, System::nanoTime, null, false);
     }
 
     /**
@@ -37,7 +41,7 @@ public final class LocalCaches {
      * @return 本地缓存
      */
     public static <V> LocalCache<V> create(LocalCacheSpec spec, HotKeyCoordinator coordinator) {
-        return create(spec, coordinator, System::nanoTime);
+        return create(spec, coordinator, System::nanoTime, null, false);
     }
 
     /**
@@ -51,10 +55,27 @@ public final class LocalCaches {
      */
     public static <V> LocalCache<V> create(LocalCacheSpec spec, HotKeyCoordinator coordinator,
                                           LongSupplier nanoClock) {
+        return create(spec, coordinator, nanoClock, null, false);
+    }
+
+    /**
+     * 按配置创建本地缓存，并注入中央版本读取器（对账用）。
+     *
+     * @param spec          配置
+     * @param coordinator   热 key 协调器
+     * @param nanoClock     单调时钟
+     * @param versionReader 中央版本读取器；{@code null} 表示不对账
+     * @param failOpen      中央不可用时是否放行
+     * @param <V>           值类型
+     * @return 本地缓存
+     */
+    public static <V> LocalCache<V> create(LocalCacheSpec spec, HotKeyCoordinator coordinator,
+                                          LongSupplier nanoClock,
+                                          Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader, boolean failOpen) {
         spec.validate();
         return switch (spec.strategy()) {
             case NONE -> new NoneLocalCache<>(spec);
-            case STATIC -> new HashMapLocalCache<>(spec, nanoClock);
+            case STATIC -> new HashMapLocalCache<>(spec, nanoClock, versionReader, failOpen);
             case DYNAMIC -> {
                 if (spec.dynamic().coordination() == LocalCacheSpec.Coordination.GLOBAL
                         && coordinator == null) {
@@ -62,7 +83,7 @@ public final class LocalCaches {
                             com.asialjim.cache4j.core.CacheResCode.INVALID_SPEC,
                             "coordination=GLOBAL 必须提供 HotKeyCoordinator，不静默退化为单节点模式");
                 }
-                yield new HashMapDynamicLocalCache<>(spec, coordinator, nanoClock);
+                yield new HashMapDynamicLocalCache<>(spec, coordinator, nanoClock, versionReader, failOpen);
             }
         };
     }

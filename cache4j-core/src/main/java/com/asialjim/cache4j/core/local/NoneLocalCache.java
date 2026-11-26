@@ -5,7 +5,6 @@ import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 
 import java.time.Duration;
-import java.util.Set;
 
 /**
  * {@code NONE} 策略的本地缓存。
@@ -60,11 +59,6 @@ public record NoneLocalCache<V>(LocalCacheSpec spec) implements LocalCache<V> {
     @Override
     public boolean containsKey(CacheKey key) {
         return false;
-    }
-
-    @Override
-    public Set<CacheKey> keys() {
-        return Set.of();
     }
 
     @Override

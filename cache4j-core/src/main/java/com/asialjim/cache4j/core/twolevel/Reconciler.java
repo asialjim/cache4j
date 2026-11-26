@@ -3,7 +3,7 @@ package com.asialjim.cache4j.core.twolevel;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.LocalEntry;
-import com.asialjim.cache4j.core.local.LocalCache;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,7 +47,7 @@ public final class Reconciler<V> {
 
     private final String namespace;
 
-    private final LocalCache<V> local;
+    private final VersionedLocalCache<V> local;
 
     /**
      * 中央版本读取器：<strong>本地层不需要知道"中央"是什么</strong>，只需要"给我这批 key 的权威版本"。
@@ -86,7 +86,7 @@ public final class Reconciler<V> {
      * @param version       版本对账配置；{@code null} 表示不对账
      * @param failOpen      中央不可用时是否放行
      */
-    public Reconciler(String namespace, LocalCache<V> local,
+    public Reconciler(String namespace, VersionedLocalCache<V> local,
                       Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader,
                       LocalCacheSpec.VersionSpec version, boolean failOpen) {
         this.namespace = namespace;
@@ -157,7 +157,8 @@ public final class Reconciler<V> {
      * @param now         当前纳秒
      */
     public void maybeReconcile(CacheKey accessedKey, long now) {
-        if (version == null) {
+        if (version == null || versionReader == null) {
+            // 没有对账配置，或没有注入"中央版本读取器"（本地独立使用）→ 不做对账
             return;
         }
         long next = nextCheckAtNanos;

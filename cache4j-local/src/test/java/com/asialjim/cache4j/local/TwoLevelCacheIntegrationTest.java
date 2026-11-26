@@ -10,6 +10,7 @@ import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.Cache4j;
 import org.junit.jupiter.api.DisplayName;
@@ -53,7 +54,9 @@ class TwoLevelCacheIntegrationTest {
 
     private Cache4j<String, String> build(LocalCacheSpec localSpec, CentralCache<String> central,
                                                  int localNullTtlDivisor) {
-        LocalCache<String> local = LocalCaches.create(localSpec, null, clock::nanos);
+        // 先有中央，再把「版本读取器」交给本地——对账是本地自己的事，但它需要问中央版本
+        LocalCache<String> local = LocalCaches.create(localSpec, null, clock::nanos,
+                central::revisions, central.spec().failOpen());
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)
@@ -154,7 +157,7 @@ class TwoLevelCacheIntegrationTest {
 
         clock.advance(Duration.ofMillis(200));
         assertTrue(cache.lookup("42").isMiss());
-        assertTrue(cache.local().keys().isEmpty());
+        assertTrue(((VersionedLocalCache<?>) cache.local()).keys().isEmpty());
     }
 
     // ------------------------------------------------------------------ 空值缓存

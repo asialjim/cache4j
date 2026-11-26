@@ -7,6 +7,7 @@ import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -78,9 +79,10 @@ class HashMapDynamicLocalCacheTest {
                 d.hotReportBatchMax(), d.candidateCapacity());
     }
 
-    private LocalCache<String> dynamic(LocalCacheSpec.DynamicSpec dynamic, HotKeyCoordinator coordinator) {
+    @SuppressWarnings("unchecked")
+    private VersionedLocalCache<String> dynamic(LocalCacheSpec.DynamicSpec dynamic, HotKeyCoordinator coordinator) {
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
-        return LocalCaches.create(spec, coordinator, clock::nanos);
+        return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec, coordinator, clock::nanos);
     }
 
     private HotKeyCoordinator stub() {
@@ -108,7 +110,7 @@ class HashMapDynamicLocalCacheTest {
     @Test
     @DisplayName("本地频次达到阈值立即升热，写入被接受")
     void localPromotionAcceptsPut() {
-        LocalCache<String> cache = dynamic(lowThreshold(), null);
+        VersionedLocalCache<String> cache = dynamic(lowThreshold(), null);
         CacheKey key = key("hot");
 
         cache.put(key, LocalEntry.hit("v", 1L), Duration.ofSeconds(10));
@@ -124,7 +126,7 @@ class HashMapDynamicLocalCacheTest {
     @Test
     @DisplayName("accepts：只有已升热的 key 才会被本地接受写入")
     void acceptsOnlyHotKeys() {
-        LocalCache<String> cache = dynamic(lowThreshold(), null);
+        VersionedLocalCache<String> cache = dynamic(lowThreshold(), null);
         CacheKey hot = key("hot");
 
         assertFalse(cache.accepts(hot), "冷 key 不应被接受");
@@ -137,7 +139,7 @@ class HashMapDynamicLocalCacheTest {
     @Test
     @DisplayName("未达阈值的 key 不落本地")
     void coldKeysStayOut() {
-        LocalCache<String> cache = dynamic(highThreshold(), null);
+        VersionedLocalCache<String> cache = dynamic(highThreshold(), null);
         for (int i = 0; i < 4; i++) {
             assertFalse(cache.access(key("cold")));
         }
@@ -154,7 +156,7 @@ class HashMapDynamicLocalCacheTest {
                 200, 50, Duration.ofSeconds(10), 16, 1_000, Duration.ofSeconds(1),
                 Duration.ofSeconds(30), LocalCacheSpec.Coordination.GLOBAL, global,
                 12, 4, 16, 16, 1_000);
-        LocalCache<String> cache = dynamic(dynamic, stub());
+        VersionedLocalCache<String> cache = dynamic(dynamic, stub());
 
         // 候选阈值 = ceil(globalHotQps / clientEstimate)，被 hotThresholdQps-1 夹住
         // 前 100 次由 CMS 粗筛（达到候选阈值）后才建立精确窗口；窗口从建表时刻开始计数，
@@ -167,7 +169,7 @@ class HashMapDynamicLocalCacheTest {
     @Test
     @DisplayName("LOCAL 模式不维护候选桶")
     void localModeHasNoCandidates() {
-        LocalCache<String> cache = dynamic(lowThreshold(), null);
+        VersionedLocalCache<String> cache = dynamic(lowThreshold(), null);
         for (int i = 0; i < 4; i++) {
             cache.access(key("warm"));
         }
@@ -178,7 +180,7 @@ class HashMapDynamicLocalCacheTest {
     void hotSyncReportsWholePartition() {
         LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
         LocalCacheSpec.DynamicSpec dynamic = globalThreshold(global);
-        LocalCache<String> cache = dynamic(dynamic, stub());
+        VersionedLocalCache<String> cache = dynamic(dynamic, stub());
 
         // 先把三个 key 升热
         for (int i = 0; i < 6; i++) {
@@ -202,7 +204,7 @@ class HashMapDynamicLocalCacheTest {
     void demotionStartsCooldown() {
         LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
         LocalCacheSpec.DynamicSpec dynamic = globalThreshold(global);
-        LocalCache<String> cache = dynamic(dynamic, stub());
+        VersionedLocalCache<String> cache = dynamic(dynamic, stub());
         CacheKey key = key("a");
 
         for (int i = 0; i < 6; i++) {

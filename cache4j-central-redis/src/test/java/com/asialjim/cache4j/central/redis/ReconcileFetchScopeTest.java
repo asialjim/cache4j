@@ -7,6 +7,7 @@ import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.local.LocalCaches;
 import org.junit.jupiter.api.DisplayName;
@@ -38,7 +39,7 @@ class ReconcileFetchScopeTest {
 
         cache.put("a", "va");
         cache.put("b", "vb");
-        assertEquals(2, cache.local().keys().size());
+        assertEquals(2, ((VersionedLocalCache<?>) cache.local()).keys().size());
 
         cache.lookup("a");                       // 只设检查点
         assertEquals(0, store.revisionsCalls(), "首次访问只设点，不应对账");
@@ -63,7 +64,7 @@ class ReconcileFetchScopeTest {
         String other = pair[1];
         cache.put(visitor, "v-" + visitor);
         cache.put(other, "v-" + other);
-        assertEquals(2, cache.local().keys().size());
+        assertEquals(2, ((VersionedLocalCache<?>) cache.local()).keys().size());
 
         cache.lookup(visitor);
         clock.advance(Duration.ofMillis(200));
@@ -85,7 +86,7 @@ class ReconcileFetchScopeTest {
             cache.put("k" + i, "v" + i);
         }
         // 本地 maxSize=100 且分段实现会略超发/淘汰，取实际条目数做基准
-        int localSize = cache.local().keys().size();
+        int localSize = ((VersionedLocalCache<?>) cache.local()).keys().size();
         assertTrue(localSize > 50, "本地应装入相当数量的条目，实际=" + localSize);
 
         cache.lookup("k0");
@@ -112,7 +113,7 @@ class ReconcileFetchScopeTest {
         for (String id : new String[]{"a", "b", "c", "d", "e"}) {
             cache.put(id, "v" + id);
         }
-        assertEquals(5, cache.local().keys().size());
+        assertEquals(5, ((VersionedLocalCache<?>) cache.local()).keys().size());
 
         cache.lookup("a");
         clock.advance(Duration.ofMillis(200));
@@ -187,14 +188,14 @@ class ReconcileFetchScopeTest {
 
         cache.put("a", "va");
         cache.put("b", "vb");
-        assertEquals(2, cache.local().keys().size());
+        assertEquals(2, ((VersionedLocalCache<?>) cache.local()).keys().size());
 
         cache.lookup("a");                          // 设检查点
         clock.advance(Duration.ofMillis(200));
 
         // 让本地副本自然过期（索引里暂时还留着这两个 key）
         clock.advance(Duration.ofSeconds(2));
-        assertEquals(0, cache.local().keys().size(), "本地副本应已过期");
+        assertEquals(0, ((VersionedLocalCache<?>) cache.local()).keys().size(), "本地副本应已过期");
 
         store.resetCounters();
         cache.lookup("a");                          // 第一次对账：顺手剔除幽灵条目
@@ -251,10 +252,13 @@ class ReconcileFetchScopeTest {
         LocalCacheSpec localSpec = LocalCacheSpec.staticCache(NS, maxSize, localTtl,
                 new LocalCacheSpec.VersionSpec(
                         Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), batchSize, partitions));
-        LocalCache<String> local = LocalCaches.create(localSpec, null, clock::nanos);
         CentralCache<String> central = new RedisCentralCache<>(
                 CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
+        @SuppressWarnings("unchecked")
+        VersionedLocalCache<String> local = (VersionedLocalCache<String>) (VersionedLocalCache)
+                LocalCaches.create(localSpec, null, clock::nanos, central::revisions,
+                        central.spec().failOpen());
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)
@@ -298,7 +302,7 @@ class ReconcileFetchScopeTest {
                                           int partitions) {
         int wanted = HashPartitions.of(new CacheKey(NS, visitor),
                 partitions);
-        return cache.local().keys().stream()
+        return ((VersionedLocalCache<?>) cache.local()).keys().stream()
                 .filter(key -> HashPartitions.of(key, partitions) == wanted)
                 .count();
     }

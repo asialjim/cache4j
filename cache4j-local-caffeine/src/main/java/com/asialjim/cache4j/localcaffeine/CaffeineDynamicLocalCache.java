@@ -13,6 +13,9 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.Set;
+import java.util.Collection;
+import java.util.Map;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /**
@@ -31,8 +34,9 @@ public final class CaffeineDynamicLocalCache<V> extends CaffeineLocalCache<V> im
 
     private final HotKeyAdmission admission;
 
-    CaffeineDynamicLocalCache(LocalCacheSpec spec, HotKeyCoordinator coordinator, LongSupplier nanoClock) {
-        super(spec, nanoClock);
+    CaffeineDynamicLocalCache(LocalCacheSpec spec, HotKeyCoordinator coordinator, LongSupplier nanoClock,
+                             Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader, boolean failOpen) {
+        super(spec, nanoClock, versionReader, failOpen);
         this.admission = new HotKeyAdmission(spec, coordinator, nanoClock, this::evict);
     }
 

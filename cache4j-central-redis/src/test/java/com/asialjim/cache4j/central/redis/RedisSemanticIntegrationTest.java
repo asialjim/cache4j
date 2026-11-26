@@ -7,6 +7,7 @@ import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.local.LocalCaches;
 import org.junit.jupiter.api.DisplayName;
@@ -47,10 +48,11 @@ class RedisSemanticIntegrationTest {
     private Cache4j<String, String> node(InMemoryValueStore<Object> store,
                                                LocalCacheSpec spec,
                                                HotKeyCoordinator coordinator) {
-        LocalCache<String> local = LocalCaches.create(spec, coordinator, clock::nanos);
         CentralCache<String> central = new RedisCentralCache<>(
                 CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
+        LocalCache<String> local = LocalCaches.create(spec, coordinator, clock::nanos,
+                central::revisions, central.spec().failOpen());
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)
@@ -138,7 +140,7 @@ class RedisSemanticIntegrationTest {
         clock.advance(Duration.ofSeconds(2));
         nodeA.lookup("42");
 
-        assertTrue(nodeA.local().keys().stream().anyMatch(k -> "42".equals(k.encoded())),
+        assertTrue(((VersionedLocalCache<?>) nodeA.local()).keys().stream().anyMatch(k -> "42".equals(k.encoded())),
                 "本地应升热（该 key 进入本地副本）");
     }
 

@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.test;
 
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.spring.TwoLevelCacheManager;
 import org.junit.jupiter.api.AfterEach;
@@ -145,7 +146,7 @@ class DynamicHotKeyRedisTest {
      * @return 本地副本数
      */
     private long hotKeyCount() {
-        return cache.local().keys().size();
+        return ((VersionedLocalCache<?>) cache.local()).keys().size();
     }
 
     private void awaitTrue(BooleanSupplier condition, String message) throws InterruptedException {

@@ -1,6 +1,8 @@
 package com.asialjim.cache4j.test;
 
+import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.LocalStrategy;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.strategy.CacheNamespace;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDecl;
 import com.asialjim.cache4j.spring.Cache4jAutoScanConfiguration;
@@ -216,8 +218,12 @@ class DeclarationDrivenRedisTest {
 
     private boolean localHasKey(String namespace) {
         TwoLevelCacheManager manager = context.getBean(TwoLevelCacheManager.class);
-        return manager.cache(namespace).orElseThrow().local().keys().stream()
-                .anyMatch(key -> namespace.equals(key.namespace()));
+        LocalCache<?> local = manager.cache(namespace).orElseThrow().local();
+        // NONE 的本地实现没有 keys()（版本簿记属于 VersionedLocalCache），它本来就不持有副本
+        if (!(local instanceof VersionedLocalCache<?> versioned)) {
+            return false;
+        }
+        return versioned.keys().stream().anyMatch(key -> namespace.equals(key.namespace()));
     }
 
     private String rawValue(String namespace, String encoded) {

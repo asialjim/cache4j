@@ -6,6 +6,8 @@ import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.StaticLocalCache;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.twolevel.Reconciler;
+import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Expiry;
@@ -13,6 +15,9 @@ import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Ticker;
 
 import java.time.Duration;
+import java.util.function.Function;
+import java.util.Map;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -40,7 +45,7 @@ import java.util.function.LongSupplier;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public class CaffeineLocalCache<V> implements StaticLocalCache<V> {
+public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLocalCache<V> {
 
     /**
      * 永不过期的 TTL 表达（Caffeine 用纳秒计时）。
@@ -49,6 +54,16 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V> {
 
     private final LocalCacheSpec spec;
     private final com.github.benmanes.caffeine.cache.Cache<CacheKey, TimedEntry<V>> cache;
+
+    /**
+     * 单调时钟（对账的时间信号量用它）。
+     */
+    private final LongSupplier nanoClock;
+
+    /**
+     * 版本对账：本地副本的新鲜度是本地自己的事，门面不需要知道。
+     */
+    private final Reconciler<V> reconciler;
 
     /**
      * 条目消失（过期 / 容量淘汰 / 显式失效）时的通知，默认空实现。
@@ -60,8 +75,10 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V> {
      * @param spec      配置
      * @param nanoClock 单调时钟（同时作为 Caffeine 的 ticker，便于测试注入）
      */
-    public CaffeineLocalCache(LocalCacheSpec spec, LongSupplier nanoClock) {
+    public CaffeineLocalCache(LocalCacheSpec spec, LongSupplier nanoClock,
+                             Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader, boolean failOpen) {
         this.spec = spec;
+        this.nanoClock = nanoClock;
         Ticker ticker = nanoClock::getAsLong;
         this.cache = Caffeine.newBuilder()
                 .maximumSize(spec.maxSize())
@@ -95,6 +112,9 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V> {
                 .executor(Runnable::run)
                 .recordStats()
                 .build();
+        this.reconciler = new Reconciler<>(spec.namespace(), this, versionReader, spec.version(), failOpen);
+        // 条目过期 / 淘汰 / 失效时立即清掉分区号与分区索引，不等下一次对账才发现
+        onEntryRemoved(reconciler::forget);
     }
 
     @Override
@@ -120,6 +140,7 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V> {
 
     @Override
     public Lookup<LocalEntry<V>> lookup(CacheKey key) {
+        reconciler.maybeReconcile(key, nanoClock.getAsLong());   // 对账搭在读路径上
         TimedEntry<V> timed = cache.getIfPresent(key);
         if (timed == null) {
             return Lookup.miss();
@@ -135,6 +156,7 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V> {
     @Override
     public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
         cache.put(key, new TimedEntry<>(value, toNanos(ttl)));
+        reconciler.track(key);        // 登记对账分区
     }
 
     @Override
@@ -148,6 +170,7 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V> {
             return new TimedEntry<>(value, toNanos(ttl));
         });
         if (written.get()) {
+            reconciler.track(key);    // 登记对账分区
         }
         return written.get();
     }
@@ -168,6 +191,7 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V> {
 
     @Override
     public void clear() {
+        reconciler.clear();
         cache.invalidateAll();
     }
 

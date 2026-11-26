@@ -17,8 +17,10 @@ public final class CaffeineLocalCacheProvider implements LocalCacheProvider {
      */
     public static final CaffeineLocalCacheProvider INSTANCE = new CaffeineLocalCacheProvider();
 
-    @Override
-    public <V> LocalCache<V> create(LocalCacheSpec spec, HotKeyCoordinator coordinator) {
-        return CaffeineLocalCaches.create(spec, coordinator);
+    public <V> LocalCache<V> create(LocalCacheSpec spec, HotKeyCoordinator coordinator,
+                                    java.util.function.Function<java.util.Collection<com.asialjim.cache4j.core.CacheKey>,
+                                            java.util.Map<com.asialjim.cache4j.core.CacheKey, Long>> versionReader,
+                                    boolean failOpen) {
+        return CaffeineLocalCaches.create(spec, coordinator, System::nanoTime, versionReader, failOpen);
     }
 }

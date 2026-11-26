@@ -12,6 +12,9 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.Set;
+import java.util.Collection;
+import java.util.Map;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /**
@@ -33,8 +36,9 @@ public final class HashMapDynamicLocalCache<V> extends HashMapLocalCache<V> impl
 
     private final HotKeyAdmission admission;
 
-    HashMapDynamicLocalCache(LocalCacheSpec spec, HotKeyCoordinator coordinator, LongSupplier nanoClock) {
-        super(spec, nanoClock);
+    HashMapDynamicLocalCache(LocalCacheSpec spec, HotKeyCoordinator coordinator, LongSupplier nanoClock,
+                             Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader, boolean failOpen) {
+        super(spec, nanoClock, versionReader, failOpen);
         this.admission = new HotKeyAdmission(spec, coordinator, nanoClock, this::evict);
     }
 
