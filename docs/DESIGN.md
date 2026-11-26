@@ -97,7 +97,7 @@ standard4j ← cache4j-core ← cache4j-local ← cache4j-local-caffeine
 
 - `cache4j-core` 定义通用契约 `Cache4j` / `Lookup` / `CacheKey`，`LocalCache` / `CentralCache` 接口、两个 Spec、`CentralCacheProvider`、`HotKeyCoordinator`，以及 `Cache4j` **接口** + `Cache4jImpl` 默认编排实现；它不依赖任何实现模块，业务可用自己的门面实现替换默认编排。
 - `cache4j-local` 与 `cache4j-central` **同级**，各自只依赖 `cache4j-core`，互不依赖；`cache4j-local-*` 依赖 `cache4j-local`，`cache4j-central-*` 依赖 `cache4j-central`，父子模块同级排列，不做聚合 `pom`。
-- `cache4j-central` 定义中央缓存 SPI：`CentralCache`、`CentralCacheSpec`、`CentralCacheProvider`、`HotKeyCoordinator`；附带的内存实现仅用于测试与单机，不作为生产存储。
+- `cache4j-central` 定义中央缓存 SPI：`CentralCache`、`CacheStrategy`、`CentralCacheProvider`、`HotKeyCoordinator`；附带的内存实现仅用于测试与单机，不作为生产存储。
 - `cache4j-central-redis` 定义 **Redis 语义层 + 泛型下行 SPI**：`RedisValueStore<V>`（泛型，无字节）、`RedisCentralCache<V>`、`RedisHotKeyCoordinator`、`RedisAccessException`；不依赖任何 Redis 客户端（Jedis / Lettuce / Redisson），也不依赖 Spring，更不关心序列化。
 - `cache4j-spring-redis` 是**真正与 Redis 发生 I/O 的模块**：用 `RedisConnectionFactory` 实现 `RedisValueStore<V>`，并自己负责 key 布局、Lua 与 serializer；底层用 Jedis、Lettuce 还是其他客户端，由用户在 Spring 侧选择。
 - `cache4j-spring` 只做 Spring Cache / Boot 装配，不直接接 Redis；`cache4j-spring-redis` 只做 Redis 连接适配。
@@ -126,7 +126,7 @@ Redis 方向的三层 SPI：
 
 边界说明：
 
-- `cache4j-core` 里有 `LocalCache`、`CentralCache`、`LocalCacheSpec`、`CentralCacheSpec`、`HotKeyCoordinator`、`Cache4j`，但**没有** Caffeine、HashMap 分段 LRU、Redis 命令、值格式实现；
+- `cache4j-core` 里有 `LocalCache`、`CentralCache`、`CacheStrategy`、`CacheStrategy`、`HotKeyCoordinator`、`Cache4j`，但**没有** Caffeine、HashMap 分段 LRU、Redis 命令、值格式实现；
 - `cache4j-core` 不认识任何具体实现类型，只面向接口；
 - 门面需要"同时看到两层"，但看到的是**接口**，不是实现模块，因此没有反向依赖；
 - `cache4j-local` / `cache4j-central` 只回答"本地/中央怎么存"，不回答"两层怎么配合"。
@@ -184,6 +184,7 @@ Redis 方向的三层 SPI：
 | 本地（有热 key） | `StaticLocalCache<V>` / `DynamicLocalCache<V>` | `HashMapDynamicLocalCache` / `CaffeineDynamicLocalCache` | DYNAMIC = STATIC + 准入（继承自对应存储实现） |
 | 中央 | `CentralCache<V>` | `InMemoryCentralCache` / `RedisCentralCache` | 版本产生、负缓存、TTL 抖动 |
 | 门面 | — | **`Cache4jImpl<K,V>`** | **只做编排**：本地查不到就查中央。持有 `SingleFlight` |
+| 配置 | `CacheStrategy`（不可变 record） | — | **运行期唯一配置类型**，三层共享同一实例；`VersionSpec` / `DynamicSpec` / `GlobalSpec` 只是构造参数分组 |
 
 > **能力按需分层，不是三个策略的并集。** `NONE` 停在 `LocalCache` 上——它不存值，也就没有
 > 版本、没有副本可对账、没有热 key 可言。`keys()` / `onEntryRemoved()` 因此不属于交集。
@@ -968,7 +969,7 @@ void evict(K key) {
 
 | 位置 | 规则 |
 |---|---|
-| 中央 TTL | 必须为正；`null` 表示使用 `CentralCacheSpec.ttl()`；`Duration.ZERO` 仅在 `allowNoExpiry=true` 时表示永不过期，默认拒绝 |
+| 中央 TTL | 必须为正；`null` 表示使用 `CacheStrategy.ttl()`；`Duration.ZERO` 仅在 `allowNoExpiry=true` 时表示永不过期，默认拒绝 |
 | 本地 STATIC TTL | 必须为正；不允许"永不过期"（本地是副本，必须有兜底过期） |
 | 本地 DYNAMIC TTL | 必须为正；实际 TTL = `min(localTtl, hotTtl, 中央 TTL)` |
 | 负缓存 TTL | `nullTtl >= 0`；0 表示关闭 |
@@ -1187,7 +1188,7 @@ _c4j:{ns}:__hot:meta           HASH   key -> {active, hot, lowSince}
 ### 6.1 构建入口（设计稿）
 
 ```java
-LocalCacheSpec localSpec = LocalCacheSpec.staticCache(
+CacheStrategy localSpec = CacheStrategy.staticCache(
         "user:detail", 10_000, Duration.ofMinutes(30),
         VersionSpec.builder()
                 .checkInterval(Duration.ofSeconds(1))   // 命名空间级对账间隔
@@ -1201,7 +1202,7 @@ Cache4j<String, User> cache = Cache4j.<String, User>builder("user:detail")
         .localStrategy(LocalStrategy.STATIC)
         .local(LocalCaches.caffeine(localSpec))
         .central(redisProvider.create(
-                CentralCacheSpec.builder("user:detail")
+                CacheStrategy.builder("user:detail")
                         .ttl(Duration.ofMinutes(60))
                         .nullTtl(Duration.ofSeconds(30))
                         .failOpen(true)
@@ -1211,7 +1212,7 @@ Cache4j<String, User> cache = Cache4j.<String, User>builder("user:detail")
         .build();
 ```
 
-> 说明：`LocalCacheSpec` / `CentralCacheSpec` 的具体字段见 LOCAL / CENTRAL 文档。**版本参数只存在于 `LocalCacheSpec.version`**，`Cache4j` builder 不重复接收；编排层从本地 spec 读取 `VersionSpec` 并维护命名空间级信号量。`checkInterval` 是**整个命名空间的最大不一致窗口**，不是后台调度周期。
+> 说明：`CacheStrategy` / `CacheStrategy` 的具体字段见 LOCAL / CENTRAL 文档。**版本参数只存在于 `CacheStrategy.version`**，`Cache4j` builder 不重复接收；编排层从本地 spec 读取 `VersionSpec` 并维护命名空间级信号量。`checkInterval` 是**整个命名空间的最大不一致窗口**，不是后台调度周期。
 
 ### 6.2 配置校验（启动即失败）
 
@@ -1590,7 +1591,7 @@ key 可能包含手机号、证件号等敏感信息；日志中只打印 `Cache
 17. ~~指标分层~~（**已结案**）：按审计/控制/诊断三层分组，只有门面记审计层；四格拆分（含 `localNegativeHitCount` / `centralNegativeHitCount`）；派生量改为 `protectionRate` / `localProtectionRate` / `centralProtectionRate` / `valueHitRate` / `negativeRatio` / `nullLoadRatio`；新增 `sourceNullCount` 量化穿透；记账锚点前移修掉单飞重复计数；两条审计禁忌写入 §7.1。
 18. ~~`DYNAMIC` 的 `put` 对冷 key 静默丢弃~~（**已结案，记 D23**）：**设计如此，非缺陷**。hotkey 统计的是读频次（目的是减少 L2 读），写不产生频次、也无法保护 L2，所以冷 key 的写没资格占本地内存；`dynamicPutDiscarded` 是这个代价的可观测项。需要 read-your-write 请用 `STATIC`。
 19. ~~冷却集合清理依赖 `maintain()`~~（**已结案**）：改为 `access` 路径上读时惰性删 + 每 1024 次摊销清扫一条；**不引入中央侧 `demotedAt`**（补偿升热侧的振荡靠滞回带宽度调，不加参数）；`cooldown >= demoteWindows × global.window` 入启动校验。
-20. ~~`CentralCacheSpec.timeout` 是死配置~~（**已结案**）：字段已删除。`cache4j-central` 不持有连接，没有执行超时的位置；超时归客户端 —— Spring 用 `spring.data.redis.timeout`，自实现 `RedisValueStore` 的用户自定；本库只给"200–500ms 快速失败"的建议，不留占位字段。
+20. ~~`CacheStrategy.timeout` 是死配置~~（**已结案**）：字段已删除。`cache4j-central` 不持有连接，没有执行超时的位置；超时归客户端 —— Spring 用 `spring.data.redis.timeout`，自实现 `RedisValueStore` 的用户自定；本库只给"200–500ms 快速失败"的建议，不留占位字段。
 21. ~~大命名空间的自适应~~（**已结案**）：改用**分区对账**（`version.reconcilePartitions`，默认 16）——
     一次对账只覆盖当前访问 key 所属的分区，载荷降为 `本地条目数 / N`，且不拉长失效上界
     （任何 key 被读时必在自己的分区里）。剩余可选：`reconcilePartitions` 是否需要按 `maxSize` 自适应。

@@ -22,7 +22,7 @@
 
 ## 1. 中央缓存 SPI（通用契约在 `cache4j-core`，中央侧在 `cache4j-central`）
 
-`Cache`、`Lookup`、`CacheKey` 是 core 的通用契约（**编解码不在其中**，归适配层）；`CentralCache`、`CentralCacheSpec`、`CentralCacheProvider` 是中央侧 SPI（接口由 core 暴露），由 `cache4j-central` 负责实现与装配。中央侧 SPI 不认识 Redis，也不认识任何 Redis 客户端。
+`Cache4j`、`Lookup`、`CacheKey`、`CacheStrategy` 是 core 的通用契约（**编解码不在其中**，归适配层）；`CentralCache`、`CentralCacheProvider` 是中央侧 SPI（接口由 core 暴露），由 `cache4j-central` 负责实现与装配。中央侧 SPI 不认识 Redis，也不认识任何 Redis 客户端。
 
 ### 1.1 契约
 
@@ -67,7 +67,8 @@ public interface CentralCache<V> extends Cache<CacheKey, V> {
     /** 轻量探活；不抛异常，失败返回 false */
     boolean ping();
 
-    CentralCacheSpec spec();
+    /** 本 namespace 的完整策略（本地 + 中央，三层共享同一实例） */
+    CacheStrategy cacheStrategy();
 }
 ```
 
@@ -82,7 +83,7 @@ public record RevAndExpire(long revision, long expireAtMillis) {}
 
 - `CentralCache` 继承的 `put` / `putIfAbsent` / `evict` / `clear` **必须**复用带版本的方法（`putAndGetRevision` 等）并在内部丢弃返回值；不存在"只写值、不更新版本"的中央写路径。
 - 中央缓存实现**不吞异常**：连接失败、命令失败、超时都抛 `CacheException`（`CENTRAL_UNAVAILABLE` / `CENTRAL_TIMEOUT`）。`failOpen` 是编排层（`cache4j-core` 的 `Cache4j`）的策略，不是存储层策略。
-- `CentralCacheSpec.failOpen` 只是"该缓存名的默认降级策略"，由编排层读取；单独使用 `CentralCache` 时始终按严格模式处理。
+- `CacheStrategy.failOpen` 只是"该缓存名的默认降级策略"，由 `FailOpenCentralCache` 装饰器读取；单独使用 `CentralCache` 时始终按严格模式处理（装饰器按 failOpen 决定是否装配）。
 - **版本更新必须与写操作原子完成**：Redis 用 Lua 把 `SET data` 与 `HSET __rev field` 放在一个脚本里；内存实现用锁。
 - 写操作返回的新版本是本地更新的依据；实现不得返回旧版本，也不得在写失败时更新版本。
 - `putIfAbsent` 未写入时不更新版本；写入成功才更新。
@@ -91,16 +92,17 @@ public record RevAndExpire(long revision, long expireAtMillis) {}
 - `close` 只关闭该视图持有的资源；provider 负责连接生命周期，多个 `CentralCache` 共享同一个 provider 时不能互相关闭底层客户端。
 - `cache4j-central` 的 `pom.xml` 只有 `cache4j-core` 与 `standard4j`；不得出现 Redis、Spring、Solon 或任何客户端依赖。
 
+中央侧字段都在 `CacheStrategy` 里（不再有独立的 `CentralCacheSpec`）：
+
 ```java
-public record CentralCacheSpec(
-        String namespace,
-        Duration ttl,             // 默认 TTL，必须为正
-        Duration nullTtl,         // 负缓存 TTL；0 表示关闭
-        boolean failOpen,         // 编排层默认降级策略
-        double ttlJitter,         // 0–0.5，默认 0.1
-        boolean allowNoExpiry     // 默认 false；true 才允许无 TTL
-) {}
+Duration centralTtl         // 默认 TTL，必须为正
+Duration centralNullTtl     // 负缓存 TTL；ZERO 表示关闭
+boolean  failOpen           // 编排层默认降级策略
+double   centralTtlJitter   // 0–0.5
+boolean  allowNoExpiry      // 默认 false；true 才允许无 TTL
 ```
+
+装配：`CacheStrategy.builder(ns).ttl(...).nullTtl(...).failOpen(...).build()`。
 
 ### 1.2 版本号的语义
 
@@ -120,7 +122,7 @@ public record CentralCacheSpec(
 ```java
 public interface CentralCacheProvider extends AutoCloseable {
 
-    <V> CentralCache<V> create(CentralCacheSpec spec);
+    <V> CentralCache<V> create(CacheStrategy strategy);
 
     /** 可选：提供跨节点热 key 协调；没有则 DYNAMIC + GLOBAL 启动失败 */
     default Optional<HotKeyCoordinator> hotKeyCoordinator() {
@@ -367,7 +369,7 @@ public class RedisAccessException extends RuntimeException {
 public final class RedisCentralCache<V> implements CentralCache<V> {
 
     private final RedisValueStore<V> store;   // 唯一的下行依赖
-    private final CentralCacheSpec spec;
+    private final CacheStrategy strategy;
     private final CacheCounters stats;
 }
 ```
@@ -487,7 +489,7 @@ Duration effectiveTtl(Duration ttl) {
 
 ```java
 public HotKeyReport reportAndStatus(String namespace, CacheKey key, long delta) {
-    LocalCacheSpec.GlobalSpec g = globalSpecs.apply(namespace);
+    GlobalSpec g = globalSpecs.apply(namespace);
     if (g == null) return HotKeyReport.unknown();       // 不猜阈值
     return store.reportHotKey(namespace, key, delta);   // 一次往返：写计数 + 读窗口 + 算状态
 }
@@ -636,7 +638,7 @@ v1 选 **pipeline**：单个 key 的脚本约 5–6 次 `redis.call`，64 key �
 
 ```java
 // 适配层提供的 store（Spring 版本见 §7.2），threshold 按缓存名解析
-Function<String, LocalCacheSpec.GlobalSpec> globalSpecs = namespace -> specs.globalOf(namespace);
+Function<String, GlobalSpec> globalSpecs = namespace -> specs.globalOf(namespace);
 
 RedisCentralCacheProvider provider =
         new RedisCentralCacheProvider(store, new RedisHotKeyCoordinator(store, globalSpecs));

@@ -34,7 +34,7 @@
 | `DefaultTwoLevelCache` | **1 011** | 单类巨兽：策略分支 + 对账 + 单飞 + 回填 + 统计全塞在里面 |
 | `DefaultCacheStrategyRepository` | 609 | |
 | `KeyEncoders` | 546 | 五套编码器（canonical / identity / delegate / plain / tagged） |
-| `LocalCacheSpec` | 517 | 四层嵌套 record（VersionSpec / DynamicSpec / GlobalSpec / Coordination） |
+| `CacheStrategy`（原 `LocalCacheSpec`） | 517 | 已扁平化为单一 record，见 §11 |
 | `CacheLogger` | 391 | 主题枚举 + 限流 |
 | `CacheStats` + `CacheCounters` + `NoopStats` | **802** | 统计三件套 |
 | `CachedCacheStrategyRepository` | 277 | 门面 + 委托 + 双缓存 + 时钟注入 |
@@ -69,7 +69,7 @@ DynamicLocalCache4j   // DYNAMIC
 MixedLocalCache4j     // 按当前策略路由到上面三者之一
 ```
 
-现状是"枚举 + `LocalCacheSpec` 嵌套参数 + `LocalCacheProvider.create(spec)` 分支"，策略在**装配期**定死，运行期改策略必须重启。
+现状是"枚举 + 嵌套参数 + `LocalCacheProvider.create(spec)` 分支"（`LocalCacheSpec` 已在 §11 删除），策略在**装配期**定死，运行期改策略必须重启。
 
 > **这是本次重构唯一的"新增能力"**：运行期切策略。其余都是减法。
 
@@ -138,7 +138,7 @@ public final class CacheStrategyCache {
 |---|---|---:|
 | 策略模型 6 类 → 3 类 | `CacheStrategyDecl` / `NamespacePolicy` / `StoredPolicy` / `StrategyView` / `PolicyResolver` / `BuiltinDefaults` 收敛为 `CacheBlock`（声明）+ `CacheStrategy`（生效值）+ `CacheStrategyProperty`（配置载体） | ~800 |
 | 仓库读写分离 | `CachedCacheStrategyRepository` → `CacheStrategyCache`（读，自举）+ `CacheStrategyAdministrator`（管理面） | ~250 |
-| 配置载体扁平化 | `LocalCacheSpec` 四层嵌套 record → `CacheStrategyProperty` | ~300 |
+| 配置载体扁平化 | 四层嵌套 record → `CacheStrategyProperty` | ~300（已完成，见 §11） |
 
 **约 1 350 行。运维能力（乐观锁 / 分页 / 视图标记）全部保留**，只是从"6 个类协作"变成"2 个类 + 1 个管理面 + 1 个配置载体"。
 
@@ -464,7 +464,7 @@ Cache4jImpl  ──持有──►  MixedLocalCache4j  ──路由──►  No
 | R8 | 统计删除后的断言 | 失去载体的断言**直接清理**；必要计数用 `AtomicLong` + 方法返回值，不恢复统计框架 |
 | R9 | `CacheStrategyProperty` 的"未设置" | `null` 表示"用内建默认"，够用 |
 | R10 | 第 3 步迁移方式 | **直接切换**，不做新旧并行开关 |
-| R12 | `CacheStrategyProperty` 的定位 | **唯一的策略定义**——装配、解析、持久化都用它，`LocalCacheSpec` / `CentralCacheSpec` 退化为内部表示（由 `toLocalSpec()` / `toCentralSpec()` 在装配边界转换一次）。**它自己不做 DTO / ORM**：不加任何序列化或持久化注解；需要落库的使用者自己声明 `CacheStrategyPo`，与 Property 字段一对一映射（建议 MapStruct），不要把 ORM 关注点塞进 Property |
+| R12 | `CacheStrategyProperty` 的定位 | **唯一的持久化/编辑模型**——装配、解析、持久化都用它；运行期由 `CacheStrategyProperty.toStrategy()` 转成 `CacheStrategy` 一次（`LocalCacheSpec` / `CentralCacheSpec` 已在 §11 删除）。**它自己不做 DTO / ORM**：不加任何序列化或持久化注解；需要落库的使用者自己声明 `CacheStrategyPo`，与 Property 字段一对一映射（建议 MapStruct），不要把 ORM 关注点塞进 Property |
 | R11 | 顶层接口命名 | 用 **`Cache4j`** 而不是 `Cache`——Spring 有 `org.springframework.cache.Cache`、Caffeine 有 `com.github.benmanes.caffeine.cache.Cache`，同名会让使用方的 import 频繁冲突。`LocalCache` / `CentralCache` 这类名字没有冲突，保持不带后缀 |
 
 ### 开工前只剩一件需要确认的事
@@ -611,5 +611,88 @@ Cache4jImpl<K,V>                 只做编排：本地查不到就查中央，�
 | 项 | 说明 |
 |---|---|
 | 日志主语 | `localSubject(localSpec.strategy())` —— 门面为了写日志知道策略名。可让本地层提供 `subject()`，收益约等于零 |
-| `localNullTtlDivisor` | 门面调 `LocalCacheSpec.deriveNullTtl(...)` 算负副本 TTL——用的是工具方法，算配置传递而非职责泄漏 |
+| `localNullTtlDivisor` | 负副本 TTL 由 `CacheStrategy.deriveNullTtl(...)` 在装配期算好，门面不参与 |
 | 统计 | 仍按 R1 全删，等核心稳定后重新设计 |
+
+---
+
+## 11. 第三轮：配置层从四层收敛成一层
+
+> 前两轮减的是复杂度与知情面；这一轮减的是**配置的层数**。
+
+### 11.1 起点
+
+一个 namespace 的配置走过四个类型：
+
+```text
+StoredPolicy          (property + 审计)
+    ↓
+NamespacePolicy       (property + declared + 来源)
+    ↓
+CacheDefinition       (local → LocalCacheSpec, central → CentralCacheSpec)
+    ↓
+Cache4jImpl           (持两个 Spec)
+```
+
+`LocalCacheSpec` 567 行（主 record + `VersionSpec` / `DynamicSpec` / `GlobalSpec` 三个嵌套
++ 6 个工厂 + 校验），`CentralCacheSpec` 169 行。运行期实现读后两个，持久化读第一个，
+中间的转换逻辑分散在三处。
+
+### 11.2 终点
+
+```text
+StoredPolicy → NamespacePolicy → CacheDefinition(namespace, strategy, divisor) → CacheStrategy
+```
+
+`CacheStrategy` 是**不可变 record**，36 个字段全部扁平且强类型。三层共享同一实例。
+
+`VersionSpec` / `DynamicSpec` / `GlobalSpec` 保留为**构造参数分组**与**只读派生视图**
+（`VersionSpec.of(strategy)`），不再是配置本身。
+
+### 11.3 为什么不用 Supplier（cache4j-2 的做法）
+
+`Supplier` 追求"运维改配置即时生效"，代价是：每次缓存操作要把 37 个 Supplier 求值一遍
+才能拿到一致快照，且 `equals` / 日志 / 序列化全失效。热更新用"替换整个引用"实现即可：
+
+```java
+CacheStrategy s = strategyRef.get();     // 一次 volatile 读，天然一致，零分配
+```
+
+### 11.4 三步落地（每步独立 green）
+
+| 步 | 内容 | commit |
+|---|---|---|
+| 1 | 两个 Spec 降级为**纯转发壳**（内部只持 `CacheStrategy`，getter 转发） | `99e3d19` |
+| 2 | 三个嵌套 record 提到 `core` 顶层；`CacheDefinition` 只持 `CacheStrategy` | `1b8e06a` |
+| 3 | 删壳 | `2cca58c` |
+
+**第 1 步是关键**：如果直接删，会牵动 60+ 调用点 + `ofRaw` / `StoredPolicy` / `StrategyView`
+的嵌套类型，中途任何不匹配都让整仓变红。先降级成壳，"删除"就退化为纯删除。
+
+### 11.5 两个必须记住的坑
+
+**① 装配时必须先合并出一份策略再分发。** 我曾让 local 与 central 各自 `toStrategy()`：
+
+```java
+LocalCache  local   = LocalCaches.create(localSpec.toStrategy(), ...);       // 中央字段 = 默认值
+CentralCache central = new InMemoryCentralCache<>(centralSpec.toStrategy());  // 本地字段 = 默认值
+```
+
+门面取 `local.cacheStrategy()` → 用的是"中央字段全是默认值"的那份 → `centralNullTtl=0` 的用例
+照样写负副本。**两份策略各自都"看起来对"，只有行为不对。**
+
+正确写法：先 `CacheStrategy.staticCache(...).withCentral(ttl, nullTtl, failOpen)` 造一份，
+再同时交给本地层与中央层。
+
+**② 默认值搬家要有行为测试兜底。** 给 `CacheStrategy.Builder` 时把 `nullTtl` 默认写成
+`ofMinutes(1)`，而旧的 `CentralCacheSpec.Builder` 是 `ZERO`。`nullCachingDisabledDeletesKey`
+立刻抓到（`expected: <0> but was: <1700000000001>`）——负缓存本该"默认关闭"，默认值一错
+`putNegative` 就不删 key 了。
+
+### 11.6 规模
+
+| 指标 | 起点 | 现在 |
+|---|---|---|
+| 配置类型 | 4 类 736 行 | 1 类（含工厂与校验） |
+| `toStrategy()` 转换入口 | 3 个（各给对侧填默认值） | 1 个（`CacheStrategyProperty.toStrategy()`） |
+| 全仓 `LocalCacheSpec` / `CentralCacheSpec` 引用 | 40 + 20 文件 | 0 |

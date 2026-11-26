@@ -12,9 +12,9 @@
 现状有两个缺口：
 
 1. **声明与初始化是硬编码**：每个 namespace 的策略（`NONE` / `STATIC` / `DYNAMIC`、`maxSize`、
-   `localTtl`、`version`、`dynamic`）都要在装配代码里逐条手写 `LocalCacheSpec` / `CentralCacheSpec`。
+   `localTtl`、`version`、`dynamic`）都要在装配代码里逐条手写 `CacheStrategy` / `CacheStrategy`。
    业务方只知道自己"要一个用户详情缓存"，不该关心 `reconcilePartitions` 这类参数。
-2. **策略不可热更**：`LocalCacheSpec` 与 `CentralCacheSpec` 是不可变记录，`Cache4jImpl`
+2. **策略不可热更**：`CacheStrategy` 与 `CacheStrategy` 是不可变记录，`Cache4jImpl`
    在构造时把本地缓存实例、分区索引、对账信号量都固化成字段。线上要把某个 namespace 从
    `NONE` 调成 `STATIC`（或反向），只能重启。
 
@@ -37,7 +37,7 @@
 | 术语 | 含义 |
 |---|---|
 | **声明（Decl）** | 用户写的枚举，描述一个 namespace 想要什么策略 |
-| **定义（Definition）** | 仓库补全后的 `(LocalCacheSpec, CentralCacheSpec)` 对，即 `CacheDefinition` |
+| **定义（Definition）** | 仓库补全后的 `(CacheStrategy, CacheStrategy)` 对，即 `CacheDefinition` |
 | **声明值 / 生效值** | 声明值 = 枚举里写的（`declaredStrategy`）；生效值 = 仓库判定后真正装配的（`activeStrategy`）。**运维只能改生效值** |
 | **仓库（Repository）** | 进程内"namespace → 当前生效配置"的唯一权威，是热更的落点；契约见 `STRATEGY-REPOSITORY.md` |
 | **运行时（Runtime）** | 一次定义所对应的全部可变对象：本地缓存实例、分区索引、对账信号量、生效 `partitions` |
@@ -426,10 +426,10 @@ for (Candidate candidate : candidates) {
 CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
     String namespace = decl.getNamespace();
     LocalStrategy strategy = policy != null ? policy.activeStrategy() : decl.getStrategy();
-    LocalCacheSpec local = switch (strategy) {
-        case NONE    -> LocalCacheSpec.noLocal(namespace);
-        case STATIC  -> LocalCacheSpec.staticCache(namespace, p.maxSize(), p.localTtl(), p.version());
-        case DYNAMIC -> LocalCacheSpec.dynamicCache(namespace, p.maxSize(), p.localTtl(),
+    CacheStrategy local = switch (strategy) {
+        case NONE    -> CacheStrategy.noLocal(namespace);
+        case STATIC  -> CacheStrategy.staticCache(namespace, p.maxSize(), p.localTtl(), p.version());
+        case DYNAMIC -> CacheStrategy.dynamicCache(namespace, p.maxSize(), p.localTtl(),
                                                     p.version(), p.dynamic());
     };
     return CacheDefinition.of(local, p.central(namespace));
@@ -470,7 +470,7 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
   一个比例缩短，让本地比中央**更早**放下这个标记，避免"中央已能再次回源、本地还在说不存在"；
 - 再与 `localTtl` 取小：`localNullTtl = min(localTtl, centralNullTtl / N)`，`N >= 1`；
 - `centralNullTtl = ZERO`（不缓存空值）⇒ 负副本两层都不落，`N` 不生效；
-- 这是仓库配置项 `localNullTtlDivisor`，**不是**枚举字段，也不给 `LocalCacheSpec` 加组件。
+- 这是仓库配置项 `localNullTtlDivisor`，**不是**枚举字段，也不给 `CacheStrategy` 加组件。
 
 **抖动语义变更（需注意）**：`jitter` 从"比例"（`checkInterval` 的 ±10%）改为**绝对时长**
 （`100ms`）。影响：`VersionSpec.jitter` 的类型由 `double` 变为 `Duration`，`jittered()`
@@ -480,10 +480,10 @@ CacheDefinition materialize(CacheStrategyDecl decl, NamespacePolicy policy) {
 **校验**（顺序：先声明后配置，错误信息都能定位到来源）：
 
 1. 声明侧：`namespace` 非空且符合 `CacheKey` 的字符规则、`strategy` 非空、**`description` 非空**；
-2. `LocalCacheSpec` 紧凑构造器 + `validate()`：`STATIC/DYNAMIC` 必须有 `version`、`maxSize>0`、
+2. `CacheStrategy` 紧凑构造器 + `validate()`：`STATIC/DYNAMIC` 必须有 `version`、`maxSize>0`、
    `ttl>0`、`DYNAMIC` 必须有 `DynamicSpec`；
 3. `VersionSpec`：批大小正、分区数为 2 的幂；
-4. `CentralCacheSpec`：TTL 为正；
+4. `CacheStrategy`：TTL 为正；
 5. **跨字段校验**（集中在仓库）：
    - `DYNAMIC + coordination=GLOBAL` ⇒ 必须存在 `HotKeyCoordinator`；中央实现不支持协调 ⇒ 失败并提示改 `LOCAL`；
    - `centralNullTtl > centralTtl` ⇒ 警告（负副本比真值活得久，通常不是本意）；
@@ -734,7 +734,7 @@ Lua(reportAndStatusAll):
   `sliceId`，窗口边界天然对齐；内存实现用注入时钟（测试可控）。
 
 > **连带文档**：以上参数改名与语义变更同时要回写到 `LOCAL.md`（热 key 判定一节）、
-> `DESIGN.md`（决策表）与 `CentralCacheSpec`/`GlobalSpec` 的默认值；本设计只负责把"仓库里能配什么"定清楚。
+> `DESIGN.md`（决策表）与 `CacheStrategy`/`GlobalSpec` 的默认值；本设计只负责把"仓库里能配什么"定清楚。
 
 ## 5. 二、策略仓库（契约见 `STRATEGY-REPOSITORY.md`）
 
@@ -779,7 +779,7 @@ private volatile long nextCheckAtNanos;                     // 对账信号量
 ```java
 /** 一次策略定义的完整运行时，构造完成后不可变。 */
 final class StrategyRuntime<V> {
-    final LocalCacheSpec localSpec;
+    final CacheStrategy localSpec;
     final LocalCache<V> local;
     final int partitions;
     final Map<CacheKey, Integer> keyPartitions;
@@ -1102,7 +1102,7 @@ GraalVM 支持归入 **P5**（P1–P4 之后）：先有声明式初始化与热
 | S13 | 枚举契约的成员数 | 三个必需 / 三必需 + 可选档位 / 三必需 + 参数默认方法 | **三个必需**（`namespace`/`strategy`/`description`），参数全归仓库 |
 | S14 | 是否开档位（SMALL/STANDARD/LARGE） | 开 / 不开 | **不开**：未配仓库时用唯一一套内建默认，减小心智负担 |
 | S15 | 是否提供 `reset` | 提供 / 不提供 | **不提供**：要恢复就再 `change` 一次，审计留痕更重要；临时策略一并取消 |
-| S16 | 本地空值副本的存活 | 独立旋钮 / 由中央 `nullTtl` 派生 | **由中央 `nullTtl` 按 `1/N` 派生**（`N` 仓库可配，默认 10），再与 `localTtl` 取小；`LocalCacheSpec` 不加字段 |
+| S16 | 本地空值副本的存活 | 独立旋钮 / 由中央 `nullTtl` 派生 | **由中央 `nullTtl` 按 `1/N` 派生**（`N` 仓库可配，默认 10），再与 `localTtl` 取小；`CacheStrategy` 不加字段 |
 | S17 | 枚举契约的命名风格 | 裸方法（`namespace()`）/ getter（`getNamespace()`） | **getter**，配合 Lombok `@Getter` 让"三个字段 + 一个注解"即满足契约 |
 | S18 | `version.jitter` 的语义 | 比例（±N%）/ 绝对时长 | **绝对时长**（默认 `100ms`），不同 `checkInterval` 下抖动幅度一致；代价是 `VersionSpec` 组件类型变更 |
 | S19 | DYNAMIC 是否保留独立热 TTL | 保留 / 取消 | **取消**：DYNAMIC = STATIC + 准入判定，判定通过后本地配置与 STATIC 完全一致 |

@@ -13,7 +13,7 @@
 
 ## 1. 本地缓存 SPI（通用契约在 `cache4j-core`，本地侧在 `cache4j-local`）
 
-`Cache`、`Lookup`、`CacheKey` 是 core 的通用契约；`LocalCache`、`LocalCacheSpec`、`LocalStrategy` 是本地侧 SPI（接口由 core 暴露），由 `cache4j-local` 负责实现与装配。
+`Cache`、`Lookup`、`CacheKey` 是 core 的通用契约；`LocalCache`、`CacheStrategy`、`LocalStrategy` 是本地侧 SPI（接口由 core 暴露），由 `cache4j-local` 负责实现与装配。
 
 ```java
 public interface LocalCache<V> extends Cache<CacheKey, LocalEntry<V>> {
@@ -79,7 +79,8 @@ public interface LocalCache<V> extends Cache<CacheKey, LocalEntry<V>> {
      */
     void maintain();
 
-    LocalCacheSpec spec();
+    /** 本 namespace 的完整策略（本地 + 中央，三层共享同一实例） */
+    CacheStrategy cacheStrategy();
 
     @Override
     default String name() {
@@ -107,47 +108,28 @@ public enum LocalStrategy {
 
 ## 2. 配置
 
+运行期配置只有一个类型：**`CacheStrategy`**（不可变 record，字段全部扁平且强类型）。
+`VersionSpec` / `DynamicSpec` / `GlobalSpec` 只是"构造参数分组"与"只读派生视图"，不是配置本身。
+
 ```java
-public record LocalCacheSpec(
-        String namespace,
-        LocalStrategy strategy,
-        long maxSize,
-        Duration ttl,
-        VersionSpec version,
-        DynamicSpec dynamic
-) {
-
-    public record VersionSpec(
-            Duration checkInterval,    // 命名空间级对账间隔；必须为正
-            double jitter,             // 对账间隔抖动比例
-            Duration retryBackoff,     // 对账失败退避
-            int reconcileBatchSize     // 一次 HMGET 的批量大小
-    ) {}
-
-    public record DynamicSpec(
-            int hotThresholdQps,        // 本地窗口内达到多少次算热点
-            Duration window,              // 本地频率统计窗口
-            int maxHotKeys,               // 本地热点集合上限
-            Duration hotTtl,              // 热点 key 在本地的最长存活时间
-            Duration syncInterval,        // 热 key 同步点间隔（访问驱动）
-            Duration cooldown,            // 降热后多久允许再次升热
-            Coordination coordination,    // local / global
-            GlobalSpec global,            // coordination=global 时必填
-            int sketchWidth,              // 频率草图宽度，2 的幂
-            int sketchDepth               // 频率草图深度
-    ) {}
-
-    public record GlobalSpec(
-            Duration window,              // 中央窗口
-            long hotThreshold,            // 集群级升热阈值
-            long coolThreshold,           // 集群级降热阈值
-            int demoteWindows,            // 连续低于冷阈值的窗口数
-            int staleWindows,             // 无上报多少个窗口后判 COOLING
-            int clientEstimate            // 连接同一套 Redis 的客户端实例数（推导预选阈值）
-    ) {}
-
-    public enum Coordination { LOCAL, GLOBAL }
-}
+public record CacheStrategy(
+        String namespace, String description, LocalStrategy localStrategy,
+        long localMaxSize, Duration localTtl, Duration localNullTtl,   // localNullTtl 是派生值
+        // 版本对账
+        Duration versionCheckInterval, Duration versionJitter, Duration versionRetryBackoff,
+        int reconcileBatchSize, int reconcilePartitions,
+        // 热 key（本地）
+        long hotThresholdQps, long coolQps, Duration hotWindow, int hotWindowSlices,
+        int maxHotKeys, Duration hotSyncInterval, Duration hotCooldown, Coordination coordination,
+        int sketchWidthBits, int sketchDepth, int hotReportPartitions, int hotReportBatchMax,
+        int candidateCapacity,
+        // 热 key（全局）
+        Duration globalWindow, long globalHotQps, long globalCoolQps,
+        int globalDemoteWindows, int globalStaleWindows, int globalClientEstimate,
+        // 中央
+        Duration centralTtl, Duration centralNullTtl, double centralTtlJitter,
+        boolean failOpen, boolean allowNoExpiry
+) {}
 ```
 
 默认值（待压测校准）：
@@ -184,14 +166,14 @@ public record LocalCacheSpec(
 
 ### 2.1 构建方式
 
-`LocalCacheSpec` 提供静态工厂，避免调用方拼错组合（例如 `DYNAMIC` 忘了配 `dynamic`）：
+`CacheStrategy` 提供静态工厂，避免调用方拼错组合（例如 `DYNAMIC` 忘了配 `dynamic`）：
 
 ```java
-LocalCacheSpec.noLocal("user:detail");                        // NONE
+CacheStrategy.noLocal("user:detail");                        // NONE
 
-LocalCacheSpec.staticCache("user:detail", 10_000, ttl);       // STATIC，version 用默认值
+CacheStrategy.staticCache("user:detail", 10_000, ttl);       // STATIC，version 用默认值
 
-LocalCacheSpec.dynamicCache("user:detail", 10_000, ttl,
+CacheStrategy.dynamicCache("user:detail", 10_000, ttl,
         DynamicSpec.builder()
                 .hotThresholdQps(100)
                 .window(Duration.ofSeconds(10))
