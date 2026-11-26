@@ -121,7 +121,7 @@ class RedisSemanticIntegrationTest {
         LocalCacheSpec.DynamicSpec base = LocalCacheSpec.DynamicSpec.defaults();
         LocalCacheSpec.DynamicSpec dynamic = new LocalCacheSpec.DynamicSpec(
                 2, 1, Duration.ofSeconds(1), 16, 1_000, base.syncInterval(), base.cooldown(),
-                LocalCacheSpec.Coordination.GLOBAL,
+                com.asialjim.cache4j.core.Coordination.GLOBAL,
                 new LocalCacheSpec.GlobalSpec(Duration.ofSeconds(1), 2L, 1L, 3, 3, 1),
                 base.sketchWidthBits(), base.sketchDepth(), base.hotReportPartitions(),
                 base.hotReportBatchMax(), base.candidateCapacity());

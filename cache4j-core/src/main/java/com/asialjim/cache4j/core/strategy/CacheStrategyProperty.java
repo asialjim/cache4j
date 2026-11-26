@@ -434,7 +434,7 @@ public class CacheStrategyProperty {
                 intOf(hotWindowSlices, 16), intOf(maxHotKeys, 1_000),
                 duration(hotSyncInterval, localTimeUnit, TimeUnit.MILLISECONDS),
                 duration(hotCooldown, localTimeUnit, TimeUnit.SECONDS),
-                LocalCacheSpec.Coordination.valueOf(coordination == null ? "LOCAL" : coordination),
+                com.asialjim.cache4j.core.Coordination.valueOf(coordination == null ? "LOCAL" : coordination),
                 globalSpec(),
                 intOf(sketchWidthBits, 12), intOf(sketchDepth, 4),
                 intOf(hotReportPartitions, 16), intOf(hotReportBatchMax, 16),

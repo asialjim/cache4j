@@ -75,7 +75,7 @@ class HashMapDynamicLocalCacheTest {
     private static LocalCacheSpec.DynamicSpec globalThreshold(LocalCacheSpec.GlobalSpec global) {
         LocalCacheSpec.DynamicSpec d = LocalCacheSpec.DynamicSpec.defaults();
         return new LocalCacheSpec.DynamicSpec(2, 1, Duration.ofSeconds(1), 16, 1_000,
-                d.syncInterval(), d.cooldown(), LocalCacheSpec.Coordination.GLOBAL, global,
+                d.syncInterval(), d.cooldown(), com.asialjim.cache4j.core.Coordination.GLOBAL, global,
                 d.sketchWidthBits(), d.sketchDepth(), d.hotReportPartitions(),
                 d.hotReportBatchMax(), d.candidateCapacity());
     }
@@ -158,7 +158,7 @@ class HashMapDynamicLocalCacheTest {
         LocalCacheSpec.GlobalSpec global = LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 10L, 1);
         LocalCacheSpec.DynamicSpec dynamic = new LocalCacheSpec.DynamicSpec(
                 200, 50, Duration.ofSeconds(10), 16, 1_000, Duration.ofSeconds(1),
-                Duration.ofSeconds(30), LocalCacheSpec.Coordination.GLOBAL, global,
+                Duration.ofSeconds(30), com.asialjim.cache4j.core.Coordination.GLOBAL, global,
                 12, 4, 16, 16, 1_000);
         VersionedLocalCache<String> cache = dynamic(dynamic, stub());
 

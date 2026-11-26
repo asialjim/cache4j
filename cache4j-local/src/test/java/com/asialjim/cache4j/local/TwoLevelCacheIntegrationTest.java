@@ -126,7 +126,7 @@ class TwoLevelCacheIntegrationTest {
         // 低阈值：1 QPS × 1s 窗口 = 1 次即升热（默认 100 QPS / 5s 需要 500 次）
         LocalCacheSpec.DynamicSpec low = new LocalCacheSpec.DynamicSpec(1, 0,
                 Duration.ofSeconds(1), 16, 1_000, Duration.ofSeconds(1), Duration.ofSeconds(30),
-                LocalCacheSpec.Coordination.LOCAL, null, 12, 4, 16, 16, 1_000);
+                com.asialjim.cache4j.core.Coordination.LOCAL, null, 12, 4, 16, 16, 1_000);
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1),
                 fastVersion(), low);
         Cache4j<String, String> cache = build(spec, central(Duration.ZERO));

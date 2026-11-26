@@ -113,7 +113,7 @@ class LocalCacheSpecTest {
         // 份额大于本地阈值时被 L-1 夹住
         LocalCacheSpec.DynamicSpec small = new LocalCacheSpec.DynamicSpec(
                 10, 2, Duration.ofSeconds(5), 16, 100, Duration.ofSeconds(1),
-                Duration.ofSeconds(30), LocalCacheSpec.Coordination.GLOBAL,
+                Duration.ofSeconds(30), com.asialjim.cache4j.core.Coordination.GLOBAL,
                 LocalCacheSpec.GlobalSpec.of(Duration.ofSeconds(10), 100_000L, 50),
                 12, 4, 16, 16, 1_000);
         assertEquals(9L, small.candidateQps(), "份额 2000 应被 L-1=9 夹住");

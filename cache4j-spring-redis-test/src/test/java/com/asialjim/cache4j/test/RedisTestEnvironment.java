@@ -131,7 +131,7 @@ public final class RedisTestEnvironment {
                 100,                      // maxHotKeys
                 Duration.ofMillis(200),   // syncInterval
                 Duration.ofSeconds(2),    // cooldown
-                LocalCacheSpec.Coordination.GLOBAL,
+                com.asialjim.cache4j.core.Coordination.GLOBAL,
                 hotGlobalSpec(),
                 12,                       // sketchWidthBits
                 4,                        // sketchDepth

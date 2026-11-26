@@ -110,7 +110,7 @@ class CacheStrategyPropertyTest {
         assertEquals(800, dynamic.maxHotKeys());
         assertEquals(Duration.ofMillis(300), dynamic.syncInterval());
         assertEquals(Duration.ofSeconds(9), dynamic.cooldown());
-        assertEquals(LocalCacheSpec.Coordination.GLOBAL, dynamic.coordination());
+        assertEquals(com.asialjim.cache4j.core.Coordination.GLOBAL, dynamic.coordination());
 
         LocalCacheSpec.GlobalSpec global = dynamic.global();
         assertEquals(Duration.ofMillis(1_500), global.window());

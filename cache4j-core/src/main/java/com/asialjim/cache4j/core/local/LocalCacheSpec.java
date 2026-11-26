@@ -337,17 +337,6 @@ public record LocalCacheSpec(
     /**
      * 热度协调模式。
      */
-    public enum Coordination {
-        /**
-         * 单 JVM：本地升降热，不访问中央热度。
-         */
-        LOCAL,
-        /**
-         * 多节点：本地只升不降，降热由中央裁决；必须提供 {@code HotKeyCoordinator}。
-         */
-        GLOBAL
-    }
-
     /**
      * {@code DYNAMIC} 策略参数。
      *
@@ -375,7 +364,7 @@ public record LocalCacheSpec(
             int maxHotKeys,
             Duration syncInterval,
             Duration cooldown,
-            Coordination coordination,
+            com.asialjim.cache4j.core.Coordination coordination,
             GlobalSpec global,
             int sketchWidthBits,
             int sketchDepth,
@@ -429,7 +418,7 @@ public record LocalCacheSpec(
          */
         public static DynamicSpec defaults() {
             return new DynamicSpec(100, 25, Duration.ofSeconds(5), 16, 1_000,
-                    Duration.ofSeconds(1), Duration.ofSeconds(30), Coordination.LOCAL, null,
+                    Duration.ofSeconds(1), Duration.ofSeconds(30), com.asialjim.cache4j.core.Coordination.LOCAL, null,
                     12, 4, 16, 16, 1_000);
         }
 
@@ -441,7 +430,7 @@ public record LocalCacheSpec(
          */
         public DynamicSpec withGlobal(GlobalSpec globalSpec) {
             return new DynamicSpec(hotThresholdQps, coolQps, window, windowSlices, maxHotKeys,
-                    syncInterval, cooldown, Coordination.GLOBAL, globalSpec, sketchWidthBits, sketchDepth,
+                    syncInterval, cooldown, com.asialjim.cache4j.core.Coordination.GLOBAL, globalSpec, sketchWidthBits, sketchDepth,
                     hotReportPartitions, hotReportBatchMax, candidateCapacity);
         }
 
@@ -465,7 +454,7 @@ public record LocalCacheSpec(
             if (upper <= 0L) {
                 return 1L;
             }
-            if (coordination != Coordination.GLOBAL || global == null) {
+            if (coordination != com.asialjim.cache4j.core.Coordination.GLOBAL || global == null) {
                 return Math.max(1L, upper);
             }
             long share = ceilDiv(global.hotQps(), Math.max(1, global.clientEstimate()));
@@ -506,7 +495,7 @@ public record LocalCacheSpec(
                     "要求 1 <= hotReportBatchMax <= maxHotKeys：" + hotReportBatchMax);
             require(candidateCapacity >= 1, "dynamic.candidateCapacity 必须 >= 1：" + candidateCapacity);
 
-            if (coordination == Coordination.GLOBAL) {
+            if (coordination == com.asialjim.cache4j.core.Coordination.GLOBAL) {
                 if (global == null) {
                     throw invalid("coordination=GLOBAL 时必须提供 dynamic.global");
                 }
