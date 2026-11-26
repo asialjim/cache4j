@@ -1,6 +1,7 @@
 package com.asialjim.cache4j.core.strategy;
 
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
@@ -84,6 +85,28 @@ public final class StrategySelfCacheOptions {
     /**
      * @return 自举缓存的本地配置（策略固定 STATIC）
      */
+    /**
+     * 自举缓存的完整策略。
+     *
+     * @return 策略
+     */
+    public CacheStrategy cacheStrategy() {
+        LocalCacheSpec local = localSpec();
+        CentralCacheSpec central = centralSpec();
+        return new CacheStrategy(
+                SELF_NAMESPACE, "缓存策略缓存块-自举缓存",
+                com.asialjim.cache4j.core.local.LocalStrategy.STATIC,
+                local.maxSize(), local.ttl(), local.nullTtl(),
+                local.version().checkInterval(), local.version().jitter(), local.version().retryBackoff(),
+                local.version().reconcileBatchSize(), local.version().reconcilePartitions(),
+                0L, 0L, null, 16, 1_000,
+                java.time.Duration.ofSeconds(1), java.time.Duration.ofSeconds(30),
+                com.asialjim.cache4j.core.Coordination.LOCAL, 14, 4, 16, 64, 1 << 12,
+                null, 100L, 25L, 1, 6, 1,
+                central.ttl(), central.nullTtl(), central.ttlJitter(),
+                central.failOpen(), central.allowNoExpiry());
+    }
+
     public LocalCacheSpec localSpec() {
         LocalCacheSpec.VersionSpec version = new LocalCacheSpec.VersionSpec(
                 versionCheckInterval, Duration.ofMillis(100), Duration.ofMillis(200), 1_000, 16);

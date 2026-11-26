@@ -129,10 +129,16 @@ public interface Cache4j<K, V> extends AutoCloseable {
     }
 
     /**
-     * @return 本地策略；非门面实现返回 {@code null}
+     * @return 该 namespace 的完整缓存策略（本地层 / 中央层 / 门面共享同一份实例）
+     */
+    CacheStrategy cacheStrategy();
+
+    /**
+     * @return 本地策略
      */
     default com.asialjim.cache4j.core.local.LocalStrategy strategy() {
-        return null;
+        CacheStrategy strategy = cacheStrategy();
+        return strategy == null ? null : strategy.localStrategy();
     }
 
     /**

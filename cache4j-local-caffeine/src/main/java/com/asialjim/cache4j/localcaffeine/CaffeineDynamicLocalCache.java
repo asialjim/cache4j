@@ -5,7 +5,7 @@ import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.DynamicLocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.local.HotKeyAdmission;
 
 import org.slf4j.Logger;
@@ -34,10 +34,10 @@ public final class CaffeineDynamicLocalCache<V> extends CaffeineLocalCache<V> im
 
     private final HotKeyAdmission admission;
 
-    CaffeineDynamicLocalCache(LocalCacheSpec spec, HotKeyCoordinator coordinator, LongSupplier nanoClock,
+    CaffeineDynamicLocalCache(CacheStrategy strategy, HotKeyCoordinator coordinator, LongSupplier nanoClock,
                              Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader, boolean failOpen) {
-        super(spec, nanoClock, versionReader, failOpen);
-        this.admission = new HotKeyAdmission(spec, coordinator, nanoClock, this::evict);
+        super(strategy, nanoClock, versionReader, failOpen);
+        this.admission = new HotKeyAdmission(strategy, coordinator, nanoClock, this::evict);
     }
 
     private boolean accepts(CacheKey key) {

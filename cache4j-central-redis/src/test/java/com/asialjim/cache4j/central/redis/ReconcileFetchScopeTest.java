@@ -253,12 +253,12 @@ class ReconcileFetchScopeTest {
                 new LocalCacheSpec.VersionSpec(
                         Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), batchSize, partitions));
         CentralCache<String> central = new RedisCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build(),
+                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build().toStrategy(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
         @SuppressWarnings("unchecked")
         VersionedLocalCache<String> local = (VersionedLocalCache<String>) (VersionedLocalCache)
-                LocalCaches.create(localSpec, null, clock::nanos, central::revisions,
-                        central.spec().failOpen());
+                LocalCaches.create(localSpec.toStrategy(), null, clock::nanos, central::revisions,
+                        central.cacheStrategy().failOpen());
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)

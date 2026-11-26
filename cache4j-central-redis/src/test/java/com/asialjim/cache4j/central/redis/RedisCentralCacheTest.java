@@ -40,7 +40,7 @@ class RedisCentralCacheTest {
         cache = new RedisCentralCache<>(CentralCacheSpec.builder(NS)
                 .ttl(Duration.ofMinutes(10))
                 .ttlJitter(0.1D)
-                .build(),
+                .build().toStrategy(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
     }
 
@@ -87,7 +87,7 @@ class RedisCentralCacheTest {
         CentralCache<String> withNull = new RedisCentralCache<>(CentralCacheSpec.builder(NS)
                 .ttl(Duration.ofMinutes(10))
                 .nullTtl(Duration.ofSeconds(30))
-                .build(), cast(store));
+                .build().toStrategy(), cast(store));
         long revision = withNull.putNegativeAndGetRevision(key("404"), null);
         assertTrue(revision > 0L);
         assertTrue(withNull.lookup(key("404")).isNegative());
@@ -139,7 +139,7 @@ class RedisCentralCacheTest {
     void readFailurePropagates() {
         RedisValueStore<String> failing = new FailingStore<>();
         CentralCache<String> failingCache = new RedisCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(1)).build(), failing);
+                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(1)).build().toStrategy(), failing);
         CacheException e = assertThrows(CacheException.class, () -> failingCache.lookup(key("a")));
         assertEquals(CacheResCode.CENTRAL_UNAVAILABLE, e.resCode());
     }
@@ -148,7 +148,7 @@ class RedisCentralCacheTest {
     @DisplayName("ping 失败返回 false 而不抛异常")
     void pingFailureIsFalse() {
         CentralCache<String> failingCache = new RedisCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(1)).build(),
+                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(1)).build().toStrategy(),
                 new FailingStore<>());
         assertFalse(failingCache.ping());
     }

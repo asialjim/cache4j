@@ -30,6 +30,36 @@ public record CentralCacheSpec(
 ) {
 
     /**
+     * 从完整策略里取出中央侧部分（全局唯一实例可能同时含本地字段，这里只保留中央那几个）。
+     *
+     * @param strategy 完整策略
+     * @return 中央规格
+     */
+    public static CentralCacheSpec of(com.asialjim.cache4j.core.CacheStrategy strategy) {
+        return new CentralCacheSpec(strategy.namespace(), strategy.centralTtl(),
+                strategy.centralNullTtl(), strategy.failOpen(), strategy.centralTtlJitter(),
+                strategy.allowNoExpiry());
+    }
+
+    /**
+     * 转成运行期策略（<strong>过渡用</strong>：本地侧字段取内建默认值）。
+     *
+     * @return 运行期策略
+     */
+    public com.asialjim.cache4j.core.CacheStrategy toStrategy() {
+        return new com.asialjim.cache4j.core.CacheStrategy(
+                namespace, null, com.asialjim.cache4j.core.local.LocalStrategy.STATIC,
+                1_000L, java.time.Duration.ofMinutes(1), java.time.Duration.ZERO,
+                java.time.Duration.ofSeconds(10), java.time.Duration.ofSeconds(1),
+                java.time.Duration.ofSeconds(1), 64, 16,
+                0L, 0L, null, 16, 1_000,
+                java.time.Duration.ofSeconds(1), java.time.Duration.ofSeconds(30),
+                com.asialjim.cache4j.core.Coordination.LOCAL, 14, 4, 16, 64, 1 << 12,
+                null, 100L, 25L, 1, 6, 1,
+                ttl, nullTtl, ttlJitter, failOpen, allowNoExpiry);
+    }
+
+    /**
      * 紧凑构造器：基础校验。
      */
     public CentralCacheSpec {

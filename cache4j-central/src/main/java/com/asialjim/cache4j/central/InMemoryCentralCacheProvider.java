@@ -2,7 +2,7 @@ package com.asialjim.cache4j.central;
 
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 
@@ -41,8 +41,8 @@ public final class InMemoryCentralCacheProvider implements CentralCacheProvider 
     }
 
     @Override
-    public <V> CentralCache<V> create(CentralCacheSpec spec) {
-        return new InMemoryCentralCache<>(spec, milliClock);
+    public <V> CentralCache<V> create(CacheStrategy strategy) {
+        return new InMemoryCentralCache<>(strategy, milliClock);
     }
 
     @Override

@@ -5,7 +5,7 @@ import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.DynamicLocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,10 +36,10 @@ public final class HashMapDynamicLocalCache<V> extends HashMapLocalCache<V> impl
 
     private final HotKeyAdmission admission;
 
-    HashMapDynamicLocalCache(LocalCacheSpec spec, HotKeyCoordinator coordinator, LongSupplier nanoClock,
+    HashMapDynamicLocalCache(CacheStrategy strategy, HotKeyCoordinator coordinator, LongSupplier nanoClock,
                              Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader, boolean failOpen) {
-        super(spec, nanoClock, versionReader, failOpen);
-        this.admission = new HotKeyAdmission(spec, coordinator, nanoClock, this::evict);
+        super(strategy, nanoClock, versionReader, failOpen);
+        this.admission = new HotKeyAdmission(strategy, coordinator, nanoClock, this::evict);
     }
 
     // ------------------------------------------------------------------ 准入钩子

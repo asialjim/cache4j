@@ -20,7 +20,21 @@ import java.util.Objects;
  * @author Asial Jim
  */
 public record CacheDefinition(String namespace, LocalCacheSpec local, CentralCacheSpec central,
+                              com.asialjim.cache4j.core.CacheStrategy strategy,
                               int localNullTtlDivisor) {
+
+    /**
+     * 兼容构造器（策略由 local + central 合成，中央侧字段取真实值）。
+     */
+    public CacheDefinition(String namespace, LocalCacheSpec local, CentralCacheSpec central,
+                           int localNullTtlDivisor) {
+        this(namespace, local, central, synthesize(local, central), localNullTtlDivisor);
+    }
+
+    private static com.asialjim.cache4j.core.CacheStrategy synthesize(
+            LocalCacheSpec local, CentralCacheSpec central) {
+        return com.asialjim.cache4j.core.CacheStrategy.of(local, central);
+    }
 
     /**
      * 本地空值 TTL 除子的默认值。

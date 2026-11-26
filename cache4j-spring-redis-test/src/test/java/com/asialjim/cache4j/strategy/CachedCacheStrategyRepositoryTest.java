@@ -189,9 +189,7 @@ class CacheStrategyCacheTest {
             this.clock = clock;
             this.dataSource = dataSource;
             this.central = new InMemoryCentralCache<>(
-                    CentralCacheSpec.builder(StrategySelfCacheOptions.SELF_NAMESPACE)
-                            .ttl(Duration.ofMinutes(30)).nullTtl(Duration.ofMinutes(5)).build(),
-                    clock::get);
+                    StrategySelfCacheOptions.defaults().cacheStrategy(), clock::get);
             this.cache = build(dataSource, central, clock);
             this.admin = new CacheStrategyAdministrator(this.cache);
         }
@@ -201,8 +199,8 @@ class CacheStrategyCacheTest {
                                                 AtomicLong clock) {
             StrategySelfCacheOptions options = StrategySelfCacheOptions.defaults();
             return new CacheStrategyCache(dataSource, options,
-                    LocalCaches.create(options.localSpec(), null, () -> clock.get() * 1_000_000L,
-                            central::revisions, central.spec().failOpen()),
+                    LocalCaches.create(options.localSpec().toStrategy(), null, () -> clock.get() * 1_000_000L,
+                            central::revisions, central.cacheStrategy().failOpen()),
                     central,
                     () -> clock.get() * 1_000_000L,
                     clock::get);

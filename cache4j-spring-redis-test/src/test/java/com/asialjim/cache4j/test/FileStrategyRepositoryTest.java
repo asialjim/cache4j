@@ -174,7 +174,7 @@ class FileStrategyRepositoryTest {
         try {
             assertEquals(Set.of("decl:static", "decl:none", "decl:dynamic"), manager.names());
             assertEquals(42L,
-                    manager.cache("decl:static").orElseThrow().local().spec().maxSize(),
+                    manager.cache("decl:static").orElseThrow().local().cacheStrategy().localMaxSize(),
                     "装配必须用仓库里的值，而不是代码声明里的内建默认（1000）");
         } finally {
             manager.close();
@@ -223,8 +223,8 @@ class FileStrategyRepositoryTest {
     private static CacheStrategyCache newCache(
             RedisConnectionFactory connectionFactory, FileStrategyDataSource dataSource) {
         StrategySelfCacheOptions self = StrategySelfCacheOptions.defaults();
-        LocalCache<StoredPolicy> local = new CaffeineLocalCache<>(self.localSpec(), System::nanoTime, null, false);
-        CentralCache<StoredPolicy> central = new RedisCentralCache<>(self.centralSpec(),
+        LocalCache<StoredPolicy> local = new CaffeineLocalCache<>(self.cacheStrategy(), System::nanoTime, null, false);
+        CentralCache<StoredPolicy> central = new RedisCentralCache<>(self.cacheStrategy(),
                 new SpringRedisValueStore<>(connectionFactory, RedisKeyFormatter.defaults(),
                         new StoredPolicySerializer()));
         return new CacheStrategyCache(dataSource, self, local, central);

@@ -14,11 +14,11 @@ import java.time.Duration;
  * <p><strong>做成 {@code record} 而不是接口 + 各模块实现</strong>：NONE 与存储无关，
  * 换存储不会改变它的行为，让每个存储模块各写一份 NoOp 没有意义。</p>
  *
- * @param spec 配置（保留是为了让上层能读到策略与 namespace）
+ * @param cacheStrategy 策略
  * @param <V>  值类型
  * @author Asial Jim
  */
-public record NoneLocalCache<V>(LocalCacheSpec spec) implements LocalCache<V> {
+public record NoneLocalCache<V>(com.asialjim.cache4j.core.CacheStrategy cacheStrategy) implements LocalCache<V> {
 
     @Override
     public LocalStrategy strategy() {

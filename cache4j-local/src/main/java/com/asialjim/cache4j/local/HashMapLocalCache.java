@@ -5,7 +5,7 @@ import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.StaticLocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.twolevel.Reconciler;
 import com.asialjim.cache4j.core.local.LocalStrategy;
@@ -49,7 +49,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
 
     private static final int SEGMENTS = 16;
 
-    private final LocalCacheSpec spec;
+    private final CacheStrategy strategy;
     private final Segment<V>[] segments;
     private final int perSegmentCapacity;
     private final LongSupplier nanoClock;
@@ -72,28 +72,28 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
      * @param nanoClock 单调时钟
      */
     @SuppressWarnings("unchecked")
-    public HashMapLocalCache(LocalCacheSpec spec, LongSupplier nanoClock,
+    public HashMapLocalCache(CacheStrategy strategy, LongSupplier nanoClock,
                              Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader, boolean failOpen) {
-        this.spec = spec;
+        this.strategy = strategy;
         this.nanoClock = nanoClock;
-        this.perSegmentCapacity = (int) Math.max(1L, (spec.maxSize() + SEGMENTS - 1) / SEGMENTS);
+        this.perSegmentCapacity = (int) Math.max(1L, (strategy.localMaxSize() + SEGMENTS - 1) / SEGMENTS);
         this.segments = new Segment[SEGMENTS];
         for (int i = 0; i < SEGMENTS; i++) {
             segments[i] = new Segment<>();
         }
-        this.reconciler = new Reconciler<>(spec.namespace(), this, versionReader, spec.version(), failOpen);
+        this.reconciler = new Reconciler<>(strategy.namespace(), this, versionReader, strategy, failOpen);
         // 条目过期 / 淘汰 / 失效时立即清掉分区号与分区索引，不等下一次对账才发现
         onEntryRemoved(reconciler::forget);
     }
 
     @Override
     public LocalStrategy strategy() {
-        return spec.strategy();
+        return strategy.localStrategy();
     }
 
     @Override
-    public LocalCacheSpec spec() {
-        return spec;
+    public CacheStrategy cacheStrategy() {
+        return strategy;
     }
 
     @Override
@@ -171,8 +171,8 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
 
     @Override
     public boolean putIfNewer(CacheKey key, V value, long revision, Duration ttl) {
-        // TTL 归本地策略管：负副本用 nullTtl，正副本用 ttl（可空 = spec.ttl()）
-        Duration effective = value == null ? spec.nullTtl() : ttl != null ? ttl : spec.ttl();
+        // TTL 归本地策略管：负副本用 nullTtl，正副本用 ttl（可空 = strategy.localTtl()）
+        Duration effective = value == null ? strategy.localNullTtl() : ttl != null ? ttl : strategy.localTtl();
         if (effective != null && effective.isZero()) {
             return false;        // 不缓存负副本
         }

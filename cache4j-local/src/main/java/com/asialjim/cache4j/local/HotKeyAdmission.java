@@ -10,7 +10,7 @@ import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.local.DynamicLocalCache;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -52,8 +52,7 @@ public final class HotKeyAdmission {
 
     private static final Logger LOG = LoggerFactory.getLogger(HotKeyAdmission.class);
 
-    private final LocalCacheSpec spec;
-    private final LocalCacheSpec.DynamicSpec dynamic;
+    private final CacheStrategy strategy;
     private final HotKeyCoordinator coordinator;
     private final FrequencySketch sketch;
     private final LongSupplier nanoClock;
@@ -83,21 +82,21 @@ public final class HotKeyAdmission {
     private volatile long nextSyncAtNanos;
 
     /**
-     * @param spec        配置（策略必须为 {@code DYNAMIC}）
+     * @param strategy    策略（{@code localStrategy} 必须为 {@code DYNAMIC}）
      * @param coordinator 热 key 协调器；{@code coordination=GLOBAL} 时必填
      * @param nanoClock   单调时钟
+     * @param evict       清存储的回调
      */
-    public HotKeyAdmission(LocalCacheSpec spec, HotKeyCoordinator coordinator, LongSupplier nanoClock,
-                    java.util.function.Consumer<CacheKey> evict) {
-        this.spec = spec;
+    public HotKeyAdmission(CacheStrategy strategy, HotKeyCoordinator coordinator, LongSupplier nanoClock,
+                           java.util.function.Consumer<CacheKey> evict) {
+        this.strategy = strategy;
         this.evict = evict;
-        this.dynamic = spec.dynamic();
         this.coordinator = coordinator;
         this.nanoClock = nanoClock;
         long now = nanoClock.getAsLong();
-        this.sketch = new FrequencySketch(dynamic.sketchWidth(), dynamic.sketchDepth(),
-                dynamic.window().toNanos(), now, nanoClock);
-        int partitions = dynamic.hotReportPartitions();
+        this.sketch = new FrequencySketch(strategy.sketchWidth(), strategy.sketchDepth(),
+                strategy.hotWindow().toNanos(), now, nanoClock);
+        int partitions = strategy.hotReportPartitions();
         this.hotByPartition = new ArrayList<>(partitions);
         this.candidateByPartition = new ArrayList<>(partitions);
         for (int i = 0; i < partitions; i++) {
@@ -111,7 +110,7 @@ public final class HotKeyAdmission {
     }
 
     public boolean coordinationReady() {
-        return dynamic.coordination() != LocalCacheSpec.Coordination.GLOBAL || coordinator != null;
+        return strategy.coordination() != com.asialjim.cache4j.core.Coordination.GLOBAL || coordinator != null;
     }
 
     public boolean access(CacheKey key) {
@@ -131,20 +130,20 @@ public final class HotKeyAdmission {
         }
 
         boolean cooling = isCooling(key, now);
-        if (cooling && count >= dynamic.hotThresholdCount()) {
+        if (cooling && count >= strategy.hotThresholdCount()) {
             // 冷却期：频次够了也不许升热（抑制"降热→立刻又升热"的抖动）
             LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "冷却期内拒绝升热，窗口计数=" + count
                     + "，剩余冷却=" + cooldownRemainingMillis(key, now) + "ms");
         }
-        if (!cooling && count >= dynamic.hotThresholdCount()) {
+        if (!cooling && count >= strategy.hotThresholdCount()) {
             addDelta(key);
             promote(key, count, now);
             LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "触发热升，窗口计数=" + count
-                    + "（阈值=" + dynamic.hotThresholdCount() + "），热点集合大小=" + hotKeys.size());
+                    + "（阈值=" + strategy.hotThresholdCount() + "），热点集合大小=" + hotKeys.size());
             return true;
         }
 
-        long threshold = dynamic.candidateCount();
+        long threshold = strategy.candidateCount();
         if (useCandidates() && count >= threshold) {
             upsertCandidate(partitionOf(key), key, saturate(count));
             pendingDeltaFor(key).increment();
@@ -174,24 +173,24 @@ public final class HotKeyAdmission {
         if (window != null) {
             return window.advanceAndIncrement(now);
         }
-        if (approx < dynamic.candidateCount()) {
+        if (approx < strategy.candidateCount()) {
             // 粗筛未过：不建状态
             return approx;
         }
-        if (windows.size() >= dynamic.candidateCapacity()) {
+        if (windows.size() >= strategy.candidateCapacity()) {
             return approx;
         }
         // 建表时用粗筛阈值做种：既不会丢掉"进入精确统计之前"已经攒下的访问量，
         // 也不会把 CMS 的高估值直接灌进来（否则一次高估就可能误升热）。
         // 注意 approx 已包含本次访问，而紧接着还会 advanceAndIncrement 一次，所以种子里要减去本次。
-        int seed = saturate(Math.max(0L, Math.min(approx - 1L, dynamic.candidateCount() - 1L)));
-        HotWindow created = new HotWindow(dynamic.windowSlices(), dynamic.window().toNanos(), now, seed);
+        int seed = saturate(Math.max(0L, Math.min(approx - 1L, strategy.candidateCount() - 1L)));
+        HotWindow created = new HotWindow(strategy.hotWindowSlices(), strategy.hotWindow().toNanos(), now, seed);
         HotWindow previous = windows.putIfAbsent(key, created);
         return (previous != null ? previous : created).advanceAndIncrement(now);
     }
 
     public void hotSync(CacheKey key) {
-        if (dynamic.coordination() != LocalCacheSpec.Coordination.GLOBAL || coordinator == null) {
+        if (strategy.coordination() != com.asialjim.cache4j.core.Coordination.GLOBAL || coordinator == null) {
             return;
         }
         long now = nanoClock.getAsLong();
@@ -224,11 +223,11 @@ public final class HotKeyAdmission {
                 }
             }
 
-            Map<CacheKey, HotKeyReport> reports = coordinator.reportAndStatusAll(spec.namespace(), reported);
+            Map<CacheKey, HotKeyReport> reports = coordinator.reportAndStatusAll(strategy.namespace(), reported);
             applyCentralStatus(reports);
             nextSyncAtNanos = now + jitteredSyncInterval();
             final Map<CacheKey, Long> flushed = reported;
-            LOG.debug("[{}]-{}-{}", "动态本地缓存", "热key", "namespace=" + spec.namespace() + "，上报完成，分区=" + partitionOf(key)
+            LOG.debug("[{}]-{}-{}", "动态本地缓存", "热key", "namespace=" + strategy.namespace() + "，上报完成，分区=" + partitionOf(key)
                     + "，上报 key 数=" + flushed.size());
         } catch (RuntimeException e) {
             // 只回填真正上报过的增量（被倾斜截断的那部分已单独回填）
@@ -237,11 +236,11 @@ public final class HotKeyAdmission {
                     restoreDelta(entry.getKey(), entry.getValue());
                 }
             }
-            long backoff = spec.version() == null ? Duration.ofMillis(200).toNanos()
-                    : spec.version().retryBackoff().toNanos();
+            long backoff = strategy.versionRetryBackoff() == null ? Duration.ofMillis(200).toNanos()
+                    : strategy.versionRetryBackoff().toNanos();
             nextSyncAtNanos = now + backoff;
             LOG.warn("[{}]-{}-{}", "动态本地缓存", "热key", "热 key 上报失败，整批回填并退避，"
-                    + "namespace=" + spec.namespace() + "，退避=" + backoff + "ms 级，原因=" + e.getMessage());
+                    + "namespace=" + strategy.namespace() + "，退避=" + backoff + "ms 级，原因=" + e.getMessage());
         } finally {
             syncing.set(false);
         }
@@ -254,7 +253,7 @@ public final class HotKeyAdmission {
      * @return 实际要上报的批次
      */
     private Map<CacheKey, Long> selectBatch(Map<CacheKey, Long> batch) {
-        int limit = dynamic.hotReportBatchMax();
+        int limit = strategy.hotReportBatchMax();
         if (batch.size() <= limit) {
             return batch;
         }
@@ -268,7 +267,7 @@ public final class HotKeyAdmission {
     }
 
     private void promote(CacheKey key, long freq, long now) {
-        while (hotKeys.size() >= dynamic.maxHotKeys()) {
+        while (hotKeys.size() >= strategy.maxHotKeys()) {
             CacheKey victim = pollLiveKeyFromLru();
             if (victim == null) {
                 break;
@@ -297,12 +296,12 @@ public final class HotKeyAdmission {
         }
         hotByPartition.get(partitionOf(key)).remove(key);
         pendingDelta.remove(key);
-        if (!dynamic.cooldown().isZero()) {
-            cooldownUntilNanos.put(key, now + dynamic.cooldown().toNanos());
+        if (!strategy.hotCooldown().isZero()) {
+            cooldownUntilNanos.put(key, now + strategy.hotCooldown().toNanos());
         }
         evict.accept(key);
         LOG.debug("[{}]-{}-{}", "动态本地缓存", "热key", "降热，来源=中央 COOLING，key=" + key.masked()
-                + "，进入冷却=" + dynamic.cooldown() + "，热点集合大小=" + hotKeys.size());
+                + "，进入冷却=" + strategy.hotCooldown() + "，热点集合大小=" + hotKeys.size());
     }
 
     /**
@@ -366,7 +365,7 @@ public final class HotKeyAdmission {
     // ------------------------------------------------------------------ 候选桶
 
     private boolean useCandidates() {
-        return dynamic.coordination() == LocalCacheSpec.Coordination.GLOBAL;
+        return strategy.coordination() == com.asialjim.cache4j.core.Coordination.GLOBAL;
     }
 
     private void upsertCandidate(int partition, CacheKey key, int freq) {
@@ -374,7 +373,7 @@ public final class HotKeyAdmission {
         synchronized (bucket) {
             bucket.remove(key);
             bucket.put(key, freq);
-            int capacity = Math.max(1, dynamic.candidateCapacity() / dynamic.hotReportPartitions());
+            int capacity = Math.max(1, strategy.candidateCapacity() / strategy.hotReportPartitions());
             while (bucket.size() > capacity) {
                 // 按估计值保留 top-B，不用 LRU/FIFO：预选的意义是"未来可能热"
                 CacheKey coldest = null;
@@ -408,7 +407,7 @@ public final class HotKeyAdmission {
         if (adder != null) {
             return adder;
         }
-        int bound = dynamic.maxHotKeys() + dynamic.candidateCapacity();
+        int bound = strategy.maxHotKeys() + strategy.candidateCapacity();
         if (pendingDelta.size() >= bound) {
             return new LongAdder();
         }
@@ -481,11 +480,11 @@ public final class HotKeyAdmission {
     // ------------------------------------------------------------------ 分区与时钟
 
     private int partitionOf(CacheKey key) {
-        return com.asialjim.cache4j.core.HashPartitions.of(key, dynamic.hotReportPartitions());
+        return com.asialjim.cache4j.core.HashPartitions.of(key, strategy.hotReportPartitions());
     }
 
     private long jitteredSyncInterval() {
-        return dynamic.syncInterval().toNanos();
+        return strategy.hotSyncInterval().toNanos();
     }
 
     private static Duration min(Duration... values) {

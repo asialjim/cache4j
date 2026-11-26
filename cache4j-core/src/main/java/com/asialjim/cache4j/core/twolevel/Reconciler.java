@@ -4,7 +4,7 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,7 +59,7 @@ public final class Reconciler<V> {
     /**
      * 版本参数；{@code null} 表示该 namespace 不做对账。
      */
-    private final LocalCacheSpec.VersionSpec version;
+    private final CacheStrategy strategy;
 
     private final boolean failOpen;
 
@@ -83,18 +83,18 @@ public final class Reconciler<V> {
      * @param namespace     命名空间
      * @param local         所属的本地缓存（读 keys、失效条目）
      * @param versionReader 中央版本读取器
-     * @param version       版本对账配置；{@code null} 表示不对账
+     * @param strategy      缓存策略
      * @param failOpen      中央不可用时是否放行
      */
     public Reconciler(String namespace, VersionedLocalCache<V> local,
                       Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader,
-                      LocalCacheSpec.VersionSpec version, boolean failOpen) {
+                      CacheStrategy strategy, boolean failOpen) {
         this.namespace = namespace;
         this.local = local;
         this.versionReader = versionReader;
-        this.version = version;
+        this.strategy = strategy;
         this.failOpen = failOpen;
-        this.partitions = version == null ? 1 : version.reconcilePartitions();
+        this.partitions = strategy.reconcilePartitions();
     }
 
     /**
@@ -153,14 +153,14 @@ public final class Reconciler<V> {
      * @param now         当前纳秒
      */
     public void maybeReconcile(CacheKey accessedKey, long now) {
-        if (version == null || versionReader == null) {
+        if (versionReader == null) {
             // 没有对账配置，或没有注入"中央版本读取器"（本地独立使用）→ 不做对账
             return;
         }
         long next = nextCheckAtNanos;
         if (next == 0L) {
             // 首次访问只设点，不做 I/O
-            nextCheckAtNanos = now + jittered(version);
+            nextCheckAtNanos = now + jittered(strategy);
             return;
         }
         if (now - next < 0L) {
@@ -171,19 +171,19 @@ public final class Reconciler<V> {
         }
         try {
             ReconcileOutcome outcome = reconcile(accessedKey);
-            nextCheckAtNanos = now + jittered(version);
+            nextCheckAtNanos = now + jittered(strategy);
             LOG.debug("[{}]-{}-{}", SUBJECT, "对账", "namespace=" + namespace
                     + "，范围=" + outcome.describeScope()
                     + "，对账完成，清除失效副本 " + outcome.invalidated() + " 条");
         } catch (RuntimeException e) {
             // 中央故障期不该比对账间隔更频繁地重试
-            nextCheckAtNanos = now + Math.max(version.retryBackoff().toNanos(),
-                    version.checkInterval().toNanos());
+            nextCheckAtNanos = now + Math.max(strategy.versionRetryBackoff().toNanos(),
+                    strategy.versionCheckInterval().toNanos());
             if (!failOpen) {
                 throw e;
             }
             LOG.warn("[{}]-{}-{}", SUBJECT, "对账", "版本对账失败，按退避推迟，namespace=" + namespace
-                    + "，退避=" + version.retryBackoff() + "，原因=" + e.getMessage());
+                    + "，退避=" + strategy.versionRetryBackoff() + "，原因=" + e.getMessage());
         } finally {
             reconciling.set(false);
         }
@@ -196,7 +196,7 @@ public final class Reconciler<V> {
      * @return 对账结果
      */
     private ReconcileOutcome reconcile(CacheKey accessedKey) {
-        int batchSize = version.reconcileBatchSize();
+        int batchSize = strategy.reconcileBatchSize();
         // 本地副本总数直接来自索引（O(分区数)），不用遍历 local.keys()
         int localSize = 0;
         for (Set<CacheKey> bucket : localPartitions.values()) {
@@ -208,7 +208,7 @@ public final class Reconciler<V> {
 
         // 本地装得下一批 → 全量；超出批大小 → 只取与访问 key 同模的分区
         boolean wholeScope = localSize <= batchSize;
-        int scopePartitions = wholeScope ? 1 : version.reconcilePartitions();
+        int scopePartitions = wholeScope ? 1 : strategy.reconcilePartitions();
         int partition = wholeScope ? 0 : partitionOf(accessedKey);
 
         List<CacheKey> selected = new ArrayList<>(Math.min(localSize, batchSize));
@@ -265,9 +265,9 @@ public final class Reconciler<V> {
         forget(cacheKey);
     }
 
-    private static long jittered(LocalCacheSpec.VersionSpec version) {
-        long base = version.checkInterval().toNanos();
-        long jitterNanos = version.jitter() == null ? 0L : version.jitter().toNanos();
+    private static long jittered(CacheStrategy strategy) {
+        long base = strategy.versionCheckInterval().toNanos();
+        long jitterNanos = strategy.versionJitter() == null ? 0L : strategy.versionJitter().toNanos();
         if (jitterNanos <= 0L) {
             return base;
         }

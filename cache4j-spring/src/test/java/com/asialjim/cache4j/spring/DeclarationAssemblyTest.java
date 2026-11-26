@@ -46,9 +46,9 @@ class DeclarationAssemblyTest {
                 options().cache(programmatic).declEnums(AutoDecls.class).build())) {
             assertEquals(Set.of("manual:cache", "auto:declared"), manager.names());
             // 程序化定义保留自己的 maxSize（不被内建默认覆盖）
-            assertEquals(50L, manager.cache("manual:cache").orElseThrow().local().spec().maxSize());
+            assertEquals(50L, manager.cache("manual:cache").orElseThrow().local().cacheStrategy().localMaxSize());
             // 声明走内建默认
-            assertEquals(1_000L, manager.cache("auto:declared").orElseThrow().local().spec().maxSize());
+            assertEquals(1_000L, manager.cache("auto:declared").orElseThrow().local().cacheStrategy().localMaxSize());
         }
     }
 

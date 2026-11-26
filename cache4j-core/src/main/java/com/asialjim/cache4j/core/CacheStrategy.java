@@ -128,6 +128,35 @@ public record CacheStrategy(
     }
 
     /**
+     * 合并"本地规格 + 中央规格"成<strong>一份</strong>策略。
+     *
+     * <p>装配时必须先造这一份，再同时交给本地层与中央层——三层共享同一实例，
+     * 否则会各自 {@code toStrategy()} 出两份（本地字段真实的、中央字段默认的），
+     * 门面取到哪份就决定了行为，这是最难查的一类错。</p>
+     *
+     * @param local   本地规格
+     * @param central 中央规格
+     * @return 完整策略
+     */
+    public static CacheStrategy of(com.asialjim.cache4j.core.local.LocalCacheSpec local,
+                                   com.asialjim.cache4j.core.central.CentralCacheSpec central) {
+        CacheStrategy base = local.toStrategy();
+        return new CacheStrategy(
+                base.namespace(), base.description(), base.localStrategy(),
+                base.localMaxSize(), base.localTtl(), base.localNullTtl(),
+                base.versionCheckInterval(), base.versionJitter(), base.versionRetryBackoff(),
+                base.reconcileBatchSize(), base.reconcilePartitions(),
+                base.hotThresholdQps(), base.coolQps(), base.hotWindow(), base.hotWindowSlices(),
+                base.maxHotKeys(), base.hotSyncInterval(), base.hotCooldown(), base.coordination(),
+                base.sketchWidthBits(), base.sketchDepth(), base.hotReportPartitions(),
+                base.hotReportBatchMax(), base.candidateCapacity(),
+                base.globalWindow(), base.globalHotQps(), base.globalCoolQps(),
+                base.globalDemoteWindows(), base.globalStaleWindows(), base.globalClientEstimate(),
+                central.ttl(), central.nullTtl(), central.ttlJitter(),
+                central.failOpen(), central.allowNoExpiry());
+    }
+
+    /**
      * @return 是否有本地缓存（{@code STATIC} / {@code DYNAMIC}）
      */
     public boolean hasLocal() {
@@ -146,5 +175,56 @@ public record CacheStrategy(
      */
     public boolean nullCachingEnabled() {
         return centralNullTtl != null && !centralNullTtl.isZero();
+    }
+
+    // ------------------------------------------------------------------ 派生量
+
+    /**
+     * @return Count-Min Sketch 的宽度（{@code sketchWidthBits} 的 2 的幂）
+     */
+    public int sketchWidth() {
+        return 1 << sketchWidthBits;
+    }
+
+    /**
+     * @return 时间片时长
+     */
+    public Duration windowSliceLength() {
+        return hotWindow.dividedBy(hotWindowSlices);
+    }
+
+    /**
+     * @return 升热判定用的<strong>窗口内累计次数</strong>阈值（由 QPS 换算）
+     */
+    public long hotThresholdCount() {
+        return hotThresholdQps * hotWindow.getSeconds();
+    }
+
+    /**
+     * @return 预选（candidate）判定用的窗口内累计次数阈值
+     */
+    public long candidateCount() {
+        return candidateQps() * hotWindow.getSeconds();
+    }
+
+    /**
+     * 预选阈值（QPS）：{@code clamp(ceil(globalHotQps / globalClientEstimate), 1, hotThresholdQps - 1)}。
+     *
+     * <p>必须严格小于 {@code hotThresholdQps}：否则任何到达它的 key 早已本地升热，候选桶恒空。
+     * 候选阶段"宁多勿少"——CMS 只会高估，高估在候选阶段是安全方向。</p>
+     *
+     * @return 预选阈值（QPS）
+     */
+    public long candidateQps() {
+        long upper = hotThresholdQps - 1L;
+        if (upper <= 0L) {
+            return 1L;
+        }
+        if (coordination != Coordination.GLOBAL || globalWindow == null) {
+            return Math.max(1L, upper);
+        }
+        long estimate = Math.max(1, globalClientEstimate);
+        long share = (globalHotQps + estimate - 1L) / estimate;
+        return Math.max(1L, Math.min(share, upper));
     }
 }

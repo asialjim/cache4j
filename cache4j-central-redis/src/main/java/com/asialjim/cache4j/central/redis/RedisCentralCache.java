@@ -5,7 +5,7 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 
 import java.time.Duration;
@@ -25,15 +25,15 @@ import java.util.concurrent.ThreadLocalRandom;
  */
 public final class RedisCentralCache<V> implements CentralCache<V> {
 
-    private final CentralCacheSpec spec;
+    private final CacheStrategy strategy;
     private final RedisValueStore<V> store;
 
     /**
-     * @param spec  配置
+     * @param strategy  配置
      * @param store 下行存储（由适配层实现）
      */
-    public RedisCentralCache(CentralCacheSpec spec, RedisValueStore<V> store) {
-        this.spec = spec;
+    public RedisCentralCache(CacheStrategy strategy, RedisValueStore<V> store) {
+        this.strategy = strategy;
         this.store = store;
     }
 
@@ -41,7 +41,7 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
 
     @Override
     public String name() {
-        return spec.namespace();
+        return strategy.namespace();
     }
 
     @Override
@@ -87,13 +87,13 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
         if (value == null) {
             return putNegativeAndGetRevision(key, ttl);
         }
-        Duration effective = effectiveTtl(ttl != null ? ttl : spec.ttl());
+        Duration effective = effectiveTtl(ttl != null ? ttl : strategy.centralTtl());
         return guarded(() -> store.write(key, value, effective));
     }
 
     @Override
     public long putNegativeAndGetRevision(CacheKey key, Duration ttl) {
-        if (!spec.nullCachingEnabled()) {
+        if (!strategy.nullCachingEnabled()) {
             // 关闭空值缓存：等价于删除（连版本一起删）
             guarded(() -> {
                 store.delete(key);
@@ -101,13 +101,13 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
             });
             return 0L;
         }
-        Duration effective = effectiveTtl(ttl != null ? ttl : spec.nullTtl());
+        Duration effective = effectiveTtl(ttl != null ? ttl : strategy.centralNullTtl());
         return guarded(() -> store.writeNegative(key, effective));
     }
 
     @Override
     public OptionalLong putIfAbsentAndGetRevision(CacheKey key, V value, Duration ttl) {
-        Duration effective = effectiveTtl(ttl != null ? ttl : spec.ttl());
+        Duration effective = effectiveTtl(ttl != null ? ttl : strategy.centralTtl());
         return guarded(() -> store.writeIfAbsent(key, value, effective));
     }
 
@@ -132,7 +132,7 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
     @Override
     public void clear() {
         guarded(() -> {
-            store.clear(spec.namespace());
+            store.clear(strategy.namespace());
             return 0L;
         });
     }
@@ -154,8 +154,8 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
     }
 
     @Override
-    public CentralCacheSpec spec() {
-        return spec;
+    public CacheStrategy cacheStrategy() {
+        return strategy;
     }
 
     @Override
@@ -179,12 +179,12 @@ public final class RedisCentralCache<V> implements CentralCache<V> {
             throw new CacheException(CacheResCode.INVALID_SPEC, "TTL 不能为负：" + ttl);
         }
         if (ttl.isZero()) {
-            if (!spec.allowNoExpiry()) {
+            if (!strategy.allowNoExpiry()) {
                 throw new CacheException(CacheResCode.INVALID_SPEC, "中央缓存不允许无 TTL");
             }
             return null;
         }
-        double jitter = spec.ttlJitter();
+        double jitter = strategy.centralTtlJitter();
         if (jitter <= 0D) {
             return ttl;
         }

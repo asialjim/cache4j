@@ -83,7 +83,7 @@ class HashMapDynamicLocalCacheTest {
     @SuppressWarnings("unchecked")
     private VersionedLocalCache<String> dynamic(LocalCacheSpec.DynamicSpec dynamic, HotKeyCoordinator coordinator) {
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
-        return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec, coordinator, clock::nanos);
+        return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec.toStrategy(), coordinator, clock::nanos);
     }
 
     private HotKeyCoordinator stub() {
@@ -233,6 +233,6 @@ class HashMapDynamicLocalCacheTest {
         LocalCacheSpec.DynamicSpec dynamic = globalThreshold(global);
         LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
         assertThrows(com.asialjim.cache4j.core.CacheException.class,
-                () -> LocalCaches.create(spec, null, clock::nanos));
+                () -> LocalCaches.create(spec.toStrategy(), null, clock::nanos));
     }
 }

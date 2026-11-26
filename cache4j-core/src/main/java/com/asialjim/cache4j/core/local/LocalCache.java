@@ -61,13 +61,8 @@ public interface LocalCache<V> extends Cache4j<CacheKey, V> {
      */
     void maintain();
 
-    /**
-     * @return 配置
-     */
-    LocalCacheSpec spec();
-
     @Override
     default String name() {
-        return spec().namespace();
+        return cacheStrategy().namespace();
     }
 }

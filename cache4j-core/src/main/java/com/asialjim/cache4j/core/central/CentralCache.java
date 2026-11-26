@@ -112,5 +112,4 @@ public interface CentralCache<V> extends Cache4j<CacheKey, V> {
     /**
      * @return 配置
      */
-    CentralCacheSpec spec();
 }

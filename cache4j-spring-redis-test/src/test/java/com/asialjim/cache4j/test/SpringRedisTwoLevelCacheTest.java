@@ -140,7 +140,7 @@ class SpringRedisTwoLevelCacheTest {
             var otherProvider = RedisTestEnvironment.centralProvider(
                     otherFactory, RedisTestEnvironment.globalSpecs());
             var otherCentral = otherProvider.<String>create(
-                    CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build());
+                    CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build().toStrategy());
             otherCentral.putAndGetRevision(
                     new com.asialjim.cache4j.core.CacheKey(NS, "42"), "user-42-v2", null);
             otherProvider.close();

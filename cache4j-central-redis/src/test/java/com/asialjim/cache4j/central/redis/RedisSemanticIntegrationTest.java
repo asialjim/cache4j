@@ -49,10 +49,10 @@ class RedisSemanticIntegrationTest {
                                                LocalCacheSpec spec,
                                                HotKeyCoordinator coordinator) {
         CentralCache<String> central = new RedisCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build(),
+                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build().toStrategy(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
-        LocalCache<String> local = LocalCaches.create(spec, coordinator, clock::nanos,
-                central::revisions, central.spec().failOpen());
+        LocalCache<String> local = LocalCaches.create(spec.toStrategy(), coordinator, clock::nanos,
+                central::revisions, central.cacheStrategy().failOpen());
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)

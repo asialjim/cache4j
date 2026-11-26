@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.Cache4j;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.CacheResCode;
@@ -62,8 +63,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     private final KeyEncoder keyEncoder;
     private final LocalCache<V> local;
     private final CentralCache<V> central;
-    private final LocalCacheSpec localSpec;
-    private final CentralCacheSpec centralSpec;
+    private final CacheStrategy strategy;
     private final com.asialjim.cache4j.core.coordination.SingleFlight<CacheKey, V> singleFlight =
             new com.asialjim.cache4j.core.coordination.LocalSingleFlight<>();
 
@@ -72,20 +72,19 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         this.keyEncoder = builder.keyEncoder;
         this.local = builder.local;
         // failOpen 的降级语义关在中央层里：编排层不需要在每个调用点上 try/catch
-        this.central = builder.central.spec().failOpen()
+        this.central = builder.central.cacheStrategy().failOpen()
                 ? new FailOpenCentralCache<>(builder.central)
                 : builder.central;
-        this.localSpec = local.spec();
-        this.centralSpec = central.spec();
+        this.strategy = local.cacheStrategy();
 
 
         LOG.debug("[{}]-{}-{}", "统一中央缓存", "装配", "namespace=" + namespace
-                + "，strategy=" + localSpec.strategy()
-                + "，maxSize=" + localSpec.maxSize()
-                + "，localTtl=" + localSpec.ttl()
-                + "，centralTtl=" + centralSpec.ttl()
-                + "，nullTtl=" + centralSpec.nullTtl()
-                + "，failOpen=" + centralSpec.failOpen());
+                + "，strategy=" + strategy.localStrategy()
+                + "，maxSize=" + strategy.localMaxSize()
+                + "，localTtl=" + strategy.localTtl()
+                + "，centralTtl=" + strategy.centralTtl()
+                + "，nullTtl=" + strategy.centralNullTtl()
+                + "，failOpen=" + strategy.failOpen());
     }
 
     // ------------------------------------------------------------------ Cache
@@ -153,7 +152,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     @Override
     public boolean putIfAbsent(K key, V value, Duration ttl) {
         CacheKey cacheKey = encode(key);
-        Duration effective = ttl != null ? ttl : centralSpec.ttl();
+        Duration effective = ttl != null ? ttl : strategy.centralTtl();
         Optional<Long> revision = central.putIfAbsentAndGetRevision(cacheKey, value, effective)
                 .stream().boxed().findFirst();
         if (revision.isEmpty()) {
@@ -186,8 +185,8 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     }
 
     @Override
-    public LocalStrategy strategy() {
-        return localSpec.strategy();
+    public CacheStrategy cacheStrategy() {
+        return strategy;
     }
 
     @Override
@@ -238,7 +237,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
             return new ReadResult<>(centralLookup.lookup(), Source.CENTRAL);
         }
         if (centralLookup.lookup().isNegative()) {
-            if (centralSpec.nullCachingEnabled()) {
+            if (strategy.nullCachingEnabled()) {
                 backfillNegative(cacheKey, centralLookup.revision());
             } else {
                 local.evict(cacheKey);
@@ -261,7 +260,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * 被另一个线程的更新版本抢先覆盖（D18 的竞态窗口）。</p>
      */
     /**
-     * 回填正副本：<strong>不带 TTL</strong>——存活多久由本地策略决定（{@code localSpec.ttl()}）。
+     * 回填正副本：<strong>不带 TTL</strong>——存活多久由本地策略决定（{@code strategy.localTtl()}）。
      *
      * <p>"该不该接、接不接得下"也由本地层判断（{@code putIfNewer} 内部含准入与版本比较），
      * 门面只负责把中央读到的值交过去。</p>
@@ -324,14 +323,14 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      */
     private boolean putLocal(CacheKey cacheKey, V value, long revision, Duration effective,
                              String detail, boolean writeOp) {
-        Duration localTtl = localSpec.ttl();
+        Duration localTtl = strategy.localTtl();
         Duration chosen = effective != null && localTtl != null && effective.compareTo(localTtl) < 0
                 ? effective : localTtl;
 
         // 条件写入：准入（DYNAMIC 冷 key）与版本比较都在本地实现内部完成
         boolean written = local.putIfNewer(cacheKey, value, revision, chosen);
         if (written) {
-            String subject = localSubject(localSpec.strategy());
+            String subject = localSubject(strategy.localStrategy());
             LOG.debug("[{}]-{}-[{}]-{}", subject, writeOp ? "写" : "读", cacheKey.masked(), detail);
         }
         return written;
@@ -340,7 +339,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     // ------------------------------------------------------------------ 写路径
 
     private Lookup<V> writeValue(CacheKey cacheKey, V value, Duration ttl) {
-        Duration effective = ttl != null ? ttl : centralSpec.ttl();
+        Duration effective = ttl != null ? ttl : strategy.centralTtl();
         long revision = central.putAndGetRevision(cacheKey, value, effective);
         if (revision == 0L) {
             // 没拿到版本 = 中央写失败且已按 failOpen 降级 → 不写本地，避免"只有我能看到的新值"
@@ -351,10 +350,10 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     }
 
     private Lookup<V> writeNegative(CacheKey cacheKey) {
-        if (!centralSpec.nullCachingEnabled()) {
+        if (!strategy.nullCachingEnabled()) {
             return Lookup.miss();
         }
-        long revision = central.putNegativeAndGetRevision(cacheKey, centralSpec.nullTtl());
+        long revision = central.putNegativeAndGetRevision(cacheKey, strategy.centralNullTtl());
         if (revision == 0L) {
             return Lookup.miss();
         }
@@ -364,8 +363,8 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     }
 
     private void writeNegativeOrEvict(CacheKey cacheKey, Duration ttl) {
-        if (centralSpec.nullCachingEnabled()) {
-            Duration effective = ttl != null ? ttl : centralSpec.nullTtl();
+        if (strategy.nullCachingEnabled()) {
+            Duration effective = ttl != null ? ttl : strategy.centralNullTtl();
             long revision = central.putNegativeAndGetRevision(cacheKey, effective);
             if (revision == 0L) {
                 return;
@@ -466,15 +465,14 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
             if (central == null) {
                 throw invalid("central 不能为空");
             }
-            LocalCacheSpec spec = local.spec();
-            if (!spec.namespace().equals(namespace)) {
-                throw invalid("namespace 不一致：builder=" + namespace + ", local=" + spec.namespace());
+            CacheStrategy ns = local.cacheStrategy();
+            if (!ns.namespace().equals(namespace)) {
+                throw invalid("namespace 不一致：builder=" + namespace + ", local=" + ns.namespace());
             }
-            if (!central.spec().namespace().equals(namespace)) {
+            if (!central.cacheStrategy().namespace().equals(namespace)) {
                 throw invalid("namespace 不一致：builder=" + namespace + ", central="
-                        + central.spec().namespace());
+                        + central.cacheStrategy().namespace());
             }
-            spec.validate();
             return new Cache4jImpl<>(this);
         }
 

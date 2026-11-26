@@ -3,7 +3,7 @@ package com.asialjim.cache4j.central;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 
 import java.time.Duration;
@@ -30,22 +30,22 @@ import java.util.function.LongSupplier;
  */
 public final class InMemoryCentralCache<V> implements CentralCache<V> {
 
-    private final CentralCacheSpec spec;
+    private final CacheStrategy strategy;
     private final ConcurrentHashMap<CacheKey, Entry<V>> data = new ConcurrentHashMap<>();
     private final LongSupplier milliClock;
 
     /**
-     * @param spec       配置
+     * @param strategy       配置
      * @param milliClock 毫秒时钟
      */
-    public InMemoryCentralCache(CentralCacheSpec spec, LongSupplier milliClock) {
-        this.spec = spec;
+    public InMemoryCentralCache(CacheStrategy strategy, LongSupplier milliClock) {
+        this.strategy = strategy;
         this.milliClock = milliClock;
     }
 
     @Override
     public String name() {
-        return spec.namespace();
+        return strategy.namespace();
     }
 
     @Override
@@ -99,12 +99,12 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
 
     @Override
     public long putAndGetRevision(CacheKey key, V value, Duration ttl) {
-        return store(key, value, false, effectiveTtl(ttl != null ? ttl : spec.ttl()));
+        return store(key, value, false, effectiveTtl(ttl != null ? ttl : strategy.centralTtl()));
     }
 
     @Override
     public long putNegativeAndGetRevision(CacheKey key, Duration ttl) {
-        Duration effective = ttl != null ? ttl : spec.nullTtl();
+        Duration effective = ttl != null ? ttl : strategy.centralNullTtl();
         return store(key, null, true, effectiveTtl(effective));
     }
 
@@ -120,7 +120,7 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
             }
             newRevision = nextRevision(existing, now);
             created = new Entry<>(value, false, newRevision, expireAt(effectiveTtl(
-                    ttl != null ? ttl : spec.ttl()), now));
+                    ttl != null ? ttl : strategy.centralTtl()), now));
             data.put(key, created);
         }
         return OptionalLong.of(newRevision);
@@ -157,8 +157,8 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
     }
 
     @Override
-    public CentralCacheSpec spec() {
-        return spec;
+    public CacheStrategy cacheStrategy() {
+        return strategy;
     }
 
     /**
@@ -199,7 +199,7 @@ public final class InMemoryCentralCache<V> implements CentralCache<V> {
         if (ttl == null || ttl.isZero()) {
             return ttl;
         }
-        double jitter = spec.ttlJitter();
+        double jitter = strategy.centralTtlJitter();
         if (jitter <= 0D) {
             return ttl;
         }

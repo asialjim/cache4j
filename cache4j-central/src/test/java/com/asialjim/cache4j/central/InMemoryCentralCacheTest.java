@@ -36,7 +36,7 @@ class InMemoryCentralCacheTest {
     @BeforeEach
     void setUp() {
         cache = new InMemoryCentralCache<>(
-                CentralCacheSpec.builder("user:detail").ttl(Duration.ofMinutes(10)).build(),
+                CentralCacheSpec.builder("user:detail").ttl(Duration.ofMinutes(10)).build().toStrategy(),
                 clock::millis);
     }
 

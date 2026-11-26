@@ -72,9 +72,9 @@ class TwoLevelCacheConcurrencyTest {
                     effective, LocalCacheSpec.DynamicSpec.defaults());
             default -> LocalCacheSpec.staticCache(NS, 1_000, Duration.ofMinutes(1), effective);
         };
-        LocalCache<String> local = LocalCaches.create(localSpec, null, nanos::get);
+        LocalCache<String> local = LocalCaches.create(localSpec.toStrategy(), null, nanos::get);
         CentralCache<String> central = new InMemoryCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build(), millis::get);
+                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build().toStrategy(), millis::get);
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)

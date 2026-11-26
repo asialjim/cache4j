@@ -2,7 +2,7 @@ package com.asialjim.cache4j.central.redis;
 
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCacheSpec;
 
@@ -58,9 +58,9 @@ public final class RedisCentralCacheProvider implements CentralCacheProvider {
 
     @Override
     @SuppressWarnings("unchecked")
-    public <V> CentralCache<V> create(CentralCacheSpec spec) {
+    public <V> CentralCache<V> create(CacheStrategy strategy) {
         RedisValueStore<V> typed = (RedisValueStore<V>) (RedisValueStore<?>) store;
-        return new RedisCentralCache<>(spec, typed);
+        return new RedisCentralCache<>(strategy, typed);
     }
 
     @Override

@@ -1,5 +1,7 @@
 package com.asialjim.cache4j.core.central;
 
+import com.asialjim.cache4j.core.CacheStrategy;
+
 import java.util.Optional;
 
 /**
@@ -19,7 +21,7 @@ public interface CentralCacheProvider extends AutoCloseable {
      * @param <V>  值类型
      * @return 中央缓存视图
      */
-    <V> CentralCache<V> create(CentralCacheSpec spec);
+    <V> CentralCache<V> create(CacheStrategy strategy);
 
     /**
      * 可选：提供跨节点热 key 协调；为空时 {@code DYNAMIC + coordination=GLOBAL} <strong>启动失败</strong>。

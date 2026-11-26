@@ -5,7 +5,7 @@ import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
 import com.asialjim.cache4j.core.local.StaticLocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.twolevel.Reconciler;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.local.LocalStrategy;
@@ -52,7 +52,7 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
      */
     private static final long NEVER = Long.MAX_VALUE;
 
-    private final LocalCacheSpec spec;
+    private final CacheStrategy strategy;
     private final com.github.benmanes.caffeine.cache.Cache<CacheKey, TimedEntry<V>> cache;
 
     /**
@@ -75,13 +75,13 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
      * @param spec      配置
      * @param nanoClock 单调时钟（同时作为 Caffeine 的 ticker，便于测试注入）
      */
-    public CaffeineLocalCache(LocalCacheSpec spec, LongSupplier nanoClock,
+    public CaffeineLocalCache(CacheStrategy strategy, LongSupplier nanoClock,
                              Function<Collection<CacheKey>, Map<CacheKey, Long>> versionReader, boolean failOpen) {
-        this.spec = spec;
+        this.strategy = strategy;
         this.nanoClock = nanoClock;
         Ticker ticker = nanoClock::getAsLong;
         this.cache = Caffeine.newBuilder()
-                .maximumSize(spec.maxSize())
+                .maximumSize(strategy.localMaxSize())
                 .ticker(ticker)
                 .expireAfter(new Expiry<CacheKey, TimedEntry<V>>() {
                     @Override
@@ -112,19 +112,19 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
                 .executor(Runnable::run)
                 .recordStats()
                 .build();
-        this.reconciler = new Reconciler<>(spec.namespace(), this, versionReader, spec.version(), failOpen);
+        this.reconciler = new Reconciler<>(strategy.namespace(), this, versionReader, strategy, failOpen);
         // 条目过期 / 淘汰 / 失效时立即清掉分区号与分区索引，不等下一次对账才发现
         onEntryRemoved(reconciler::forget);
     }
 
     @Override
     public LocalStrategy strategy() {
-        return spec.strategy();
+        return strategy.localStrategy();
     }
 
     @Override
-    public LocalCacheSpec spec() {
-        return spec;
+    public CacheStrategy cacheStrategy() {
+        return strategy;
     }
 
     @Override
@@ -156,8 +156,8 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
 
     @Override
     public boolean putIfNewer(CacheKey key, V value, long revision, Duration ttl) {
-        // TTL 归本地策略管：负副本用 nullTtl，正副本用 ttl（可空 = spec.ttl()）
-        Duration effective = value == null ? spec.nullTtl() : ttl != null ? ttl : spec.ttl();
+        // TTL 归本地策略管：负副本用 nullTtl，正副本用 ttl（可空 = strategy.localTtl()）
+        Duration effective = value == null ? strategy.localNullTtl() : ttl != null ? ttl : strategy.localTtl();
         if (effective != null && effective.isZero()) {
             return false;        // 不缓存负副本
         }

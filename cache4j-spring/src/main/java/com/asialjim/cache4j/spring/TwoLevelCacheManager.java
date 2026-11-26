@@ -109,14 +109,13 @@ public final class TwoLevelCacheManager implements AutoCloseable {
                 LOG.error("[{}]-{}-{}", "缓存装配", "装配", "重复的缓存名：namespace=" + namespace);
                 throw new IllegalStateException("重复的缓存名：" + namespace);
             }
-            LocalCacheSpec localSpec = definition.local();
-            localSpec.validate();
+            var strategy = definition.strategy();
 
             // 先有中央，再把「版本读取器」交给本地：对账是本地副本的新鲜度问题，
             // 但本地需要能问中央「这批 key 的权威版本是多少」
-            CentralCache<Object> central = options.centralProvider().create(definition.central());
+            CentralCache<Object> central = options.centralProvider().create(strategy);
             LocalCache<Object> local = options.localProvider()
-                    .create(localSpec, coordinator, central::revisions, definition.central().failOpen());
+                    .create(strategy, coordinator, central::revisions, strategy.failOpen());
 
             Cache4j<Object, Object> cache = Cache4jImpl.<Object, Object>builder(namespace)
                     .keyEncoder(options.keyEncoder())
@@ -124,9 +123,9 @@ public final class TwoLevelCacheManager implements AutoCloseable {
                     .central(central)
                     .build();
             built.put(namespace, cache);
-            LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "namespace=" + namespace + "，装配完成，strategy=" + localSpec.strategy()
-                    + "，localTtl=" + localSpec.ttl()
-                    + "，centralTtl=" + definition.central().ttl()
+            LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "namespace=" + namespace + "，装配完成，strategy=" + strategy.localStrategy()
+                    + "，localTtl=" + strategy.localTtl()
+                    + "，centralTtl=" + strategy.centralTtl()
                     + "，coordinator=" + (coordinator == null ? "none" : coordinator.getClass().getSimpleName()));
         }
         LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "共装配 " + built.size() + " 个缓存："
@@ -257,9 +256,9 @@ public final class TwoLevelCacheManager implements AutoCloseable {
         LOG.warn("[{}]-{}-{}", "缓存装配", "声明", name + " 未经 CacheStrategyDecl 声明，按内建默认创建，请补充到声明枚举"
                         + "（未声明 namespace 累计 " + undeclared.size() + " 个）");
         CacheDefinition definition = BuiltinDefaults.definitionOf(name, LocalStrategy.STATIC);
-        CentralCache<Object> central = undeclaredCentralProvider.create(definition.central());
-        LocalCache<Object> local = localProvider.create(definition.local(), coordinator,
-                central::revisions, definition.central().failOpen());
+        CentralCache<Object> central = undeclaredCentralProvider.create(definition.strategy());
+        LocalCache<Object> local = localProvider.create(definition.strategy(), coordinator,
+                central::revisions, definition.strategy().failOpen());
         Cache4j<Object, Object> created = Cache4jImpl.<Object, Object>builder(name)
                 .keyEncoder(keyEncoder)
                 .local(local)

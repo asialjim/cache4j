@@ -69,6 +69,47 @@ public record LocalCacheSpec(
     public static final int DEFAULT_NULL_TTL_DIVISOR = 10;
 
     /**
+     * 转成运行期策略（<strong>过渡用</strong>：中央侧字段取内建默认值）。
+     *
+     * <p>生产装配走 {@code CacheStrategyProperty.toStrategy()}，那里中央字段是真实的。</p>
+     *
+     * @return 运行期策略
+     */
+    public com.asialjim.cache4j.core.CacheStrategy toStrategy() {
+        DynamicSpec d = dynamic;
+        GlobalSpec g = d == null ? null : d.global();
+        return new com.asialjim.cache4j.core.CacheStrategy(
+                namespace, null, strategy, maxSize, ttl,
+                nullTtl != null ? nullTtl : Duration.ZERO,
+                version == null ? Duration.ofSeconds(10) : version.checkInterval(),
+                version == null ? Duration.ofSeconds(1) : version.jitter(),
+                version == null ? Duration.ofSeconds(1) : version.retryBackoff(),
+                version == null ? 64 : version.reconcileBatchSize(),
+                version == null ? 16 : version.reconcilePartitions(),
+                d == null ? 0L : d.hotThresholdQps(),
+                d == null ? 0L : d.coolQps(),
+                d == null ? null : d.window(),
+                d == null ? 16 : d.windowSlices(),
+                d == null ? 1_000 : d.maxHotKeys(),
+                d == null ? Duration.ofSeconds(1) : d.syncInterval(),
+                d == null ? Duration.ofSeconds(30) : d.cooldown(),
+                d == null ? com.asialjim.cache4j.core.Coordination.LOCAL
+                        : com.asialjim.cache4j.core.Coordination.valueOf(d.coordination().name()),
+                d == null ? 14 : d.sketchWidthBits(),
+                d == null ? 4 : d.sketchDepth(),
+                d == null ? 16 : d.hotReportPartitions(),
+                d == null ? 64 : d.hotReportBatchMax(),
+                d == null ? 1 << 12 : d.candidateCapacity(),
+                g == null ? null : g.window(),
+                g == null ? 100L : g.hotQps(),
+                g == null ? 25L : g.coolQps(),
+                g == null ? 1 : g.demoteWindows(),
+                g == null ? 6 : g.staleWindows(),
+                g == null ? 1 : g.clientEstimate(),
+                Duration.ofMinutes(10), Duration.ofMinutes(1), 0D, true, false);
+    }
+
+    /**
      * 派生本地空值副本的存活时长：{@code min(localTtl, centralNullTtl / divisor)}。
      *
      * <p>空值副本只是"防穿透的临时标记"，比中央活得久毫无意义；让本地比中央<strong>更早</strong>

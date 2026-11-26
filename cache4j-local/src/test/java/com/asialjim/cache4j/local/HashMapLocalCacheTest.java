@@ -19,7 +19,7 @@ class HashMapLocalCacheTest extends LocalCacheContractTest {
     @SuppressWarnings("unchecked")
     protected VersionedLocalCache<String> newCache(long maxSize) {
         LocalCacheSpec spec = LocalCacheSpec.staticCache("user:detail", maxSize, Duration.ofSeconds(30));
-        return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec, null, clock::nanos);
+        return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec.toStrategy(), null, clock::nanos);
     }
 
     @Override

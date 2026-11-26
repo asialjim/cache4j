@@ -52,16 +52,26 @@ class TwoLevelCacheIntegrationTest {
         return build(localSpec, central, 10);
     }
 
+    /**
+     * 装配：<strong>先合并出一份完整策略，三层共享</strong>。
+     *
+     * <p>如果本地与中央各自 {@code toStrategy()}，会得到两份（本地字段真实的 / 中央字段默认的），
+     * 门面取到哪份就决定行为——中央 nullTtl=0 时照样会写负副本这种错最难查。</p>
+     */
     private Cache4j<String, String> build(LocalCacheSpec localSpec, CentralCache<String> central,
                                                  int localNullTtlDivisor) {
-        // 负副本 TTL 由本地策略给出：装配时按 centralNullTtl / N 算好塞进 spec
-        LocalCacheSpec spec = localSpec.nullTtl() != null ? localSpec
+        com.asialjim.cache4j.core.central.CentralCacheSpec centralSpec =
+                com.asialjim.cache4j.core.central.CentralCacheSpec.of(central.cacheStrategy());
+        // 负副本 TTL 按 centralNullTtl / N 派生后塞进本地规格（NONE 保持原样：它没有 TTL 与容量）
+        LocalCacheSpec spec = localSpec.strategy() == com.asialjim.cache4j.core.local.LocalStrategy.NONE
+                ? localSpec
                 : LocalCacheSpec.staticCache(localSpec.namespace(), localSpec.maxSize(), localSpec.ttl(),
-                        LocalCacheSpec.deriveNullTtl(localSpec.ttl(), central.spec().nullTtl(),
+                        LocalCacheSpec.deriveNullTtl(localSpec.ttl(), centralSpec.nullTtl(),
                                 localNullTtlDivisor), localSpec.version());
-        // 先有中央，再把「版本读取器」交给本地——对账是本地自己的事，但它需要问中央版本
-        LocalCache<String> local = LocalCaches.create(spec, null, clock::nanos,
-                central::revisions, central.spec().failOpen());
+        com.asialjim.cache4j.core.CacheStrategy strategy =
+                com.asialjim.cache4j.core.CacheStrategy.of(spec, centralSpec);
+        LocalCache<String> local = LocalCaches.create(strategy, null, clock::nanos,
+                central::revisions, strategy.failOpen());
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)
@@ -69,9 +79,16 @@ class TwoLevelCacheIntegrationTest {
     }
 
     private CentralCache<String> central(Duration nullTtl) {
-        return new InMemoryCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).nullTtl(nullTtl).build(),
-                clock::millis);
+        return new InMemoryCentralCache<>(centralOnly(NS, nullTtl), clock::millis);
+    }
+
+    /**
+     * 只关心中央字段的策略（本地侧取内建默认）——供"单独构造中央"的用例使用。
+     * 需要三层协同时走 {@link #build}，那里会合并出一份完整策略。
+     */
+    private static com.asialjim.cache4j.core.CacheStrategy centralOnly(String namespace, Duration nullTtl) {
+        return CentralCacheSpec.builder(namespace).ttl(Duration.ofMinutes(10)).nullTtl(nullTtl)
+                .build().toStrategy();
     }
 
     private LocalCacheSpec.VersionSpec fastVersion() {
@@ -308,15 +325,16 @@ class TwoLevelCacheIntegrationTest {
      */
     private static final class FailingCentralCache implements CentralCache<String> {
 
-        private final CentralCacheSpec spec;
+        private final com.asialjim.cache4j.core.CacheStrategy strategy;
 
         private FailingCentralCache(String namespace, boolean failOpen) {
-            this.spec = CentralCacheSpec.builder(namespace).ttl(Duration.ofMinutes(1)).failOpen(failOpen).build();
+            this.strategy = CentralCacheSpec.builder(namespace)
+                    .ttl(Duration.ofMinutes(1)).failOpen(failOpen).build().toStrategy();
         }
 
         @Override
         public String name() {
-            return spec.namespace();
+            return strategy.namespace();
         }
 
         private static com.asialjim.cache4j.core.CacheException down() {
@@ -400,8 +418,8 @@ class TwoLevelCacheIntegrationTest {
         }
 
         @Override
-        public CentralCacheSpec spec() {
-            return spec;
+        public com.asialjim.cache4j.core.CacheStrategy cacheStrategy() {
+            return strategy;
         }
     }
 }

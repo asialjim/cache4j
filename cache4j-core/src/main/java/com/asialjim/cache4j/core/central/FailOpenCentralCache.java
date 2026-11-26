@@ -144,8 +144,8 @@ public final class FailOpenCentralCache<V> implements CentralCache<V> {
     }
 
     @Override
-    public CentralCacheSpec spec() {
-        return delegate.spec();
+    public com.asialjim.cache4j.core.CacheStrategy cacheStrategy() {
+        return delegate.cacheStrategy();
     }
 
     @Override

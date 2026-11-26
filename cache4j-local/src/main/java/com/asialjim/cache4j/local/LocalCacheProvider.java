@@ -2,7 +2,7 @@ package com.asialjim.cache4j.local;
 
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 
 /**
  * 本地缓存 provider：把配置装配成 {@link LocalCache}。
@@ -17,26 +17,26 @@ public interface LocalCacheProvider {
     /**
      * 创建本地缓存。
      *
-     * @param spec        配置
+     * @param strategy        配置
      * @param coordinator 热 key 协调器；{@code DYNAMIC + GLOBAL} 时必填
      * @param <V>         值类型
      * @return 本地缓存
      */
-    default <V> LocalCache<V> create(LocalCacheSpec spec, HotKeyCoordinator coordinator) {
-        return create(spec, coordinator, null, false);
+    default <V> LocalCache<V> create(CacheStrategy strategy, HotKeyCoordinator coordinator) {
+        return create(strategy, coordinator, null, false);
     }
 
     /**
      * 创建本地缓存，并注入中央版本读取器（对账用）。
      *
-     * @param spec          配置
+     * @param strategy          配置
      * @param coordinator   热 key 协调器；{@code DYNAMIC + GLOBAL} 时必填
      * @param versionReader 中央版本读取器；{@code null} 表示不对账
      * @param failOpen      中央不可用时是否放行
      * @param <V>           值类型
      * @return 本地缓存
      */
-    <V> LocalCache<V> create(LocalCacheSpec spec, HotKeyCoordinator coordinator,
+    <V> LocalCache<V> create(CacheStrategy strategy, HotKeyCoordinator coordinator,
                              java.util.function.Function<java.util.Collection<com.asialjim.cache4j.core.CacheKey>,
                                      java.util.Map<com.asialjim.cache4j.core.CacheKey, Long>> versionReader,
                              boolean failOpen);
@@ -44,11 +44,11 @@ public interface LocalCacheProvider {
     /**
      * 创建本地缓存（单机协调）。
      *
-     * @param spec 配置
+     * @param strategy 配置
      * @param <V>  值类型
      * @return 本地缓存
      */
-    default <V> LocalCache<V> create(LocalCacheSpec spec) {
-        return create(spec, null);
+    default <V> LocalCache<V> create(CacheStrategy strategy) {
+        return create(strategy, null);
     }
 }
