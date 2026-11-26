@@ -13,7 +13,9 @@
 ---
 
 > **实现状态（2026-11 重构后）**：本文描述的设计基本仍然成立，但类名与外围设施已变——
-> 门面实现是 `Cache4jImpl`（原 `DefaultTwoLevelCache`），顶层接口统一为 `Cache4j`，
+> 门面实现是 `Cache4jImpl`（原 `DefaultTwoLevelCache`），顶层接口统一为 `Cache4j`；
+> 本地层分三层接口：`LocalCache`（交集）→ `VersionedLocalCache`（+ 版本簿记）→
+> `StaticLocalCache` / `DynamicLocalCache`（+ 热 key）；`NoneLocalCache` 停在交集上，
 > 统计与 `CacheLogger` 已移除，编码器只剩 `plain` 与 `delegate`。
 > 完整清单见 `DESIGN.md` §3.9「重构后的类地图」与 `REFACTOR.md` §9。
 

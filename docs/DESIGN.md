@@ -176,12 +176,27 @@ Redis 方向的三层 SPI：
 
 > 重构（`docs/REFACTOR.md`）之后的实际结构。以下是**代码里真实存在的类**，读代码时以这节为准。
 
-| 层 | 接口 | 默认实现 | 职责 |
+| 层 | 接口 | 实现 | 职责 |
 |---|---|---|---|
 | 顶层 | `Cache4j<K,V>` | — | 三层共用的契约：`lookup` / `get` / `put` / `putIfAbsent` / `evict` / `clear` |
-| 本地 | `LocalCache<V>` | `HashMapLocalCache` / `CaffeineLocalCache` / `DynamicLocalCache` / `NoOpLocalCache` | 只负责"本地怎么存"，key 是编码后的 `CacheKey` |
+| 本地（交集） | `LocalCache<V>` | `NoneLocalCache`（record） | 只管"本地怎么存"，值是业务值 `V`；没有版本、没有热 key 概念 |
+| 本地（有版本） | `VersionedLocalCache<V>` | `HashMapLocalCache` / `CaffeineLocalCache` | 交集 + `keys()` / `onEntryRemoved()` / `putIfNewer` / `entryOf`——对账所需的簿记 |
+| 本地（有热 key） | `StaticLocalCache<V>` / `DynamicLocalCache<V>` | `HashMapDynamicLocalCache` / `CaffeineDynamicLocalCache` | DYNAMIC = STATIC + 准入（继承自对应存储实现） |
 | 中央 | `CentralCache<V>` | `InMemoryCentralCache` / `RedisCentralCache` | 版本产生、负缓存、TTL 抖动 |
-| 门面 | — | **`Cache4jImpl<K,V>`** | 编排本地 + 中央；持有 `SingleFlight` 与 `Reconciler` |
+| 门面 | — | **`Cache4jImpl<K,V>`** | **只做编排**：本地查不到就查中央。持有 `SingleFlight` |
+
+> **能力按需分层，不是三个策略的并集。** `NONE` 停在 `LocalCache` 上——它不存值，也就没有
+> 版本、没有副本可对账、没有热 key 可言。`keys()` / `onEntryRemoved()` 因此不属于交集。
+
+门面**不知道**的事（全部沉在本地 / 中央后面）：
+
+| 曾经在门面里 | 现在的归属 |
+|---|---|
+| 判断本地是否启用（`local.available()`） | `NoneLocalCache` 读恒 miss——"不开启本地"就是"未命中" |
+| 热 key 判定 / 记频次 / 升热 / 上报 | `DynamicLocalCache.lookup()` 内部（`HotKeyAdmission`） |
+| 对账（`reconciler.maybeReconcile` / `track` / `forget`） | `VersionedLocalCache` 的实现里，读路径内联 |
+| 版本号（`LocalEntry.revision`） | 本地实现的内部簿记，`toLookup()` 出口处丢掉 |
+| 回填准入（`local.accepts()`） | `putIfNewer()` 内部判断，返回 `false` 就是"本地不收" |
 
 辅助组件：
 
@@ -189,12 +204,14 @@ Redis 方向的三层 SPI：
 |---|---|---|
 | `CacheStrategyProperty` | **一个 namespace 的全部配置**（37 个扁平字段） | 唯一配置定义；只允许包装类型与 `String`；不做 DTO / ORM |
 | `SingleFlight` / `LocalSingleFlight` | 单飞：同一 key 只有一个写者 | 独立契约，返回 `Lookup` 而非 `V`（保留三态） |
-| `Reconciler` | 版本对账 | 分区索引 + 信号量 + 批量比对；`maybeReconcile` 调用即对账 |
+| `Reconciler` | 版本对账 | 住在**本地层内部**；只依赖 `Function<Collection<CacheKey>, Map<CacheKey,Long>>`（版本读取器），不依赖任何中央实现 |
+| `HotKeyAdmission` | 热点准入判定 | 不实现 `LocalCache`，只回答"是否已热 / 本次是否升热 / 到点是否上报"；一份逻辑服务 HashMap 与 Caffeine |
 | `CacheStrategyCache` | 策略**读**路径（带自举缓存） | 与下面共享同一个 `DefaultCacheStrategyRepository` |
 | `CacheStrategyAdministrator` | 策略**管理**面（分页 / 详情 / 变更） | 变更后写穿或 evict 自举缓存 |
 
 已删除的类（不要在新代码里引用）：`Cache`（旧顶层名）、`TwoLevelCache`、`DefaultTwoLevelCache`、
 `CacheStats` / `CacheCounters` / `CacheStatsSnapshot` / `NoopStats`、`CacheLogger`、
+`NoOpLocalCache`（并入 core 的 `NoneLocalCache` record）、`AbstractDynamicLocalCache`（准入下沉到 `HotKeyAdmission`）、
 `CachedCacheStrategyRepository`、`Envelope`、`KeyEncoders.canonical/tagged/identity`。
 
 ---
@@ -1048,18 +1065,18 @@ void evict(K key) {
 
 #### 5.9.2 四条规则
 
-1. **本地升热立即生效**：本地窗口频次达到 `localHotThreshold`，直接升入本地，不等中央确认。
+1. **本地升热立即生效**：本地窗口频次达到 `hotThresholdQps`，直接升入本地，不等中央确认。
 2. **本地不升热 ≠ 不热**：本地未达阈值时，在访问驱动的热同步事件中向中央做补偿查询；中央判定 `HOT` 则升热。
 3. **降热只认中央**：本地频次下降、空闲都不构成降热依据；只有中央返回 `COOLING` 才真正降热。
 4. **预选阈值必须低于本地升热阈值**：预选（candidate）桶只收"本地看起来还不够热、但集群口径可能已经够热"的 key，门槛为
 
    ```text
    candidateThreshold U = clamp( ceil(global.hotThreshold / global.clientEstimate),
-                                 1, localHotThreshold - 1 )
+                                 1, hotThresholdQps - 1 )
    ```
 
    - `clientEstimate`：连接**同一套 Redis** 的 cache4j 客户端实例数（部署方填，默认 1）；
-   - 硬约束 `U < localHotThreshold`：若 `U >= L`，任何达到 U 的 key 早已被本地升热，候选桶永远为空，机制失去意义；
+   - 硬约束 `U < hotThresholdQps`：若 `U >= L`，任何达到 U 的 key 早已被本地升热，候选桶永远为空，机制失去意义；
    - 取值带宽是 `[U, L)`。均匀分布下全局热 key 的单节点份额是 `global.hotThreshold / clientEstimate`，只有 `U <= 该份额` 才能保证它在每个节点都落进候选桶 → 有人上报 → 中央看到合计 → 判 `HOT`。否则精确复现"50 节点各 1 万次、谁都不热"的原问题；
    - `U`（来自 `global.window`）与 `L`（来自 `dynamic.window`）必须**同窗口口径**，不等时按比例换算。
 
@@ -1203,10 +1220,10 @@ Cache4j<String, User> cache = Cache4j.<String, User>builder("user:detail")
 | namespace 非空、1–64、字符集合法、无 `{}` | 见 §4.3.5 |
 | `NONE` | 忽略本地容量/TTL/版本校验；若配置了非零本地参数，记 WARN |
 | `STATIC` | `maxSize > 0`；`ttl > 0`；`ttl <= central.ttl`（中央有限时）；`version.checkInterval > 0` |
-| `DYNAMIC` | `maxSize > 0`；`ttl > 0`；`1 <= dynamic.maxHotKeys <= maxSize`；`1 <= dynamic.localHotThreshold <= 255`；`dynamic.window > 0`；`dynamic.hotTtl > 0` 且 `<= central.ttl`；`dynamic.syncInterval > 0`；`dynamic.cooldown >= 0`；`dynamic.sketchWidth` 为 2 的幂且 `>= 1024`；`dynamic.sketchDepth >= 2` |
+| `DYNAMIC` | `maxSize > 0`；`ttl > 0`；`1 <= dynamic.maxHotKeys <= maxSize`；`1 <= dynamic.hotThresholdQps <= 255`；`dynamic.window > 0`；`dynamic.hotTtl > 0` 且 `<= central.ttl`；`dynamic.syncInterval > 0`；`dynamic.cooldown >= 0`；`dynamic.sketchWidth` 为 2 的幂且 `>= 1024`；`dynamic.sketchDepth >= 2` |
 | `DYNAMIC` + `coordination=GLOBAL` | 必须提供 `HotKeyCoordinator`；`dynamic.global.window > 0`；`dynamic.global.coolThreshold < dynamic.global.hotThreshold`；`dynamic.global.demoteWindows >= 1`；`dynamic.global.staleWindows >= 1`；**`dynamic.cooldown >= dynamic.global.demoteWindows × dynamic.global.window`** |
 | `DYNAMIC` 上报分区 | `dynamic.hotReportPartitions` 为 2 的幂且 `>= 2`；`1 <= dynamic.hotReportBatchMax <= dynamic.maxHotKeys` |
-| `DYNAMIC` 预选阈值 | `global.clientEstimate >= 1`；`localHotThreshold >= 2`；派生 `U = clamp(ceil(global.hotThreshold / global.clientEstimate), 1, localHotThreshold - 1)`，clamp 后恒 `< localHotThreshold`；若 clamp **前** `ceil(G / clientEstimate) >= localHotThreshold` → WARN（候选带宽只剩 1，全局机制无额外收益） |
+| `DYNAMIC` 预选阈值 | `global.clientEstimate >= 1`；`hotThresholdQps >= 2`；派生 `U = clamp(ceil(global.hotThreshold / global.clientEstimate), 1, hotThresholdQps - 1)`，clamp 后恒 `< hotThresholdQps`；若 clamp **前** `ceil(G / clientEstimate) >= hotThresholdQps` → WARN（候选带宽只剩 1，全局机制无额外收益） |
 | 中央 TTL | `> 0`，或显式 `allowNoExpiry=true`；`nullTtl >= 0` |
 | 空值缓存 | `nullTtl > 0` 时本地负副本 TTL = `min(localTtl, nullTtl)` 且必须 `<= nullTtl`；`nullTtl == 0` 时两层都不得存负副本 |
 | 版本机制 | `version.checkInterval > 0`；`0 <= version.jitter <= 0.5`；`version.retryBackoff > 0`；`STATIC` / `DYNAMIC` 不允许关闭 |
@@ -1227,14 +1244,14 @@ Cache4j<String, User> cache = Cache4j.<String, User>builder("user:detail")
 | `dynamic.syncInterval` | `1s` | `DYNAMIC` 热 key 同步点间隔（访问驱动） |
 | `dynamic.hotReportPartitions` | `16` | 热 key 上报分区数（2 的幂、≥ 2）；单次上报的 key 数 ≈ `maxHotKeys / N` |
 | `dynamic.hotReportBatchMax` | `64` | 单次 `reportAndStatusAll` 的硬上限（≈ 400 次 `redis.call`），防倾斜分区夯住 Redis |
-| `dynamic.localHotThreshold` | `5` / 窗口 | 本地升热阈值；达到立即升热 |
+| `dynamic.hotThresholdQps` | `5` / 窗口 | 本地升热阈值；达到立即升热 |
 | `dynamic.window` | `10s` | 本地频率窗口 |
 | `dynamic.maxHotKeys` | `1_000` | 本地热点集合上限 |
 | `dynamic.hotTtl` | `60s` | 热点 key 本地最长存活 |
 | `dynamic.coordination` | `LOCAL`（单机）/ `GLOBAL`（生产） | 热度协调模式 |
 | `dynamic.global.window` | `10s` | 中央热 key 计数窗口 |
 | `dynamic.global.hotThreshold` | 按业务压测 | 集群级升热阈值 |
-| `dynamic.global.clientEstimate` | `1` | 连接同一套 Redis 的 cache4j 客户端实例数；用于推导预选阈值 `U = ceil(hotThreshold / clientEstimate)`（上限被 `localHotThreshold - 1` 夹住） |
+| `dynamic.global.clientEstimate` | `1` | 连接同一套 Redis 的 cache4j 客户端实例数；用于推导预选阈值 `U = ceil(hotThreshold / clientEstimate)`（上限被 `hotThresholdQps - 1` 夹住） |
 | `dynamic.global.coolThreshold` | `dynamic.global.hotThreshold / 4` | 集群级降热阈值，形成滞回 |
 | `dynamic.global.demoteWindows` | `3` | 连续低于冷阈值的窗口数后判 `COOLING` |
 | `dynamic.global.staleWindows` | `3` | 超过多少个窗口无上报判 `COOLING` |
@@ -1480,7 +1497,7 @@ key 可能包含手机号、证件号等敏感信息；日志中只打印 `Cache
 - 断言降热时该 key 的 pending 增量与分区桶条目被清空（不会再上报一个已降热的 key）；
 - 断言上报失败后整批增量被回填，下一轮继续上报；
 - 断言同一 key 在不同节点（相同 `encodedKey`）落入同一分区号。
-- 断言派生阈值恒满足 `U < localHotThreshold`（clamp 生效）；且 clamp 前 `G/clientEstimate >= localHotThreshold` 时启动记 WARN；
+- 断言派生阈值恒满足 `U < hotThresholdQps`（clamp 生效）；且 clamp 前 `G/clientEstimate >= hotThresholdQps` 时启动记 WARN；
 - **预选闭环用例（回归）**：`G=100k`、`clientEstimate=50` → `U=2k`、`L=10k`；某 key 每节点 3k/窗口（本地不升热，集群合计 150k ≥ G）→ 断言它进入候选桶、被上报、各节点收到 `HOT` 后补偿升热；
 - **必要性反例**：把 `clientEstimate` 配成 5（`U=20k > G/50`）→ 断言该 key 不再被任何节点预选、中央看不到合计、集群判不出 `HOT`（验证 "`U <= G/N` 是必要条件"）；
 - 断言候选桶满时按草图估计值保留 top-B（不是 FIFO）。
@@ -1560,7 +1577,7 @@ key 可能包含手机号、证件号等敏感信息；日志中只打印 `Cache
 4. Spring 适配基线：Spring Boot 3.2+ 先做，Boot 4 是否同版本支持。
 5. Solon 适配基线：以 `solon-data` 的 `CacheService` 为准（API 自 1.0 稳定）；`@Cache` 注解与 tags 的桥接是否需要完整覆盖；是否对称增加 `cache4j-solon-redis`（复用 Solon 的 Redis 插件）。
 6. 是否需要异步 API（`CompletableFuture`）或虚拟线程优化（Java 21 后再评估）。
-7. `DYNAMIC` 默认参数需要压测校准：`dynamic.localHotThreshold`、`dynamic.window`、`dynamic.maxHotKeys`、`dynamic.candidateCapacity`、`dynamic.hotReportPartitions`、`dynamic.hotReportBatchMax`、`dynamic.global.hotThreshold`、`dynamic.global.clientEstimate`、`dynamic.global.coolThreshold`、`dynamic.global.demoteWindows`、`dynamic.global.staleWindows`、草图宽度。
+7. `DYNAMIC` 默认参数需要压测校准：`dynamic.hotThresholdQps`、`dynamic.window`、`dynamic.maxHotKeys`、`dynamic.candidateCapacity`、`dynamic.hotReportPartitions`、`dynamic.hotReportBatchMax`、`dynamic.global.hotThreshold`、`dynamic.global.clientEstimate`、`dynamic.global.coolThreshold`、`dynamic.global.demoteWindows`、`dynamic.global.staleWindows`、草图宽度。
 8. 是否提供 `cache4j-bom` 统一版本管理。
 9. ~~中央版本的 epoch 取法~~（**已结案**）：版本号改为每个 key 的时间戳，不存在"基数回绕"问题，不需要 epoch。
 10. ~~副本过校验期时先只取版本~~（**已被对账模型取代**）：对账只取版本、不取数据值；本地未命中时才做一次合并读。剩余可选优化：对账是否拆成多轮以避开带宽尖峰。

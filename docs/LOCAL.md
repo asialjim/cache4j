@@ -5,7 +5,9 @@
 ---
 
 > **实现状态（2026-11 重构后）**：本文描述的设计基本仍然成立，但类名与外围设施已变——
-> 门面实现是 `Cache4jImpl`（原 `DefaultTwoLevelCache`），顶层接口统一为 `Cache4j`，
+> 门面实现是 `Cache4jImpl`（原 `DefaultTwoLevelCache`），顶层接口统一为 `Cache4j`；
+> 本地层分三层接口：`LocalCache`（交集）→ `VersionedLocalCache`（+ 版本簿记）→
+> `StaticLocalCache` / `DynamicLocalCache`（+ 热 key）；`NoneLocalCache` 停在交集上，
 > 统计与 `CacheLogger` 已移除，编码器只剩 `plain` 与 `delegate`。
 > 完整清单见 `DESIGN.md` §3.9「重构后的类地图」与 `REFACTOR.md` §9。
 
@@ -123,7 +125,7 @@ public record LocalCacheSpec(
     ) {}
 
     public record DynamicSpec(
-            int localHotThreshold,        // 本地窗口内达到多少次算热点
+            int hotThresholdQps,        // 本地窗口内达到多少次算热点
             Duration window,              // 本地频率统计窗口
             int maxHotKeys,               // 本地热点集合上限
             Duration hotTtl,              // 热点 key 在本地的最长存活时间
@@ -158,7 +160,7 @@ public record LocalCacheSpec(
 | `version.jitter` | 0.1 | 0.1 | 对账间隔抖动，避免多节点同时打中央 |
 | `version.retryBackoff` | 200ms | 200ms | 对账失败后的退避 |
 | `version.reconcileBatchSize` | 1000 | 1000 | 一次 `HMGET` 的批量大小 |
-| `localHotThreshold` | — | 5 | 双窗口合计访问次数阈值，1–255 |
+| `hotThresholdQps` | — | 5 | 双窗口合计访问次数阈值，1–255 |
 | `window` | — | 10s | 本地频率窗口 |
 | `maxHotKeys` | — | 1_000 | 热点集合上限，必须 ≤ `maxSize` |
 | `hotTtl` | — | 60s | 热点 key 最长本地存活；必须 ≤ 中央 TTL |
@@ -191,7 +193,7 @@ LocalCacheSpec.staticCache("user:detail", 10_000, ttl);       // STATIC，versio
 
 LocalCacheSpec.dynamicCache("user:detail", 10_000, ttl,
         DynamicSpec.builder()
-                .localHotThreshold(100)
+                .hotThresholdQps(100)
                 .window(Duration.ofSeconds(10))
                 .maxHotKeys(1_000)
                 .hotTtl(Duration.ofSeconds(60))
@@ -244,7 +246,11 @@ read(key):
 
 ### 3.4 实现
 
-`NoOpLocalCache`：无状态单例，`close` 无资源。
+`NoneLocalCache`（`cache4j-core` 的 `record`）：无状态，读恒 `Lookup.miss()`、写恒无操作。
+
+> **为什么是 core 里的 record，而不是各存储模块的 NoOp 实现**：NONE 与存储无关——
+> 换存储不会改变它的行为。它也不在 `VersionedLocalCache` 这条分支上：没有副本就没有版本，
+> 也就没有对账。`keys()` / `onEntryRemoved()` 因此不属于它。
 
 ---
 
@@ -351,10 +357,10 @@ LocalCache (Caffeine / HashMap)
 
 ### 5.2.1 四条热度规则
 
-1. **本地升热立即生效**：本地窗口频次达到 `localHotThreshold`，直接升入本地，不等中央。
+1. **本地升热立即生效**：本地窗口频次达到 `hotThresholdQps`，直接升入本地，不等中央。
 2. **本地不升热 ≠ 不热**：在访问驱动的热同步事件中向中央做补偿查询；中央判定 `HOT` 则升热。
 3. **降热只认中央**：本地频次下降、空闲都不构成降热依据；只有中央返回 `COOLING` 才真正降热。
-4. **预选阈值严格低于本地升热阈值**：预选桶只收“本地还不够热、但集群口径可能够热”的 key，门槛 `U = clamp(ceil(global.hotThreshold / global.clientEstimate), 1, localHotThreshold - 1)`。详见 §5.3.2 的预选桶。
+4. **预选阈值严格低于本地升热阈值**：预选桶只收“本地还不够热、但集群口径可能够热”的 key，门槛 `U = clamp(ceil(global.hotThreshold / global.clientEstimate), 1, hotThresholdQps - 1)`。详见 §5.3.2 的预选桶。
 
 例外（不算语义降热）：
 
@@ -362,7 +368,7 @@ LocalCache (Caffeine / HashMap)
 - 热点集合容量满时的 LRU 淘汰；
 - 缓存关闭 / 实例下线。
 
-> 典型场景：50 个节点，每个节点同一窗口 1 万次，`localHotThreshold=2 万`，单节点都不升热；但中央窗口合计 50 万次，判定 `HOT`，各节点在下次热同步时补偿升热。
+> 典型场景：50 个节点，每个节点同一窗口 1 万次，`hotThresholdQps=2 万`，单节点都不升热；但中央窗口合计 50 万次，判定 `HOT`，各节点在下次热同步时补偿升热。
 
 ### 5.3 数据结构
 
@@ -430,16 +436,16 @@ List<Set<CacheKey>> candidateByPartition;
 long candidateThreshold;   // U：派生值，不是手配项
 ```
 
-- 入桶条件：`U <= sketchEstimate(key) < localHotThreshold`（用双窗口合计估计值）；
+- 入桶条件：`U <= sketchEstimate(key) < hotThresholdQps`（用双窗口合计估计值）；
 - 派生口径：
 
   ```text
   U = clamp( ceil(global.hotThreshold / global.clientEstimate),
-             1, localHotThreshold - 1 )
+             1, hotThresholdQps - 1 )
   ```
 
-  两条硬约束：**`U` 必须严格小于 `localHotThreshold`**（否则任何到达 U 的 key 早已本地升热，候选桶恒空）；均匀分布下全局热 key 的单节点份额是 `hotThreshold / clientEstimate`，只有 `U <= 该份额` 才能保证它在每个节点都入桶、被上报、中央看到合计后判 `HOT`；
-- 窗口口径：`U` 来自 `global.window`、`localHotThreshold` 来自 `dynamic.window`，两者不等时按比例换算 `U`；
+  两条硬约束：**`U` 必须严格小于 `hotThresholdQps`**（否则任何到达 U 的 key 早已本地升热，候选桶恒空）；均匀分布下全局热 key 的单节点份额是 `hotThreshold / clientEstimate`，只有 `U <= 该份额` 才能保证它在每个节点都入桶、被上报、中央看到合计后判 `HOT`；
+- 窗口口径：`U` 来自 `global.window`、`hotThresholdQps` 来自 `dynamic.window`，两者不等时按比例换算 `U`；
 - 容量与淘汰：每分区容量 `B ≈ candidateCapacity / hotReportPartitions`（默认 `candidateCapacity = maxHotKeys`）；满时**按草图估计值保留 top-B**（不用 LRU/FIFO——“预选”的意义是“未来可能热”，频次是唯一有意义的排序依据），插入是 O(B) 的插入排序，B 约 63，可忽略；
 - 出桶：已被升热、估计值跌破 `U`、降热、容量淘汰、缓存关闭；
 - `coordination=LOCAL` 时预选桶不生效（没有中央可问）。
@@ -452,7 +458,7 @@ ConcurrentHashMap<CacheKey, Long> cooldownUntilNanos; // 上限 maxHotKeys
 
 - 降热后写入 `now + cooldown`；
 - 冷却期内即使频率再次达标，也**不允许**升热；
-- **它只挡一种抖动**：本地阈值驱动的重升热（降热后草图估计值仍 ≥ `localHotThreshold`，规则 1 会立刻重新升热）。补偿升热那侧的振荡不归它管，靠中央的滞回带（`coolThreshold < hotThreshold`）与 `demoteWindows` / `staleWindows`；
+- **它只挡一种抖动**：本地阈值驱动的重升热（降热后草图估计值仍 ≥ `hotThresholdQps`，规则 1 会立刻重新升热）。补偿升热那侧的振荡不归它管，靠中央的滞回带（`coolThreshold < hotThreshold`）与 `demoteWindows` / `staleWindows`；
 - 不参与上报，也不参与降热判定（降热只认中央 `COOLING`）；
 - **清理不靠 `maintain()`**（核心不保证调用它），而是在 `access()` 路径上做两件事（均为 O(1)）：
   - **读时惰性删**：`isCooling` 发现条目已过期就 `remove(key, until)`（带值比较，避免并发误删新写入的冷却期）。覆盖的正好是"降热后又被访问"的那批——也是唯一会引发抖动的那批；
@@ -526,7 +532,7 @@ final class HotSyncGate {
 `coordination=GLOBAL`（跨节点）：
 
 ```text
-                     本地 freq >= localHotThreshold
+                     本地 freq >= hotThresholdQps
    COLD ─────────────────────────────────────────────→ HOT
      ↑                                                   │
      │                                                   │ 中央 COOLING
@@ -546,7 +552,7 @@ final class HotSyncGate {
 `coordination=LOCAL`（单机）：
 
 ```text
-COLD --freq >= localHotThreshold--> HOT
+COLD --freq >= hotThresholdQps--> HOT
 HOT  --idle > hotTtl 或 freq 低于本地冷阈值--> COOLING
 COOLING --cooldown 到期--> COLD
 ```
@@ -575,7 +581,7 @@ boolean access(CacheKey key) {
         return false;
     }
 
-    if (freq >= spec.dynamic().localHotThreshold()) {
+    if (freq >= spec.dynamic().hotThresholdQps()) {
         promote(key, freq);   // 本地升热立即生效，不等中央
         return true;
     }
@@ -706,14 +712,14 @@ void promote(CacheKey key, long freq) {
 
 | 参数 | 调大 | 调小 | 建议 |
 |---|---|---|---|
-| `localHotThreshold` | 更难本地升热、本地更省内存 | 更容易升热、命中率更高 | 先按单节点 QPS 分布取 P95，再压测 |
+| `hotThresholdQps` | 更难本地升热、本地更省内存 | 更容易升热、命中率更高 | 先按单节点 QPS 分布取 P95，再压测 |
 | `window` | 统计更平滑、反应慢 | 反应快、抖动大 | 10s 起步 |
 | `maxHotKeys` | 更多热点、内存更大 | 更省内存、可能误伤热点 | 按本地内存预算与 key 大小估算 |
 | `hotTtl` | 热点驻留更久、可能更旧 | 更快回中央、更新鲜 | ≤ 中央 TTL；30–120s |
 | `syncInterval` | 补偿查询更少、热度感知更慢 | 感知更快、中央 I/O 更多 | 1s 起步；与 `version.checkInterval` 对齐 |
 | `hotReportPartitions` | 单次上报更小、抖动更低的 Redis | 分区更少、上报更集中 | 16 起步（2 的幂） |
 | `hotReportBatchMax` | 单次覆盖快 | 单次更省 | 64；不超过 128（单 Lua 别超 400 次 redis.call） |
-| —（监控项） | — | — | `dynamicPutDiscarded` 持续偏高 = 在用 `DYNAMIC` 做它不擅长的事（大量“写后读”），应改用 `STATIC` 或下调 `localHotThreshold` |
+| —（监控项） | — | — | `dynamicPutDiscarded` 持续偏高 = 在用 `DYNAMIC` 做它不擅长的事（大量“写后读”），应改用 `STATIC` 或下调 `hotThresholdQps` |
 | `cooldown` | 升降热更稳、反应慢 | 反应快、易抖动 | ≥ 2 个 `window` |
 | `sketchWidth` | 碰撞少、内存大 | 内存小、误升多 | 4096 起步；热点基数大时加倍 |
 | `globalHotThreshold` | 更少 key 被判全局热 | 更多 key 进入本地 | 按集群 QPS 与热点集中度压测 |
@@ -727,7 +733,7 @@ void promote(CacheKey key, long freq) {
 - `maxHotKeys` 先按"最热 1% key 覆盖多少请求"估算；
 - `maxSize >= 1.25 * maxHotKeys`，给底层淘汰留余量；
 - `hotTtl` 不要大于中央 TTL，否则本地会比中央更旧；
-- `localHotThreshold` 只解决单节点热点；跨节点热点必须靠 `globalHotThreshold`；
+- `hotThresholdQps` 只解决单节点热点；跨节点热点必须靠 `globalHotThreshold`；
 - **评价 `DYNAMIC` 不要看全时段 `localHit / request`**：冷 key 本就不允许进本地，这个值必然低于 `STATIC`，拿它当目标会把 `DYNAMIC` 调成劣化版 `STATIC`。正确的两个口径是：
   - **尖峰时段（或 P99）的 `localProtectionRate`**：`DYNAMIC` 的价值在流量尖峰与热点集中时才体现，要看峰不看均值；
   - **单位内存削峰量** = `localHit / estimatedSize`：同为 1MB 本地内存，挡住了多少 L2 读。
@@ -876,8 +882,8 @@ Caffeine.newBuilder()
 |---|---|
 | `NONE` | 忽略 `maxSize` / `ttl` / `version`；非零配置记 WARN |
 | `STATIC` | `maxSize > 0`；`ttl > 0`；`ttl <= central.ttl`（中央有限时）；`version.checkInterval > 0`；`0 <= version.jitter <= 0.5`；`version.retryBackoff > 0` |
-| `DYNAMIC` | `maxSize > 0`；`ttl > 0`；`1 <= maxHotKeys <= maxSize`；`1 <= localHotThreshold <= 255`；`window > 0`；`hotTtl > 0` 且 `<= central.ttl`；`syncInterval > 0`；`cooldown >= 0`；`sketchWidth` 为 2 的幂且 `>= 1024`；`sketchDepth >= 2` |
-| `DYNAMIC` + `GLOBAL` | 必须提供 `HotKeyCoordinator`；`global.window > 0`；`0 <= global.coolThreshold < global.hotThreshold`；`demoteWindows >= 1`；`staleWindows >= 1`；`global.clientEstimate >= 1`；`localHotThreshold >= 2`；派生 `U` 后恒有 `U < localHotThreshold`，但若 clamp 前的 `ceil(hotThreshold / clientEstimate) >= localHotThreshold` 记 WARN（候选带宽只剩 1）；**`cooldown >= demoteWindows × global.window`**（否则本地刚解冻、中央正好又判 `HOT`，形成慢速抖动） |
+| `DYNAMIC` | `maxSize > 0`；`ttl > 0`；`1 <= maxHotKeys <= maxSize`；`1 <= hotThresholdQps <= 255`；`window > 0`；`hotTtl > 0` 且 `<= central.ttl`；`syncInterval > 0`；`cooldown >= 0`；`sketchWidth` 为 2 的幂且 `>= 1024`；`sketchDepth >= 2` |
+| `DYNAMIC` + `GLOBAL` | 必须提供 `HotKeyCoordinator`；`global.window > 0`；`0 <= global.coolThreshold < global.hotThreshold`；`demoteWindows >= 1`；`staleWindows >= 1`；`global.clientEstimate >= 1`；`hotThresholdQps >= 2`；派生 `U` 后恒有 `U < hotThresholdQps`，但若 clamp 前的 `ceil(hotThreshold / clientEstimate) >= hotThresholdQps` 记 WARN（候选带宽只剩 1）；**`cooldown >= demoteWindows × global.window`**（否则本地刚解冻、中央正好又判 `HOT`，形成慢速抖动） |
 
 ### 8.2 契约测试
 
