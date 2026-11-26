@@ -13,6 +13,7 @@ import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.KeyEncoder;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
+import com.asialjim.cache4j.core.central.FailOpenCentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.central.VersionedLookup;
@@ -115,7 +116,10 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         this.namespace = builder.namespace;
         this.keyEncoder = builder.keyEncoder;
         this.local = builder.local;
-        this.central = builder.central;
+        // failOpen 的降级语义关在中央层里：编排层不需要在每个调用点上 try/catch
+        this.central = builder.central.spec().failOpen()
+                ? new FailOpenCentralCache<>(builder.central)
+                : builder.central;
         this.localSpec = local.spec();
         this.centralSpec = central.spec();
         this.nanoClock = builder.nanoClock;
@@ -198,52 +202,27 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     public boolean putIfAbsent(K key, V value, Duration ttl) {
         CacheKey cacheKey = encode(key);
         Duration effective = ttl != null ? ttl : centralSpec.ttl();
-        try {
-            Optional<Long> revision = central.putIfAbsentAndGetRevision(cacheKey, value, effective)
-                    .stream().boxed().findFirst();
-            if (revision.isEmpty()) {
-                return false;
-            }
-            putLocal(cacheKey, value, revision.get(), effective, "写中央并写本地", true);
-            return true;
-        } catch (RuntimeException e) {
-            if (centralSpec.failOpen()) {
-                // 无法保证原子性，不能静默当成"本地成功"
-                return false;
-            }
-            throw e;
+        Optional<Long> revision = central.putIfAbsentAndGetRevision(cacheKey, value, effective)
+                .stream().boxed().findFirst();
+        if (revision.isEmpty()) {
+            // 已存在、或中央失败且按 failOpen 降级（无法保证原子性，不能当成"本地成功"）
+            return false;
         }
+        putLocal(cacheKey, value, revision.get(), effective, "写中央并写本地", true);
+        return true;
     }
 
     @Override
     public void evict(K key) {
         CacheKey cacheKey = encode(key);
-        try {
-            central.evict(cacheKey);
-        } catch (RuntimeException e) {
-            if (!centralSpec.failOpen()) {
-                throw e;
-            }
-            LOG.warn("[{}]-{}-{}", "统一中央缓存", "失效", "中央失效失败，降级清理本地，key="
-                    + cacheKey.masked() + "，原因=" + e.getMessage());
-        } finally {
-            local.evict(cacheKey);
-        }
+        central.evict(cacheKey);        // 失败降级由 FailOpenCentralCache 处理
+        local.evict(cacheKey);
     }
 
     @Override
     public void clear() {
-        try {
-            central.clear();
-        } catch (RuntimeException e) {
-            if (!centralSpec.failOpen()) {
-                throw e;
-            }
-            LOG.warn("[{}]-{}-{}", "统一中央缓存", "清空", "中央清空失败，降级清理本地，"
-                    + "namespace=" + namespace + "，原因=" + e.getMessage());
-        } finally {
-            local.clear();
-        }
+        central.clear();                // 失败降级由 FailOpenCentralCache 处理
+        local.clear();
     }
 
     @Override
@@ -320,16 +299,8 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     }
 
     private VersionedLookup<V> centralLookup(CacheKey cacheKey) {
-        try {
-            return central.lookupWithRevision(cacheKey);
-        } catch (RuntimeException e) {
-            if (!centralSpec.failOpen()) {
-                throw e;
-            }
-            LOG.warn("[{}]-读-[{}]-{}", "统一中央缓存", cacheKey.masked(), "中央读取失败，按未命中降级，原因="
-                            + e.getClass().getSimpleName() + ":" + e.getMessage());
-            return null;
-        }
+        // 失败降级（返回 null）由中央层的 FailOpenCentralCache 处理
+        return central.lookupWithRevision(cacheKey);
     }
 
     /**
@@ -410,16 +381,9 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
 
     private Lookup<V> writeValue(CacheKey cacheKey, V value, Duration ttl) {
         Duration effective = ttl != null ? ttl : centralSpec.ttl();
-        long revision;
-        try {
-            revision = central.putAndGetRevision(cacheKey, value, effective);
-        } catch (RuntimeException e) {
-            if (!centralSpec.failOpen()) {
-                throw e;
-            }
-            // 默认不写本地：避免"只有我能看到的新值"
-            LOG.warn("[{}]-写-[{}]-{}", "统一中央缓存", cacheKey.masked(), "中央写失败，按 failOpen 降级（不写本地），"
-                    + "原因=" + e.getClass().getSimpleName() + ":" + e.getMessage());
+        long revision = central.putAndGetRevision(cacheKey, value, effective);
+        if (revision == 0L) {
+            // 没拿到版本 = 中央写失败且已按 failOpen 降级 → 不写本地，避免"只有我能看到的新值"
             return Lookup.hit(value);
         }
         putLocal(cacheKey, value, revision, effective, "写中央并写本地", true);
@@ -430,43 +394,28 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         if (!centralSpec.nullCachingEnabled()) {
             return Lookup.miss();
         }
-        try {
-            long revision = central.putNegativeAndGetRevision(cacheKey, centralSpec.nullTtl());
-            // 本地负副本用派生 TTL：min(localTtl, centralNullTtl / N)，比中央更早放下标记
-            putLocal(cacheKey, null, revision, localNullTtl(), "写中央并写本地（空值）", true);
-            return Lookup.negative();
-        } catch (RuntimeException e) {
-            if (!centralSpec.failOpen()) {
-                throw e;
-            }
+        long revision = central.putNegativeAndGetRevision(cacheKey, centralSpec.nullTtl());
+        if (revision == 0L) {
             return Lookup.miss();
         }
+        // 本地负副本用派生 TTL：min(localTtl, centralNullTtl / N)，比中央更早放下标记
+        putLocal(cacheKey, null, revision, localNullTtl(), "写中央并写本地（空值）", true);
+        return Lookup.negative();
     }
 
     private void writeNegativeOrEvict(CacheKey cacheKey, Duration ttl) {
         if (centralSpec.nullCachingEnabled()) {
             Duration effective = ttl != null ? ttl : centralSpec.nullTtl();
-            try {
-                long revision = central.putNegativeAndGetRevision(cacheKey, effective);
-                // 中央用调用方给的 TTL；本地负副本一律用派生值 min(localTtl, centralNullTtl / N)
-                putLocal(cacheKey, null, revision, localNullTtl(), "写中央并写本地（空值）", true);
-                return;
-            } catch (RuntimeException e) {
-                if (!centralSpec.failOpen()) {
-                    throw e;
-                }
+            long revision = central.putNegativeAndGetRevision(cacheKey, effective);
+            if (revision == 0L) {
                 return;
             }
+            // 中央用调用方给的 TTL；本地负副本一律用派生值 min(localTtl, centralNullTtl / N)
+            putLocal(cacheKey, null, revision, localNullTtl(), "写中央并写本地（空值）", true);
+            return;
         }
-        try {
-            central.evict(cacheKey);
-        } catch (RuntimeException e) {
-            if (!centralSpec.failOpen()) {
-                throw e;
-            }
-        } finally {
-            local.evict(cacheKey);
-        }
+        central.evict(cacheKey);
+        local.evict(cacheKey);
     }
 
     // ------------------------------------------------------------------ 版本对账

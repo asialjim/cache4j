@@ -231,6 +231,11 @@ public final class Reconciler<V> {
             List<CacheKey> batch = selected.subList(from, Math.min(selected.size(), from + batchSize));
             // 只取版本，不取数据值
             Map<CacheKey, Long> latest = versionReader.apply(batch);
+            if (latest == null) {
+                // 中央不可用（降级装饰器返回 null）→ 本次对账放弃
+                // 绝不能把 null 当空 map：那会被解读成"中央已不再持有这些 key"，从而清空整个本地
+                break;
+            }
             for (CacheKey cacheKey : batch) {
                 Long revision = latest.get(cacheKey);
                 if (revision == null) {
