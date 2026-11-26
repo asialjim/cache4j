@@ -1,19 +1,18 @@
 package com.asialjim.cache4j.core.local;
 
 import com.asialjim.cache4j.core.CacheKey;
-import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 
 import java.time.Duration;
 
 /**
- * {@code NONE} 策略的本地缓存。
+ * {@code NONE} 策略的本地缓存：不存任何东西。
  *
- * <p>语义：本地永不存值，读请求直接落到中央缓存；中央命中的值也不回填本地。</p>
+ * <p>语义：读恒未命中（于是上层自然去查中央）、写恒无操作。它<strong>不在</strong>
+ * {@link VersionedLocalCache} 这条分支上——没有副本，就没有版本，也就没有对账。</p>
  *
- * <p><strong>做成 {@code record} 而不是接口 + 各模块实现</strong>：NONE 与存储无关——
- * 它不存任何东西，"实现"就是把写变成无操作、把读恒定为未命中。
- * 让每个存储模块各写一份 NoOp 实现没有意义（换存储也不会改变 NONE 的行为）。</p>
+ * <p><strong>做成 {@code record} 而不是接口 + 各模块实现</strong>：NONE 与存储无关，
+ * 换存储不会改变它的行为，让每个存储模块各写一份 NoOp 没有意义。</p>
  *
  * @param spec 配置（保留是为了让上层能读到策略与 namespace）
  * @param <V>  值类型
@@ -32,32 +31,22 @@ public record NoneLocalCache<V>(LocalCacheSpec spec) implements LocalCache<V> {
     }
 
     @Override
-    public Lookup<LocalEntry<V>> lookup(CacheKey key) {
+    public Lookup<V> lookup(CacheKey key) {
         return Lookup.miss();
     }
 
     @Override
-    public LocalEntry<V> peek(CacheKey key) {
-        return null;
+    public boolean containsKey(CacheKey key) {
+        return false;
     }
 
     @Override
-    public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
+    public void put(CacheKey key, V value, Duration ttl) {
         // 不存本地
     }
 
     @Override
-    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        return false;
-    }
-
-    @Override
-    public boolean putIfAbsent(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        return false;
-    }
-
-    @Override
-    public boolean containsKey(CacheKey key) {
+    public boolean putIfAbsent(CacheKey key, V value, Duration ttl) {
         return false;
     }
 

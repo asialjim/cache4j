@@ -2,7 +2,6 @@ package com.asialjim.cache4j.core.local;
 
 import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.core.CacheKey;
-import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 
 import java.time.Duration;
@@ -14,7 +13,8 @@ import java.util.function.Consumer;
  *
  * <p>关键约定：</p>
  * <ul>
- *   <li>本地 key 就是 {@link CacheKey}，value 是 {@link LocalEntry}（值 + 版本 + 种类）；
+ *   <li>本地 key 就是 {@link CacheKey}，value 是业务值 {@code V}——
+ *       版本与"是否负副本"是<strong>实现内部</strong>的簿记，不越过这道接口；
  *       失效按 key 覆盖/删除，不存在"整代切换"；</li>
  *   <li>{@link #access} 接收逻辑 key：频率统计与热点身份只与 key 有关，与版本无关；</li>
  *   <li>{@code lookup} <strong>不记录频率</strong>，频率只由 {@link #access} 记录，这样编排层能
@@ -27,7 +27,7 @@ import java.util.function.Consumer;
  * @param <V> 值类型
  * @author Asial Jim
  */
-public interface LocalCache<V> extends Cache4j<CacheKey, LocalEntry<V>> {
+public interface LocalCache<V> extends Cache4j<CacheKey, V> {
 
     /**
      * @return 策略
@@ -40,48 +40,22 @@ public interface LocalCache<V> extends Cache4j<CacheKey, LocalEntry<V>> {
     boolean available();
 
     /**
-     * 便捷读：命中返回条目，未命中返回 {@code null}。
+     * 条件写入：本地已有<strong>更新</strong>版本时不覆盖。
      *
-     * @param key key
-     * @return 条目或 {@code null}
-     */
-    default LocalEntry<V> entry(CacheKey key) {
-        Lookup<LocalEntry<V>> lookup = lookup(key);
-        return lookup instanceof Lookup.Hit<LocalEntry<V>> hit ? hit.value() : null;
-    }
-
-    /**
-     * 内部读：与 {@link #entry} 语义相同，但<strong>不递增任何存储层统计</strong>
-     * （{@code STORE_HIT} / {@code STORE_MISS}）。
+     * <p>回填用它消除"读版本 → 写副本"之间的竞态。{@code revision} 由调用方从<strong>中央</strong>
+     * 读到的版本给出——本地只需要知道"这份值是哪一版"，不必自己查版本。</p>
      *
-     * <p>编排层在回填前比对版本、对账时比对版本都用它——那些是内部动作，
-     * 不该混进"本地命中率"这种对外诊断指标。</p>
+     * <p>默认实现返回 {@code false}（不接）：{@code NONE} 策略不存任何东西，
+     * 于是"写不进去"这件事不需要门面做任何分支判断。</p>
      *
-     * @param key key
-     * @return 条目或 {@code null}
-     */
-    default LocalEntry<V> peek(CacheKey key) {
-        return entry(key);
-    }
-
-    /**
-     * 条件写入：仅当本地没有副本、或现有副本的版本<strong>不大于</strong>新版本时才写入。
-     *
-     * <p>回填用它消除"读版本 → 写副本"之间的竞态：两个线程并发回填同一个 key 时，
-     * 旧版本不会覆盖新版本。默认实现是"先读后写"（非原子），本地存储实现应覆盖成原子版本。</p>
-     *
-     * @param key   key
-     * @param value 条目
-     * @param ttl   TTL（可空）
+     * @param key      key
+     * @param value    值
+     * @param revision 值的版本；{@code 0} 表示"不比较，直接写"
+     * @param ttl      TTL（可空）
      * @return 是否写入
      */
-    default boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        LocalEntry<V> current = peek(key);
-        if (current != null && current.revision() > value.revision()) {
-            return false;
-        }
-        put(key, value, ttl);
-        return true;
+    default boolean putIfNewer(CacheKey key, V value, long revision, Duration ttl) {
+        return false;
     }
 
     /**

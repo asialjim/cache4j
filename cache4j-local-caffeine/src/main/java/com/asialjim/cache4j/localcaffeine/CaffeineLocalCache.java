@@ -133,19 +133,19 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
     }
 
     @Override
-    public LocalEntry<V> peek(CacheKey key) {
+    public LocalEntry<V> entryOf(CacheKey key) {
         TimedEntry<V> timed = cache.getIfPresent(key);   // 不递增本实现的 STORE_HIT/MISS
         return timed == null ? null : timed.entry();
     }
 
     @Override
-    public Lookup<LocalEntry<V>> lookup(CacheKey key) {
+    public Lookup<V> lookup(CacheKey key) {
         reconciler.maybeReconcile(key, nanoClock.getAsLong());   // 对账搭在读路径上
         TimedEntry<V> timed = cache.getIfPresent(key);
         if (timed == null) {
             return Lookup.miss();
         }
-        return Lookup.hit(timed.entry());
+        return toLookup(timed.entry());
     }
 
     @Override
@@ -154,20 +154,20 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
     }
 
     @Override
-    public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        cache.put(key, new TimedEntry<>(value, toNanos(ttl)));
+    public void put(CacheKey key, V value, Duration ttl) {
+        cache.put(key, new TimedEntry<>(entryOf(value, 0L), toNanos(ttl)));
         reconciler.track(key);        // 登记对账分区
     }
 
     @Override
-    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
+    public boolean putIfNewer(CacheKey key, V value, long revision, Duration ttl) {
         AtomicBoolean written = new AtomicBoolean();
         cache.asMap().compute(key, (ignored, existing) -> {
-            if (existing != null && existing.entry().revision() > value.revision()) {
+            if (revision != 0 && existing != null && existing.entry().revision() > revision) {
                 return existing;             // 本地已有更新版本，丢弃本次
             }
             written.set(true);
-            return new TimedEntry<>(value, toNanos(ttl));
+            return new TimedEntry<>(entryOf(value, revision), toNanos(ttl));
         });
         if (written.get()) {
             reconciler.track(key);    // 登记对账分区
@@ -176,8 +176,8 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
     }
 
     @Override
-    public boolean putIfAbsent(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        TimedEntry<V> previous = cache.asMap().putIfAbsent(key, new TimedEntry<>(value, toNanos(ttl)));
+    public boolean putIfAbsent(CacheKey key, V value, Duration ttl) {
+        TimedEntry<V> previous = cache.asMap().putIfAbsent(key, new TimedEntry<>(entryOf(value, 0L), toNanos(ttl)));
         if (previous != null) {
             return false;
         }
@@ -234,6 +234,20 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
      * @param ttlNanos 存活纳秒数；{@link Long#MAX_VALUE} 表示不过期
      * @param <V>     值类型
      */
+    /**
+     * 值 + 版本 → 本地条目。{@code value == null} 表示"确认不存在"（负副本）。
+     */
+    private static <V> LocalEntry<V> entryOf(V value, long revision) {
+        return value == null ? LocalEntry.negative(revision) : LocalEntry.hit(value, revision);
+    }
+
+    /**
+     * 本地条目 → 读结果。版本在这里被丢掉：调用方只关心"有值 / 确认没有 / 不知道"。
+     */
+    private static <V> Lookup<V> toLookup(LocalEntry<V> entry) {
+        return entry.isNegative() ? Lookup.negative() : Lookup.hit(entry.value());
+    }
+
     private record TimedEntry<V>(LocalEntry<V> entry, long ttlNanos) {
     }
 }

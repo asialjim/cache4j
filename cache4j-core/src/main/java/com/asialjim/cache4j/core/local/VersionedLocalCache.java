@@ -1,7 +1,9 @@
 package com.asialjim.cache4j.core.local;
 
 import com.asialjim.cache4j.core.CacheKey;
+import com.asialjim.cache4j.core.LocalEntry;
 
+import java.time.Duration;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -39,6 +41,20 @@ public interface VersionedLocalCache<V> extends LocalCache<V> {
      * @return key 集合快照
      */
     Set<CacheKey> keys();
+
+    @Override
+    boolean putIfNewer(CacheKey key, V value, long revision, Duration ttl);
+
+    /**
+     * 内部读：取出条目（含版本），未命中返回 {@code null}。
+     *
+     * <p>只给<strong>对账</strong>用——它要拿本地版本跟中央版本比。
+     * 业务读写一律走 {@code lookup}，那里只有三态结果，看不到版本。</p>
+     *
+     * @param key key
+     * @return 条目或 {@code null}
+     */
+    LocalEntry<V> entryOf(CacheKey key);
 
     /**
      * 注册「本地条目已消失」的监听器。

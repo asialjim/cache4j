@@ -77,14 +77,14 @@ public final class CaffeineDynamicLocalCache<V> extends CaffeineLocalCache<V> im
      * @return 三态结果
      */
     @Override
-    public Lookup<LocalEntry<V>> lookup(CacheKey key) {
+    public Lookup<V> lookup(CacheKey key) {
         boolean hot = admission.access(key);        // 记录读频次（可能在此升热）
         admission.hotSync(key);                     // 到点上报热点
         if (!hot) {
             LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "冷key，miss，硬读中央缓存");
             return Lookup.miss();
         }
-        Lookup<LocalEntry<V>> result = super.lookup(key);
+        Lookup<V> result = super.lookup(key);
         if (result.isHit()) {
             LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "热key，命中");
         } else if (result.isMiss()) {
@@ -94,7 +94,7 @@ public final class CaffeineDynamicLocalCache<V> extends CaffeineLocalCache<V> im
     }
 
     @Override
-    public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
+    public void put(CacheKey key, V value, Duration ttl) {
         if (!admission.accepts(key)) {
             return;
         }
@@ -102,13 +102,13 @@ public final class CaffeineDynamicLocalCache<V> extends CaffeineLocalCache<V> im
     }
 
     @Override
-    public boolean putIfAbsent(CacheKey key, LocalEntry<V> value, Duration ttl) {
+    public boolean putIfAbsent(CacheKey key, V value, Duration ttl) {
         return admission.accepts(key) && super.putIfAbsent(key, value, ttl);
     }
 
     @Override
-    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        return admission.accepts(key) && super.putIfNewer(key, value, ttl);
+    public boolean putIfNewer(CacheKey key, V value, long revision, Duration ttl) {
+        return admission.accepts(key) && super.putIfNewer(key, value, revision, ttl);
     }
 
     @Override

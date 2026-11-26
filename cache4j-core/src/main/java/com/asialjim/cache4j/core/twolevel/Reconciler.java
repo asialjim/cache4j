@@ -243,7 +243,7 @@ public final class Reconciler<V> {
                     invalidated++;
                     continue;
                 }
-                LocalEntry<V> entry = local.peek(cacheKey);    // 内部读，不计本地命中率
+                LocalEntry<V> entry = local.entryOf(cacheKey);    // 内部读：对账要版本，不参与命中率
                 if (entry == null) {
                     // 兜底：存储层尚未回调（如惰性过期未被访问）时，这里顺手剔除幽灵条目
                     local.evict(cacheKey);

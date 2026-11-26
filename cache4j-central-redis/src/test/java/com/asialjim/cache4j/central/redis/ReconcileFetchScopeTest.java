@@ -224,8 +224,8 @@ class ReconcileFetchScopeTest {
         clock.advance(Duration.ofSeconds(2));       // 两个副本都过期
 
         // 访问本地触发惰性过期 → 存储层回调 → 分区号与分区索引同步摘除
-        assertNull(cache.local().entry(new CacheKey(NS, "a")));
-        assertNull(cache.local().entry(new CacheKey(NS, "b")));
+        assertNull(((VersionedLocalCache<?>) cache.local()).entryOf(new CacheKey(NS, "a")));
+        assertNull(((VersionedLocalCache<?>) cache.local()).entryOf(new CacheKey(NS, "b")));
 
         clock.advance(Duration.ofMillis(200));
         store.resetCounters();

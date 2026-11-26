@@ -102,7 +102,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
     }
 
     @Override
-    public LocalEntry<V> peek(CacheKey key) {
+    public LocalEntry<V> entryOf(CacheKey key) {
         Segment<V> segment = segmentOf(key);
         long now = nanoClock.getAsLong();
         boolean expired = false;
@@ -127,7 +127,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
     }
 
     @Override
-    public Lookup<LocalEntry<V>> lookup(CacheKey key) {
+    public Lookup<V> lookup(CacheKey key) {
         Segment<V> segment = segmentOf(key);
         long now = nanoClock.getAsLong();
         reconciler.maybeReconcile(key, now);        // 对账搭在读路径上，本地自行决定时机
@@ -143,7 +143,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
                 expired = true;
                 return Lookup.miss();
             }
-            return Lookup.hit(entry.entry);
+            return toLookup(entry.entry);
         } finally {
             segment.lock.unlock();
             if (expired) {
@@ -154,18 +154,18 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
 
     @Override
     public boolean containsKey(CacheKey key) {
-        return lookup(key).isHit();
+        return !lookup(key).isMiss();       // 有值或负副本都算"本地有这一条"
     }
 
     @Override
-    public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
+    public void put(CacheKey key, V value, Duration ttl) {
         long now = nanoClock.getAsLong();
         long expireAt = ttl == null ? Long.MAX_VALUE : now + ttl.toNanos();
         Segment<V> segment = segmentOf(key);
         List<CacheKey> evicted = List.of();
         segment.lock.lock();
         try {
-            segment.map.put(key, new TimedEntry<>(value, expireAt));
+            segment.map.put(key, new TimedEntry<>(entryOf(value, 0L), expireAt));
             reconciler.track(key);        // 登记对账分区（首次访问即算分区号）
             evicted = trimSegment(segment);
         } finally {
@@ -175,7 +175,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
     }
 
     @Override
-    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
+    public boolean putIfNewer(CacheKey key, V value, long revision, Duration ttl) {
         long now = nanoClock.getAsLong();
         long expireAt = ttl == null ? Long.MAX_VALUE : now + ttl.toNanos();
         Segment<V> segment = segmentOf(key);
@@ -183,11 +183,11 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
         segment.lock.lock();
         try {
             TimedEntry<V> existing = segment.map.get(key);
-            if (existing != null && !existing.expired(now)
-                    && existing.entry.revision() > value.revision()) {
+            if (revision != 0 && existing != null && !existing.expired(now)
+                    && existing.entry.revision() > revision) {
                 return false;
             }
-            segment.map.put(key, new TimedEntry<>(value, expireAt));
+            segment.map.put(key, new TimedEntry<>(entryOf(value, revision), expireAt));
             reconciler.track(key);        // 登记对账分区（首次访问即算分区号）
             evicted = trimSegment(segment);
             return true;
@@ -198,7 +198,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
     }
 
     @Override
-    public boolean putIfAbsent(CacheKey key, LocalEntry<V> value, Duration ttl) {
+    public boolean putIfAbsent(CacheKey key, V value, Duration ttl) {
         long now = nanoClock.getAsLong();
         long expireAt = ttl == null ? Long.MAX_VALUE : now + ttl.toNanos();
         Segment<V> segment = segmentOf(key);
@@ -209,7 +209,7 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
             if (existing != null && !existing.expired(now)) {
                 return false;
             }
-            segment.map.put(key, new TimedEntry<>(value, expireAt));
+            segment.map.put(key, new TimedEntry<>(entryOf(value, 0L), expireAt));
             reconciler.track(key);        // 登记对账分区（首次访问即算分区号）
             evicted = trimSegment(segment);
             return true;
@@ -369,6 +369,20 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
      * @param expireAtNanos 过期时刻（{@link Long#MAX_VALUE} 表示不过期）
      * @param <V>          值类型
      */
+    /**
+     * 值 + 版本 → 本地条目。{@code value == null} 表示"确认不存在"（负副本）。
+     */
+    private static <V> LocalEntry<V> entryOf(V value, long revision) {
+        return value == null ? LocalEntry.negative(revision) : LocalEntry.hit(value, revision);
+    }
+
+    /**
+     * 本地条目 → 读结果。版本在这里被丢掉：调用方只关心"有值 / 确认没有 / 不知道"。
+     */
+    private static <V> Lookup<V> toLookup(LocalEntry<V> entry) {
+        return entry.isNegative() ? Lookup.negative() : Lookup.hit(entry.value());
+    }
+
     private record TimedEntry<V>(LocalEntry<V> entry, long expireAtNanos) {
 
         boolean expired(long now) {

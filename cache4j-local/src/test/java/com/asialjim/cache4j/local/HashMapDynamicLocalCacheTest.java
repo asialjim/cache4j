@@ -113,14 +113,14 @@ class HashMapDynamicLocalCacheTest {
         VersionedLocalCache<String> cache = dynamic(lowThreshold(), null);
         CacheKey key = key("hot");
 
-        cache.put(key, LocalEntry.hit("v", 1L), Duration.ofSeconds(10));
+        cache.put(key, "v", Duration.ofSeconds(10));
 
         for (int i = 0; i < 5; i++) {
             cache.access(key);
         }
 
-        cache.put(key, LocalEntry.hit("v2", 2L), Duration.ofSeconds(10));
-        assertEquals("v2", cache.entry(key).value());
+        cache.put(key, "v2", Duration.ofSeconds(10));
+        assertEquals("v2", cache.entryOf(key).value());
     }
 
     @Test
@@ -143,7 +143,7 @@ class HashMapDynamicLocalCacheTest {
         for (int i = 0; i < 4; i++) {
             assertFalse(cache.access(key("cold")));
         }
-        cache.put(key("cold"), LocalEntry.hit("v", 1L), Duration.ofSeconds(10));
+        cache.put(key("cold"), "v", Duration.ofSeconds(10));
         assertTrue(cache.keys().isEmpty());
     }
 

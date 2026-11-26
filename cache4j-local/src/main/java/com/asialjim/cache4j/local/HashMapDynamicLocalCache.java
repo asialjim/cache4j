@@ -81,14 +81,14 @@ public final class HashMapDynamicLocalCache<V> extends HashMapLocalCache<V> impl
      * @return 三态结果
      */
     @Override
-    public Lookup<LocalEntry<V>> lookup(CacheKey key) {
+    public Lookup<V> lookup(CacheKey key) {
         boolean hot = admission.access(key);        // 记录读频次（可能在此升热）
         admission.hotSync(key);                     // 到点上报热点
         if (!hot) {
             LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "冷key，miss，硬读中央缓存");
             return Lookup.miss();
         }
-        Lookup<LocalEntry<V>> result = super.lookup(key);
+        Lookup<V> result = super.lookup(key);
         if (result.isHit()) {
             LOG.debug("[{}]-读-[{}]-{}", "动态本地缓存", key.masked(), "热key，命中");
         } else if (result.isMiss()) {
@@ -100,7 +100,7 @@ public final class HashMapDynamicLocalCache<V> extends HashMapLocalCache<V> impl
     // ------------------------------------------------------------------ 写路径的准入守卫（D23）
 
     @Override
-    public void put(CacheKey key, LocalEntry<V> value, Duration ttl) {
+    public void put(CacheKey key, V value, Duration ttl) {
         // 冷 key 不落本地：写不计频次，也就不可能因为它"热"。需要 read-your-write 请用 STATIC。
         if (!admission.accepts(key)) {
             return;
@@ -109,13 +109,13 @@ public final class HashMapDynamicLocalCache<V> extends HashMapLocalCache<V> impl
     }
 
     @Override
-    public boolean putIfAbsent(CacheKey key, LocalEntry<V> value, Duration ttl) {
+    public boolean putIfAbsent(CacheKey key, V value, Duration ttl) {
         return admission.accepts(key) && super.putIfAbsent(key, value, ttl);
     }
 
     @Override
-    public boolean putIfNewer(CacheKey key, LocalEntry<V> value, Duration ttl) {
-        return admission.accepts(key) && super.putIfNewer(key, value, ttl);
+    public boolean putIfNewer(CacheKey key, V value, long revision, Duration ttl) {
+        return admission.accepts(key) && super.putIfNewer(key, value, revision, ttl);
     }
 
     // ------------------------------------------------------------------ 生命周期

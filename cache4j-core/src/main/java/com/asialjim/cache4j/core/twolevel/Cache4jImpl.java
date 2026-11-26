@@ -11,7 +11,6 @@ import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.KeyEncoder;
-import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.CentralCacheSpec;
@@ -178,7 +177,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
     public boolean containsKey(K key) {
         // 探测语义：不改访问频次、不计读指标、不触发回填
         CacheKey cacheKey = encode(key);
-        if (local.peek(cacheKey) != null) {
+        if (!local.lookup(cacheKey).isMiss()) {
             return true;
         }
         VersionedLookup<V> centralLookup = centralLookup(cacheKey);
@@ -205,7 +204,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
             if (revision.isEmpty()) {
                 return false;
             }
-            putLocal(cacheKey, LocalEntry.hit(value, revision.get()), effective, "写中央并写本地", true);
+            putLocal(cacheKey, value, revision.get(), effective, "写中央并写本地", true);
             return true;
         } catch (RuntimeException e) {
             if (centralSpec.failOpen()) {
@@ -293,12 +292,10 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      */
     private ReadResult<V> read(CacheKey cacheKey) {
 
-        Lookup<LocalEntry<V>> localLookup = this.local.lookup(cacheKey);
-        if (localLookup instanceof Lookup.Hit<LocalEntry<V>> hit) {
-            LocalEntry<V> entry = hit.value();
-            return entry.isNegative()
-                    ? new ReadResult<>(Lookup.negative(), Source.LOCAL)
-                    : new ReadResult<>(Lookup.hit(entry.value()), Source.LOCAL);
+        Lookup<V> localLookup = this.local.lookup(cacheKey);
+        if (!localLookup.isMiss()) {
+            // 本地层已经把「有值 / 已确认不存在」表达成三态，门面拿到的是干净的 Lookup<V>
+            return new ReadResult<>(localLookup, Source.LOCAL);
         }
 
         VersionedLookup<V> centralLookup = centralLookup(cacheKey);
@@ -306,13 +303,13 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
             return new ReadResult<>(Lookup.miss(), Source.NONE);
         }
         if (centralLookup.lookup().isHit()) {
-            backfill(cacheKey, LocalEntry.hit(centralLookup.lookup().optional().orElseThrow(),
-                    centralLookup.revision()));
+            backfill(cacheKey, centralLookup.lookup().optional().orElseThrow(),
+                    centralLookup.revision(), null, "回填到本地");
             return new ReadResult<>(centralLookup.lookup(), Source.CENTRAL);
         }
         if (centralLookup.lookup().isNegative()) {
             if (centralSpec.nullCachingEnabled()) {
-                backfill(cacheKey, LocalEntry.negative(centralLookup.revision()));
+                backfill(cacheKey, null, centralLookup.revision(), localNullTtl(), "负副本回填到本地");
             } else {
                 local.evict(cacheKey);
             }
@@ -361,9 +358,8 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * @param cacheKey key
      * @param entry    条目
      */
-    private void backfill(CacheKey cacheKey, LocalEntry<V> entry) {
-        putLocal(cacheKey, entry, entry.isNegative() ? localNullTtl() : null,
-                entry.isNegative() ? "负副本回填到本地" : "回填到本地");
+    private void backfill(CacheKey cacheKey, V value, long revision, Duration ttl, String detail) {
+        putLocal(cacheKey, value, revision, ttl, detail);
     }
 
     /**
@@ -377,8 +373,8 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * @param effective  生效 TTL（可空）
      * @param detail     详细信息
      */
-    private boolean putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective, String detail) {
-        return putLocal(cacheKey, entry, effective, detail, false);
+    private boolean putLocal(CacheKey cacheKey, V value, long revision, Duration effective, String detail) {
+        return putLocal(cacheKey, value, revision, effective, detail, false);
     }
 
     /**
@@ -391,14 +387,14 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * @param writeOp   {@code true} 表示调用方写入（日志用"写"），{@code false} 表示内部回填（日志用"读"）
      * @return 是否真的写入了本地
      */
-    private boolean putLocal(CacheKey cacheKey, LocalEntry<V> entry, Duration effective,
+    private boolean putLocal(CacheKey cacheKey, V value, long revision, Duration effective,
                              String detail, boolean writeOp) {
         Duration localTtl = localSpec.ttl();
         Duration chosen = effective != null && localTtl != null && effective.compareTo(localTtl) < 0
                 ? effective : localTtl;
 
         // 条件写入：准入（DYNAMIC 冷 key）与版本比较都在本地实现内部完成
-        boolean written = local.putIfNewer(cacheKey, entry, chosen);
+        boolean written = local.putIfNewer(cacheKey, value, revision, chosen);
         if (written) {
         } else {
             // 本地不持有副本 → 分区号也不保留，避免无界增长
@@ -426,7 +422,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
                     + "原因=" + e.getClass().getSimpleName() + ":" + e.getMessage());
             return Lookup.hit(value);
         }
-        putLocal(cacheKey, LocalEntry.hit(value, revision), effective, "写中央并写本地", true);
+        putLocal(cacheKey, value, revision, effective, "写中央并写本地", true);
         return Lookup.hit(value);
     }
 
@@ -437,7 +433,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         try {
             long revision = central.putNegativeAndGetRevision(cacheKey, centralSpec.nullTtl());
             // 本地负副本用派生 TTL：min(localTtl, centralNullTtl / N)，比中央更早放下标记
-            putLocal(cacheKey, LocalEntry.negative(revision), localNullTtl(), "写中央并写本地（空值）", true);
+            putLocal(cacheKey, null, revision, localNullTtl(), "写中央并写本地（空值）", true);
             return Lookup.negative();
         } catch (RuntimeException e) {
             if (!centralSpec.failOpen()) {
@@ -453,8 +449,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
             try {
                 long revision = central.putNegativeAndGetRevision(cacheKey, effective);
                 // 中央用调用方给的 TTL；本地负副本一律用派生值 min(localTtl, centralNullTtl / N)
-                putLocal(cacheKey, LocalEntry.negative(revision), localNullTtl(),
-                        "写中央并写本地（空值）", true);
+                putLocal(cacheKey, null, revision, localNullTtl(), "写中央并写本地（空值）", true);
                 return;
             } catch (RuntimeException e) {
                 if (!centralSpec.failOpen()) {

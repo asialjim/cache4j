@@ -255,6 +255,6 @@ class TwoLevelCacheConcurrencyTest {
 
     @SuppressWarnings("unused")
     private static LocalEntry<String> entryOf(Cache4j<String, String> cache, CacheKey key) {
-        return cache.local().peek(key);
+        return ((VersionedLocalCache<String>) cache.local()).entryOf(key);
     }
 }
