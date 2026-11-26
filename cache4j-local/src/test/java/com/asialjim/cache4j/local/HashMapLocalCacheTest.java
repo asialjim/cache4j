@@ -1,7 +1,8 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import org.junit.jupiter.api.DisplayName;
 
@@ -18,8 +19,8 @@ class HashMapLocalCacheTest extends LocalCacheContractTest {
     @Override
     @SuppressWarnings("unchecked")
     protected VersionedLocalCache<String> newCache(long maxSize) {
-        LocalCacheSpec spec = LocalCacheSpec.staticCache("user:detail", maxSize, Duration.ofSeconds(30));
-        return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec.toStrategy(), null, clock::nanos);
+        com.asialjim.cache4j.core.CacheStrategy spec = CacheStrategy.staticCache("user:detail", maxSize, Duration.ofSeconds(30));
+        return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec, null, clock::nanos);
     }
 
     @Override

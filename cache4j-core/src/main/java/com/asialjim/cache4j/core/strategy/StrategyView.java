@@ -1,10 +1,10 @@
 package com.asialjim.cache4j.core.strategy;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.DynamicSpec;
 
 import com.asialjim.cache4j.core.VersionSpec;
 
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
@@ -97,7 +97,7 @@ public record StrategyView(
      * @return {@code min(localTtl, centralNullTtl / N)}
      */
     public static Duration deriveLocalNullTtl(NamespacePolicy policy) {
-        return LocalCacheSpec.deriveNullTtl(
+        return CacheStrategy.deriveNullTtl(
                 policy.localTtl(), policy.centralNullTtl(), policy.localNullTtlDivisor());
     }
 

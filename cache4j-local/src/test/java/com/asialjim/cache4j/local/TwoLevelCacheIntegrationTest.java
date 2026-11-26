@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.DynamicSpec;
 
 import com.asialjim.cache4j.core.VersionSpec;
@@ -10,10 +11,9 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.Cache4j;
@@ -52,7 +52,7 @@ class TwoLevelCacheIntegrationTest {
         return new CacheKey(NS, value);
     }
 
-    private Cache4j<String, String> build(LocalCacheSpec localSpec, CentralCache<String> central) {
+    private Cache4j<String, String> build(com.asialjim.cache4j.core.CacheStrategy localSpec, CentralCache<String> central) {
         return build(localSpec, central, 10);
     }
 
@@ -62,18 +62,20 @@ class TwoLevelCacheIntegrationTest {
      * <p>如果本地与中央各自 {@code toStrategy()}，会得到两份（本地字段真实的 / 中央字段默认的），
      * 门面取到哪份就决定行为——中央 nullTtl=0 时照样会写负副本这种错最难查。</p>
      */
-    private Cache4j<String, String> build(LocalCacheSpec localSpec, CentralCache<String> central,
+    private Cache4j<String, String> build(com.asialjim.cache4j.core.CacheStrategy localSpec, CentralCache<String> central,
                                                  int localNullTtlDivisor) {
-        com.asialjim.cache4j.core.central.CentralCacheSpec centralSpec =
-                com.asialjim.cache4j.core.central.CentralCacheSpec.of(central.cacheStrategy());
-        // 负副本 TTL 按 centralNullTtl / N 派生后塞进本地规格（NONE 保持原样：它没有 TTL 与容量）
-        LocalCacheSpec spec = localSpec.strategy() == com.asialjim.cache4j.core.local.LocalStrategy.NONE
-                ? localSpec
-                : LocalCacheSpec.staticCache(localSpec.namespace(), localSpec.maxSize(), localSpec.ttl(),
-                        LocalCacheSpec.deriveNullTtl(localSpec.ttl(), centralSpec.nullTtl(),
-                                localNullTtlDivisor), localSpec.version());
+        com.asialjim.cache4j.core.CacheStrategy centralSpec = central.cacheStrategy();
+        // 负副本 TTL 按 centralNullTtl / N 派生；中央侧字段用真实值覆盖（NONE 保持原样）
         com.asialjim.cache4j.core.CacheStrategy strategy =
-                com.asialjim.cache4j.core.CacheStrategy.of(spec, centralSpec);
+                localSpec.localStrategy() == com.asialjim.cache4j.core.local.LocalStrategy.NONE
+                        ? localSpec.withCentral(centralSpec.centralTtl(), centralSpec.centralNullTtl(),
+                                centralSpec.failOpen())
+                        : CacheStrategy.staticCache(localSpec.namespace(), localSpec.localMaxSize(),
+                                localSpec.localTtl(),
+                                CacheStrategy.deriveNullTtl(localSpec.localTtl(), centralSpec.centralNullTtl(),
+                                        localNullTtlDivisor), VersionSpec.of(localSpec))
+                                .withCentral(centralSpec.centralTtl(), centralSpec.centralNullTtl(),
+                                        centralSpec.failOpen());
         LocalCache<String> local = LocalCaches.create(strategy, null, clock::nanos,
                 central::revisions, strategy.failOpen());
         return Cache4jImpl.<String, String>builder(NS)
@@ -91,8 +93,8 @@ class TwoLevelCacheIntegrationTest {
      * 需要三层协同时走 {@link #build}，那里会合并出一份完整策略。
      */
     private static com.asialjim.cache4j.core.CacheStrategy centralOnly(String namespace, Duration nullTtl) {
-        return CentralCacheSpec.builder(namespace).ttl(Duration.ofMinutes(10)).nullTtl(nullTtl)
-                .build().toStrategy();
+        return CacheStrategy.builder(namespace).ttl(Duration.ofMinutes(10)).nullTtl(nullTtl)
+                .build();
     }
 
     private VersionSpec fastVersion() {
@@ -105,7 +107,7 @@ class TwoLevelCacheIntegrationTest {
     @DisplayName("NONE：不回填本地，每次读都落到中央")
     void noneNeverCachesLocally() {
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.noLocal(NS), central(Duration.ZERO));
+                CacheStrategy.noLocal(NS), central(Duration.ZERO));
         cache.put("42", "u42");
         cache.lookup("42");
         cache.lookup("42");
@@ -116,7 +118,7 @@ class TwoLevelCacheIntegrationTest {
     @DisplayName("STATIC：本地优先，命中后不再访问中央")
     void staticHitsLocalFirst() {
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
                 central(Duration.ZERO));
         cache.put("42", "u42");
         cache.lookup("42");
@@ -131,7 +133,7 @@ class TwoLevelCacheIntegrationTest {
         DynamicSpec low = new DynamicSpec(1, 0,
                 Duration.ofSeconds(1), 16, 1_000, Duration.ofSeconds(1), Duration.ofSeconds(30),
                 com.asialjim.cache4j.core.Coordination.LOCAL, null, 12, 4, 16, 16, 1_000);
-        LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1),
+        com.asialjim.cache4j.core.CacheStrategy spec = CacheStrategy.dynamicCache(NS, 1_000, Duration.ofMinutes(1),
                 fastVersion(), low);
         Cache4j<String, String> cache = build(spec, central(Duration.ZERO));
         cache.put("42", "u42");
@@ -150,7 +152,7 @@ class TwoLevelCacheIntegrationTest {
     void reconcileDropsStaleCopy() {
         CentralCache<String> central = central(Duration.ZERO);
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()), central);
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()), central);
 
         cache.put("42", "u42");
         assertEquals("u42", cache.lookup("42").optional().orElseThrow());
@@ -172,7 +174,7 @@ class TwoLevelCacheIntegrationTest {
     void reconcileHandlesRemoteEviction() {
         CentralCache<String> central = central(Duration.ZERO);
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()), central);
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()), central);
 
         cache.put("42", "u42");
         cache.lookup("42");
@@ -189,7 +191,7 @@ class TwoLevelCacheIntegrationTest {
     @DisplayName("nullTtl>0：空值两层都缓存，第二次由本地负命中挡下")
     void negativeCachedInBothLayers() {
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
                 central(Duration.ofSeconds(30)));
 
         assertTrue(cache.lookup("404", k -> null).isNegative());
@@ -204,7 +206,7 @@ class TwoLevelCacheIntegrationTest {
     void localNullTtlIsDerivedFromCentralNullTtl() {
         // 中央空值 30s，除子 10 → 本地负副本 3s（远小于本地非空 TTL 1 分钟）
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
                 central(Duration.ofSeconds(30)), 10);
 
         assertTrue(cache.lookup("404", k -> null).isNegative());
@@ -220,7 +222,7 @@ class TwoLevelCacheIntegrationTest {
     void localNullTtlNeverExceedsLocalTtl() {
         // 中央空值 30s / 10 = 3s，但本地 TTL 只有 500ms → 取 500ms
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMillis(500), fastVersion()),
+                CacheStrategy.staticCache(NS, 100, Duration.ofMillis(500), fastVersion()),
                 central(Duration.ofSeconds(30)), 10);
 
         assertTrue(cache.lookup("404", k -> null).isNegative());
@@ -235,7 +237,7 @@ class TwoLevelCacheIntegrationTest {
     @DisplayName("nullTtl=0：放弃防穿透，每次都要回源")
     void withoutNullCachingEveryMissReloads() {
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
                 central(Duration.ZERO));
 
         assertTrue(cache.lookup("404", k -> null).isMiss());
@@ -249,7 +251,7 @@ class TwoLevelCacheIntegrationTest {
     @DisplayName("单飞：同一 key 的并发回源只执行一次 loader")
     void singleFlightRunsLoaderOnce() throws Exception {
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
                 central(Duration.ZERO));
 
         AtomicInteger loads = new AtomicInteger();
@@ -294,7 +296,7 @@ class TwoLevelCacheIntegrationTest {
     void failOpenDegradesGracefully() {
         FailingCentralCache central = new FailingCentralCache(NS, true);
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()), central);
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()), central);
 
         assertTrue(cache.lookup("42").isMiss());
         cache.evict("42");
@@ -306,7 +308,7 @@ class TwoLevelCacheIntegrationTest {
     void failClosedPropagates() {
         FailingCentralCache central = new FailingCentralCache(NS, false);
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()), central);
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()), central);
         assertThrows(com.asialjim.cache4j.core.CacheException.class, () -> cache.lookup("42"));
     }
 
@@ -314,7 +316,7 @@ class TwoLevelCacheIntegrationTest {
     @DisplayName("指标不变量：四格漏斗之和等于请求数")
     void statsInvariant() {
         Cache4j<String, String> cache = build(
-                LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
+                CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1), fastVersion()),
                 central(Duration.ofSeconds(30)));
 
         cache.put("a", "va");
@@ -332,8 +334,8 @@ class TwoLevelCacheIntegrationTest {
         private final com.asialjim.cache4j.core.CacheStrategy strategy;
 
         private FailingCentralCache(String namespace, boolean failOpen) {
-            this.strategy = CentralCacheSpec.builder(namespace)
-                    .ttl(Duration.ofMinutes(1)).failOpen(failOpen).build().toStrategy();
+            this.strategy = CacheStrategy.builder(namespace)
+                    .ttl(Duration.ofMinutes(1)).failOpen(failOpen).build();
         }
 
         @Override

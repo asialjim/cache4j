@@ -1,11 +1,11 @@
 package com.asialjim.cache4j.central.redis;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.CacheResCode;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -37,10 +37,10 @@ class RedisCentralCacheTest {
     @SuppressWarnings("unchecked")
     void setUp() {
         store = new InMemoryValueStore<>(namespace -> null, clock::millis);
-        cache = new RedisCentralCache<>(CentralCacheSpec.builder(NS)
+        cache = new RedisCentralCache<>(CacheStrategy.builder(NS)
                 .ttl(Duration.ofMinutes(10))
                 .ttlJitter(0.1D)
-                .build().toStrategy(),
+                .build(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
     }
 
@@ -84,10 +84,10 @@ class RedisCentralCacheTest {
     @Test
     @DisplayName("空值缓存开启时写负副本")
     void nullCachingEnabled() {
-        CentralCache<String> withNull = new RedisCentralCache<>(CentralCacheSpec.builder(NS)
+        CentralCache<String> withNull = new RedisCentralCache<>(CacheStrategy.builder(NS)
                 .ttl(Duration.ofMinutes(10))
                 .nullTtl(Duration.ofSeconds(30))
-                .build().toStrategy(), cast(store));
+                .build(), cast(store));
         long revision = withNull.putNegativeAndGetRevision(key("404"), null);
         assertTrue(revision > 0L);
         assertTrue(withNull.lookup(key("404")).isNegative());
@@ -139,7 +139,7 @@ class RedisCentralCacheTest {
     void readFailurePropagates() {
         RedisValueStore<String> failing = new FailingStore<>();
         CentralCache<String> failingCache = new RedisCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(1)).build().toStrategy(), failing);
+                CacheStrategy.builder(NS).ttl(Duration.ofMinutes(1)).build(), failing);
         CacheException e = assertThrows(CacheException.class, () -> failingCache.lookup(key("a")));
         assertEquals(CacheResCode.CENTRAL_UNAVAILABLE, e.resCode());
     }
@@ -148,7 +148,7 @@ class RedisCentralCacheTest {
     @DisplayName("ping 失败返回 false 而不抛异常")
     void pingFailureIsFalse() {
         CentralCache<String> failingCache = new RedisCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(1)).build().toStrategy(),
+                CacheStrategy.builder(NS).ttl(Duration.ofMinutes(1)).build(),
                 new FailingStore<>());
         assertFalse(failingCache.ping());
     }

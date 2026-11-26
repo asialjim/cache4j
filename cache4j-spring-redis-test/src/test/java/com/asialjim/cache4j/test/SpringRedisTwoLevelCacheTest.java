@@ -1,12 +1,12 @@
 package com.asialjim.cache4j.test;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.GlobalSpec;
 
 import com.asialjim.cache4j.core.VersionSpec;
 
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.localcaffeine.CaffeineLocalCacheProvider;
 import com.asialjim.cache4j.spring.Cache4jCachingConfiguration;
@@ -144,7 +144,7 @@ class SpringRedisTwoLevelCacheTest {
             var otherProvider = RedisTestEnvironment.centralProvider(
                     otherFactory, RedisTestEnvironment.globalSpecs());
             var otherCentral = otherProvider.<String>create(
-                    CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build().toStrategy());
+                    CacheStrategy.builder(NS).ttl(Duration.ofMinutes(10)).build());
             otherCentral.putAndGetRevision(
                     new com.asialjim.cache4j.core.CacheKey(NS, "42"), "user-42-v2", null);
             otherProvider.close();

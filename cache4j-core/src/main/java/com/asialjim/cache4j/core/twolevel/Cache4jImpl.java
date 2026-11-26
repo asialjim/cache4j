@@ -14,10 +14,8 @@ import com.asialjim.cache4j.core.KeyEncoder;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
 import com.asialjim.cache4j.core.central.FailOpenCentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
@@ -284,7 +282,7 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * @return 是否真的写入了本地
      */
     private boolean backfillNegative(CacheKey cacheKey, long revision) {
-        // 负副本的 TTL 由本地策略给出（LocalCacheSpec.nullTtl），这里不传
+        // 负副本的 TTL 由本地策略给出（CacheStrategy.localNullTtl），这里不传
         return putLocal(cacheKey, null, revision, null, "负副本回填到本地", false);
     }
 

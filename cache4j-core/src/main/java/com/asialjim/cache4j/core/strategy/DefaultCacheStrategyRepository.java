@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
@@ -242,8 +241,7 @@ public final class DefaultCacheStrategyRepository implements CacheStrategyReposi
 
         // ④ 试装配：先确认这套配置在本节点能装起来，再落库
         try {
-            // 试装配：校验在构造 CacheStrategy / 派生视图时执行，这里主动触发一次
-            target.toDefinition().local().validate();
+            target.toDefinition().validate();
         } catch (RuntimeException e) {
             return reject(change, "配置校验失败：" + e.getMessage());
         }

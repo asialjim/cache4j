@@ -6,7 +6,6 @@ import com.asialjim.cache4j.core.VersionSpec;
 
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
@@ -32,12 +31,13 @@ public final class PolicyResolver {
      */
     public static NamespacePolicy fromDeclaration(CacheStrategyDecl decl) {
         CacheDefinition definition = BuiltinDefaults.definitionOf(decl.getNamespace(), decl.getStrategy());
-        LocalCacheSpec local = definition.local();
+        com.asialjim.cache4j.core.CacheStrategy strategy = definition.strategy();
         return new NamespacePolicy(
                 decl.getNamespace(), decl.getDescription(), decl.getStrategy(), decl.getStrategy(),
-                local.maxSize(), local.ttl(), definition.localNullTtlDivisor(),
-                local.version(), local.dynamic(),
-                definition.central().ttl(), definition.central().nullTtl(), definition.central().failOpen(),
+                strategy.localMaxSize(), strategy.localTtl(), definition.localNullTtlDivisor(),
+                com.asialjim.cache4j.core.VersionSpec.of(strategy),
+                strategy.isDynamic() ? com.asialjim.cache4j.core.DynamicSpec.of(strategy) : null,
+                strategy.centralTtl(), strategy.centralNullTtl(), strategy.failOpen(),
                 0L, 0L, null, null, NamespacePolicy.Source.DECLARED);
     }
 

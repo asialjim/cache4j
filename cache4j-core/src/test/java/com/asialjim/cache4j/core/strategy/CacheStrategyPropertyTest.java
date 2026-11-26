@@ -4,8 +4,7 @@ import com.asialjim.cache4j.core.GlobalSpec;
 
 import com.asialjim.cache4j.core.DynamicSpec;
 
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -13,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
@@ -32,11 +32,11 @@ class CacheStrategyPropertyTest {
         property.setNamespace("user:detail");
         property.setLocalStrategy(LocalStrategy.STATIC.name());
 
-        LocalCacheSpec spec = property.toLocalSpec();
-        assertEquals(LocalStrategy.STATIC, spec.strategy());
-        assertEquals(BuiltinDefaults.MAX_SIZE, spec.maxSize());
-        assertEquals(BuiltinDefaults.LOCAL_TTL, spec.ttl(), "未设置 TTL 时用内建默认");
-        assertNull(spec.dynamic());
+        com.asialjim.cache4j.core.CacheStrategy spec = property.toLocalSpec();
+        assertEquals(LocalStrategy.STATIC, spec.localStrategy());
+        assertEquals(BuiltinDefaults.MAX_SIZE, spec.localMaxSize());
+        assertEquals(BuiltinDefaults.LOCAL_TTL, spec.localTtl(), "未设置 TTL 时用内建默认");
+        assertFalse(spec.isDynamic());
     }
 
     @Test
@@ -53,13 +53,13 @@ class CacheStrategyPropertyTest {
         property.setCentralNullTtl(30L);
         property.setFailOpen(false);
 
-        assertEquals(Duration.ofSeconds(45), property.toLocalSpec().ttl());
+        assertEquals(Duration.ofSeconds(45), property.toLocalSpec().localTtl());
 
         property.setCentralTimeUnit("SECONDS");
-        CentralCacheSpec central = property.toCentralSpec();
-        assertEquals(Duration.ofSeconds(2), central.ttl());
-        assertEquals(Duration.ofSeconds(30), central.nullTtl());
-        assertEquals(false, central.failOpen());
+        com.asialjim.cache4j.core.CacheStrategy central = property.toStrategy();
+        assertEquals(Duration.ofSeconds(2), central.centralTtl());
+        assertEquals(Duration.ofSeconds(30), central.centralNullTtl());
+        assertFalse(central.failOpen());
     }
 
     @Test
@@ -69,11 +69,11 @@ class CacheStrategyPropertyTest {
         property.setNamespace("user:detail");
         property.setLocalStrategy(LocalStrategy.NONE.name());
 
-        LocalCacheSpec spec = property.toLocalSpec();
-        assertEquals(LocalStrategy.NONE, spec.strategy());
-        assertEquals(0L, spec.maxSize());
-        assertNull(spec.version());
-        assertNull(spec.dynamic());
+        com.asialjim.cache4j.core.CacheStrategy spec = property.toLocalSpec();
+        assertEquals(LocalStrategy.NONE, spec.localStrategy());
+        assertEquals(0L, spec.localMaxSize());
+        assertEquals(Duration.ofSeconds(5), spec.versionCheckInterval(), "NONE 也有一份默认版本参数");
+        assertFalse(spec.isDynamic());
     }
 
     @Test
@@ -101,12 +101,12 @@ class CacheStrategyPropertyTest {
         property.setGlobalStaleWindows(5);
         property.setGlobalClientEstimate(3);
 
-        LocalCacheSpec spec = property.toLocalSpec();
-        assertEquals(LocalStrategy.DYNAMIC, spec.strategy());
-        assertEquals(Duration.ofMinutes(1), spec.ttl());
-        assertEquals(Duration.ofMillis(500), spec.version().checkInterval());
+        com.asialjim.cache4j.core.CacheStrategy spec = property.toLocalSpec();
+        assertEquals(LocalStrategy.DYNAMIC, spec.localStrategy());
+        assertEquals(Duration.ofMinutes(1), spec.localTtl());
+        assertEquals(Duration.ofMillis(500), spec.versionCheckInterval());
 
-        DynamicSpec dynamic = spec.dynamic();
+        DynamicSpec dynamic = DynamicSpec.of(spec);
         assertEquals(120, dynamic.hotThresholdQps());
         assertEquals(30, dynamic.coolQps());
         assertEquals(Duration.ofSeconds(2), dynamic.window());
@@ -135,11 +135,11 @@ class CacheStrategyPropertyTest {
         property.setHotWindow(2L);
 
         property.setLocalTimeUnit("SECONDS");
-        assertEquals(50, property.toLocalSpec().dynamic().hotThresholdQps(),
+        assertEquals(50, (int) property.toLocalSpec().hotThresholdQps(),
                 "窗口 2 秒时阈值仍是 50 QPS");
 
         property.setLocalTimeUnit("MINUTES");
-        assertEquals(50, property.toLocalSpec().dynamic().hotThresholdQps(),
+        assertEquals(50, (int) property.toLocalSpec().hotThresholdQps(),
                 "把窗口单位换成分钟，QPS 数值不该被改写成 50×60");
     }
 }

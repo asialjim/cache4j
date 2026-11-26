@@ -5,7 +5,7 @@ import com.asialjim.cache4j.core.GlobalSpec;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

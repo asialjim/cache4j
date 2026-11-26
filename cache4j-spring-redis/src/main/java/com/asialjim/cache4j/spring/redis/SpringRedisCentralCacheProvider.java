@@ -8,7 +8,6 @@ import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.GlobalSpec;
 import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.serializer.RedisSerializer;
 

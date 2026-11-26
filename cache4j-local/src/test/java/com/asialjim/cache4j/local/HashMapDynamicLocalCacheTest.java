@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.GlobalSpec;
 
 import com.asialjim.cache4j.core.DynamicSpec;
@@ -10,7 +11,7 @@ import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -86,8 +87,8 @@ class HashMapDynamicLocalCacheTest {
 
     @SuppressWarnings("unchecked")
     private VersionedLocalCache<String> dynamic(DynamicSpec dynamic, HotKeyCoordinator coordinator) {
-        LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
-        return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec.toStrategy(), coordinator, clock::nanos);
+        com.asialjim.cache4j.core.CacheStrategy spec = CacheStrategy.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
+        return (VersionedLocalCache<String>) (VersionedLocalCache) LocalCaches.create(spec, coordinator, clock::nanos);
     }
 
     private HotKeyCoordinator stub() {
@@ -235,8 +236,8 @@ class HashMapDynamicLocalCacheTest {
     void globalWithoutCoordinatorFails() {
         GlobalSpec global = GlobalSpec.of(Duration.ofSeconds(10), 100L, 1);
         DynamicSpec dynamic = globalThreshold(global);
-        LocalCacheSpec spec = LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
+        com.asialjim.cache4j.core.CacheStrategy spec = CacheStrategy.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic);
         assertThrows(com.asialjim.cache4j.core.CacheException.class,
-                () -> LocalCaches.create(spec.toStrategy(), null, clock::nanos));
+                () -> LocalCaches.create(spec, null, clock::nanos));
     }
 }

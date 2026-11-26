@@ -65,7 +65,7 @@ public class Cache4jSpringConfiguration {
     @Bean
     public CacheErrorHandler cache4jCacheErrorHandler(Cache4jSpringOptions options) {
         boolean failOpen = options.definitions().isEmpty()
-                || options.definitions().get(0).central().failOpen();
+                || options.definitions().get(0).strategy().failOpen();
         return new Cache4jCacheErrorHandler(failOpen);
     }
 

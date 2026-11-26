@@ -6,7 +6,7 @@ import com.asialjim.cache4j.core.DynamicSpec;
 
 import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.central.redis.RedisCentralCacheProvider;
 import com.asialjim.cache4j.spring.redis.RedisKeyFormatter;
 import com.asialjim.cache4j.spring.redis.SpringRedisValueStore;

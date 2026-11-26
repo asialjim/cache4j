@@ -35,7 +35,7 @@ class CacheStrategyLoaderTest {
         assertTrue(candidates.stream().anyMatch(c -> "order:snapshot".equals(c.namespace())));
         assertTrue(candidates.stream().allMatch(c -> c.origin().contains("META-INF/services")));
         assertTrue(candidates.stream().anyMatch(
-                c -> c.definition().local().strategy() == LocalStrategy.NONE));
+                c -> c.definition().strategy().localStrategy() == LocalStrategy.NONE));
     }
 
     @Test

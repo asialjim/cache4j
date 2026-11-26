@@ -1,9 +1,9 @@
 package com.asialjim.cache4j.central;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.VersionedLookup;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -36,7 +36,7 @@ class InMemoryCentralCacheTest {
     @BeforeEach
     void setUp() {
         cache = new InMemoryCentralCache<>(
-                CentralCacheSpec.builder("user:detail").ttl(Duration.ofMinutes(10)).build().toStrategy(),
+                CacheStrategy.builder("user:detail").ttl(Duration.ofMinutes(10)).build(),
                 clock::millis);
     }
 

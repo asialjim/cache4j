@@ -1,14 +1,14 @@
 package com.asialjim.cache4j.central.redis;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.VersionSpec;
 
 import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.HashPartitions;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.local.LocalCaches;
@@ -251,15 +251,15 @@ class ReconcileFetchScopeTest {
 
     private Cache4j<String, String> cache(InMemoryValueStore<Object> store, int batchSize,
                                                 int partitions, int maxSize, Duration localTtl) {
-        LocalCacheSpec localSpec = LocalCacheSpec.staticCache(NS, maxSize, localTtl,
+        com.asialjim.cache4j.core.CacheStrategy localSpec = CacheStrategy.staticCache(NS, maxSize, localTtl,
                 new VersionSpec(
                         Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), batchSize, partitions));
         CentralCache<String> central = new RedisCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build().toStrategy(),
+                CacheStrategy.builder(NS).ttl(Duration.ofMinutes(10)).build(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
         @SuppressWarnings("unchecked")
         VersionedLocalCache<String> local = (VersionedLocalCache<String>) (VersionedLocalCache)
-                LocalCaches.create(localSpec.toStrategy(), null, clock::nanos, central::revisions,
+                LocalCaches.create(localSpec, null, clock::nanos, central::revisions,
                         central.cacheStrategy().failOpen());
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)

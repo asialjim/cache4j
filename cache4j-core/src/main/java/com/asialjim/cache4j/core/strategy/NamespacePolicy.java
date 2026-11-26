@@ -8,8 +8,6 @@ import com.asialjim.cache4j.core.VersionSpec;
 
 import com.asialjim.cache4j.core.CacheException;
 import com.asialjim.cache4j.core.CacheResCode;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
@@ -225,7 +223,7 @@ public record NamespacePolicy(
     public CacheDefinition toDefinition() {
         // 负副本的存活时长在这里算好（这里同时知道中央 nullTtl 与除子），
         // 本地缓存的写路径直接用，不必运行时回头读中央配置
-        Duration nullTtl = LocalCacheSpec.deriveNullTtl(localTtl(), centralNullTtl(), localNullTtlDivisor());
+        Duration nullTtl = CacheStrategy.deriveNullTtl(localTtl(), centralNullTtl(), localNullTtlDivisor());
         CacheStrategy built = switch (strategy()) {
             case NONE -> CacheStrategy.noLocal(namespace());
             case STATIC -> CacheStrategy.staticCache(namespace(), maxSize(), localTtl(), nullTtl, version());

@@ -8,7 +8,7 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.central.VersionedLookup;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;

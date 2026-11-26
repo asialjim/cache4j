@@ -1,11 +1,9 @@
 package com.asialjim.cache4j.core.strategy;
 
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.VersionSpec;
 import com.asialjim.cache4j.core.DynamicSpec;
 import com.asialjim.cache4j.core.GlobalSpec;
 import com.asialjim.cache4j.core.CacheStrategy;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
@@ -495,8 +493,8 @@ public class CacheStrategyProperty {
         Duration centralTtl = centralTtlDuration();
         Duration centralNullTtl = centralNullTtlDuration();
         Duration nullTtl = resolved == LocalStrategy.NONE ? Duration.ZERO
-                : LocalCacheSpec.deriveNullTtl(localTtl, centralNullTtl,
-                        intOf(getLocalNullTtlDivisor(), LocalCacheSpec.DEFAULT_NULL_TTL_DIVISOR));
+                : CacheStrategy.deriveNullTtl(localTtl, centralNullTtl,
+                        intOf(getLocalNullTtlDivisor(), CacheStrategy.DEFAULT_NULL_TTL_DIVISOR));
         boolean dynamic = resolved == LocalStrategy.DYNAMIC;
         return new CacheStrategy(
                 namespace,
@@ -537,33 +535,24 @@ public class CacheStrategyProperty {
                 allowNoExpiry != null && allowNoExpiry);
     }
 
-    public LocalCacheSpec toLocalSpec() {
+    public com.asialjim.cache4j.core.CacheStrategy toLocalSpec() {
         LocalStrategy resolved = (localStrategy == null || localStrategy.isBlank())
                 ? LocalStrategy.STATIC
                 : LocalStrategy.valueOf(localStrategy);
         if (resolved == LocalStrategy.NONE) {
-            return LocalCacheSpec.noLocal(namespace);
+            return CacheStrategy.noLocal(namespace);
         }
         VersionSpec version = versionSpec();
         Duration localTtl = localTtlDuration();
         // 负副本的存活时长在这里算好：本地写路径直接用，不必运行时回头读中央配置
-        Duration nullTtl = LocalCacheSpec.deriveNullTtl(localTtl, centralTtlDuration()
+        Duration nullTtl = CacheStrategy.deriveNullTtl(localTtl, centralTtlDuration()
                         .equals(Duration.ZERO) ? null : centralNullTtlDuration(),
-                getLocalNullTtlDivisor() == null ? LocalCacheSpec.DEFAULT_NULL_TTL_DIVISOR
+                getLocalNullTtlDivisor() == null ? CacheStrategy.DEFAULT_NULL_TTL_DIVISOR
                         : getLocalNullTtlDivisor());
         if (resolved == LocalStrategy.STATIC) {
-            return LocalCacheSpec.staticCache(namespace, maxSize(), localTtl, nullTtl, version);
+            return CacheStrategy.staticCache(namespace, maxSize(), localTtl, nullTtl, version);
         }
-        return LocalCacheSpec.dynamicCache(namespace, maxSize(), localTtl, nullTtl, version, dynamicSpec());
-    }
-
-    /**
-     * 还原为中央规格；{@code null} 字段用内建默认值补齐。
-     *
-     * @return 中央规格
-     */
-    public CentralCacheSpec toCentralSpec() {
-        return CentralCacheSpec.of(toStrategy());
+        return CacheStrategy.dynamicCache(namespace, maxSize(), localTtl, nullTtl, version, dynamicSpec());
     }
 
     private GlobalSpec globalSpec() {

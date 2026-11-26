@@ -8,7 +8,6 @@ import org.slf4j.LoggerFactory;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.central.HotKeyReport;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 
 import java.util.Map;
 import java.util.function.Function;

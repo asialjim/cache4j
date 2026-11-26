@@ -4,8 +4,7 @@ import com.asialjim.cache4j.core.VersionSpec;
 
 import com.asialjim.cache4j.central.InMemoryCentralCache;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.strategy.CacheStrategyDataSource;
 import com.asialjim.cache4j.core.strategy.CacheStrategyAdministrator;
@@ -201,7 +200,7 @@ class CacheStrategyCacheTest {
                                                 AtomicLong clock) {
             StrategySelfCacheOptions options = StrategySelfCacheOptions.defaults();
             return new CacheStrategyCache(dataSource, options,
-                    LocalCaches.create(options.localSpec().toStrategy(), null, () -> clock.get() * 1_000_000L,
+                    LocalCaches.create(options.localSpec(), null, () -> clock.get() * 1_000_000L,
                             central::revisions, central.cacheStrategy().failOpen()),
                     central,
                     () -> clock.get() * 1_000_000L,

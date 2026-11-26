@@ -1,9 +1,7 @@
 package com.asialjim.cache4j.core.strategy;
 
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.VersionSpec;
 import com.asialjim.cache4j.core.CacheStrategy;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
@@ -92,33 +90,21 @@ public final class StrategySelfCacheOptions {
      * @return 策略
      */
     public CacheStrategy cacheStrategy() {
-        LocalCacheSpec local = localSpec();
-        CentralCacheSpec central = centralSpec();
-        return new CacheStrategy(
-                SELF_NAMESPACE, "缓存策略缓存块-自举缓存",
-                com.asialjim.cache4j.core.local.LocalStrategy.STATIC,
-                local.maxSize(), local.ttl(), local.nullTtl(),
-                local.version().checkInterval(), local.version().jitter(), local.version().retryBackoff(),
-                local.version().reconcileBatchSize(), local.version().reconcilePartitions(),
-                0L, 0L, null, 16, 1_000,
-                java.time.Duration.ofSeconds(1), java.time.Duration.ofSeconds(30),
-                com.asialjim.cache4j.core.Coordination.LOCAL, 14, 4, 16, 64, 1 << 12,
-                null, 100L, 25L, 1, 6, 1,
-                central.ttl(), central.nullTtl(), central.ttlJitter(),
-                central.failOpen(), central.allowNoExpiry());
+        return localSpec().withCentral(centralSpec().centralTtl(), centralSpec().centralNullTtl(),
+                centralSpec().failOpen());
     }
 
-    public LocalCacheSpec localSpec() {
+    public com.asialjim.cache4j.core.CacheStrategy localSpec() {
         VersionSpec version = new VersionSpec(
                 versionCheckInterval, Duration.ofMillis(100), Duration.ofMillis(200), 1_000, 16);
-        return LocalCacheSpec.staticCache(SELF_NAMESPACE, maxSize, localTtl, version);
+        return CacheStrategy.staticCache(SELF_NAMESPACE, maxSize, localTtl, version);
     }
 
     /**
      * @return 自举缓存的中央配置
      */
-    public CentralCacheSpec centralSpec() {
-        return CentralCacheSpec.builder(SELF_NAMESPACE)
+    public com.asialjim.cache4j.core.CacheStrategy centralSpec() {
+        return CacheStrategy.builder(SELF_NAMESPACE)
                 .ttl(centralTtl)
                 .nullTtl(centralNullTtl)
                 .failOpen(true)

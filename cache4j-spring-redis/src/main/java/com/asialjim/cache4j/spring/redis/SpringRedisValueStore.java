@@ -14,7 +14,6 @@ import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.central.VersionedLookup;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.redis.RedisConnectionFailureException;

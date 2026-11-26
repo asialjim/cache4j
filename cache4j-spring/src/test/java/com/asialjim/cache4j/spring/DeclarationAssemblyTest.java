@@ -3,8 +3,7 @@ package com.asialjim.cache4j.spring;
 import com.asialjim.cache4j.core.CacheStrategy;
 
 import com.asialjim.cache4j.central.InMemoryCentralCacheProvider;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.core.strategy.CacheNamespace;

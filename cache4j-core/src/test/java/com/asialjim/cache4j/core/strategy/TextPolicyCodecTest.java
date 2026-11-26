@@ -7,7 +7,7 @@ import com.asialjim.cache4j.core.DynamicSpec;
 import com.asialjim.cache4j.core.VersionSpec;
 
 import com.asialjim.cache4j.core.CacheException;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

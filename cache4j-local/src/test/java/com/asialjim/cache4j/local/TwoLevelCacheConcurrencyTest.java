@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.DynamicSpec;
 
 import com.asialjim.cache4j.core.VersionSpec;
@@ -10,9 +11,8 @@ import com.asialjim.cache4j.core.CacheLoader;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.core.Cache4j;
@@ -70,15 +70,15 @@ class TwoLevelCacheConcurrencyTest {
     private Cache4j<String, String> cache(String strategy, VersionSpec version) {
         VersionSpec effective = version == null
                 ? VersionSpec.defaults() : version;
-        LocalCacheSpec localSpec = switch (strategy) {
-            case "NONE" -> LocalCacheSpec.noLocal(NS);
-            case "DYNAMIC" -> LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1),
+        com.asialjim.cache4j.core.CacheStrategy localSpec = switch (strategy) {
+            case "NONE" -> CacheStrategy.noLocal(NS);
+            case "DYNAMIC" -> CacheStrategy.dynamicCache(NS, 1_000, Duration.ofMinutes(1),
                     effective, DynamicSpec.defaults());
-            default -> LocalCacheSpec.staticCache(NS, 1_000, Duration.ofMinutes(1), effective);
+            default -> CacheStrategy.staticCache(NS, 1_000, Duration.ofMinutes(1), effective);
         };
-        LocalCache<String> local = LocalCaches.create(localSpec.toStrategy(), null, nanos::get);
+        LocalCache<String> local = LocalCaches.create(localSpec, null, nanos::get);
         CentralCache<String> central = new InMemoryCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build().toStrategy(), millis::get);
+                CacheStrategy.builder(NS).ttl(Duration.ofMinutes(10)).build(), millis::get);
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
                 .central(central)

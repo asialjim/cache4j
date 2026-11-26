@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.core.local;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.GlobalSpec;
 
 import com.asialjim.cache4j.core.DynamicSpec;
@@ -26,13 +27,13 @@ class LocalCacheSpecTest {
     @Test
     @DisplayName("STATIC 基础校验")
     void staticValidation() {
-        LocalCacheSpec.staticCache("user:detail", 100, Duration.ofSeconds(30)).validate();
+        CacheStrategy.staticCache("user:detail", 100, Duration.ofSeconds(30));   // 构造即校验
         assertThrows(CacheException.class,
-                () -> LocalCacheSpec.staticCache("user:detail", 0, Duration.ofSeconds(30)));
+                () -> CacheStrategy.staticCache("user:detail", 0, Duration.ofSeconds(30)));
         assertThrows(CacheException.class,
-                () -> LocalCacheSpec.staticCache("user:detail", 100, Duration.ZERO));
+                () -> CacheStrategy.staticCache("user:detail", 100, Duration.ZERO));
         assertThrows(CacheException.class,
-                () -> LocalCacheSpec.staticCache("user:detail", 100, Duration.ofSeconds(30),
+                () -> CacheStrategy.staticCache("user:detail", 100, Duration.ofSeconds(30),
                         new VersionSpec(Duration.ZERO, Duration.ofMillis(10), Duration.ofMillis(200), 1000))
                         .validate());
     }
@@ -40,10 +41,9 @@ class LocalCacheSpecTest {
     @Test
     @DisplayName("DYNAMIC 默认参数可用")
     void dynamicDefaultsValid() {
-        LocalCacheSpec spec = LocalCacheSpec.dynamicCache("product:hot", 10_000,
+        com.asialjim.cache4j.core.CacheStrategy spec = CacheStrategy.dynamicCache("product:hot", 10_000,
                 Duration.ofSeconds(60), DynamicSpec.defaults());
-        spec.validate();
-        assertEquals(LocalStrategy.DYNAMIC, spec.strategy());
+        assertEquals(LocalStrategy.DYNAMIC, spec.localStrategy());
     }
 
     @Test
@@ -51,28 +51,28 @@ class LocalCacheSpecTest {
     void dynamicBoundaries() {
         DynamicSpec d = DynamicSpec.defaults();
         // hotThresholdQps = 0 非法
-        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 1_000,
+        assertThrows(CacheException.class, () -> CacheStrategy.dynamicCache("p", 1_000,
                 Duration.ofSeconds(60), new DynamicSpec(
                 0, d.coolQps(), d.window(), d.windowSlices(), 100, d.syncInterval(),
                 d.cooldown(), d.coordination(), null, d.sketchWidthBits(),
                 d.sketchDepth(), d.hotReportPartitions(), d.hotReportBatchMax(),
                 d.candidateCapacity())).validate());
         // coolQps 必须严格小于 hotThresholdQps
-        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 1_000,
+        assertThrows(CacheException.class, () -> CacheStrategy.dynamicCache("p", 1_000,
                 Duration.ofSeconds(60), new DynamicSpec(
                 100, 100, d.window(), d.windowSlices(), 100, d.syncInterval(),
                 d.cooldown(), d.coordination(), null, d.sketchWidthBits(),
                 d.sketchDepth(), d.hotReportPartitions(), d.hotReportBatchMax(),
                 d.candidateCapacity())).validate());
         // sketchWidthBits 越界（< 10）
-        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 1_000,
+        assertThrows(CacheException.class, () -> CacheStrategy.dynamicCache("p", 1_000,
                 Duration.ofSeconds(60), new DynamicSpec(
                 100, 25, d.window(), d.windowSlices(), 100, d.syncInterval(),
                 d.cooldown(), d.coordination(), null, 9,
                 d.sketchDepth(), d.hotReportPartitions(), d.hotReportBatchMax(),
                 d.candidateCapacity())).validate());
         // windowSlices < 2
-        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 1_000,
+        assertThrows(CacheException.class, () -> CacheStrategy.dynamicCache("p", 1_000,
                 Duration.ofSeconds(60), new DynamicSpec(
                 100, 25, d.window(), 1, 100, d.syncInterval(),
                 d.cooldown(), d.coordination(), null, d.sketchWidthBits(),
@@ -83,7 +83,7 @@ class LocalCacheSpecTest {
     @Test
     @DisplayName("GLOBAL 缺少 global 配置时报错")
     void globalRequiresSpec() {
-        LocalCacheSpec spec = LocalCacheSpec.dynamicCache("p", 1_000, Duration.ofSeconds(60),
+        com.asialjim.cache4j.core.CacheStrategy spec = CacheStrategy.dynamicCache("p", 1_000, Duration.ofSeconds(60),
                 DynamicSpec.defaults().withGlobal(null));
         assertThrows(CacheException.class, spec::validate);
     }
@@ -94,12 +94,12 @@ class LocalCacheSpecTest {
         GlobalSpec global = GlobalSpec.of(Duration.ofSeconds(10), 100_000L, 1);
         DynamicSpec defaults = DynamicSpec.defaults();
         // cooldown 30s >= 3 × 10s：通过
-        LocalCacheSpec.dynamicCache("p", 1_000, Duration.ofSeconds(60),
+        CacheStrategy.dynamicCache("p", 1_000, Duration.ofSeconds(60),
                 defaults.withGlobal(global)).validate();
 
         // window 放大到 20s → 需 60s，30s 不够
         GlobalSpec slowWindow = GlobalSpec.of(Duration.ofSeconds(20), 100_000L, 1);
-        assertThrows(CacheException.class, () -> LocalCacheSpec.dynamicCache("p", 1_000,
+        assertThrows(CacheException.class, () -> CacheStrategy.dynamicCache("p", 1_000,
                 Duration.ofSeconds(60), defaults.withGlobal(slowWindow)).validate());
     }
 
@@ -144,21 +144,21 @@ class LocalCacheSpecTest {
     void deriveNullTtl() {
         // 中央 30s / 10 = 3s，本地 5 分钟不构成约束
         assertEquals(Duration.ofSeconds(3),
-                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), Duration.ofSeconds(30), 10));
+                CacheStrategy.deriveNullTtl(Duration.ofMinutes(5), Duration.ofSeconds(30), 10));
         // 本地 500ms 更小 → 取本地
         assertEquals(Duration.ofMillis(500),
-                LocalCacheSpec.deriveNullTtl(Duration.ofMillis(500), Duration.ofSeconds(30), 10));
+                CacheStrategy.deriveNullTtl(Duration.ofMillis(500), Duration.ofSeconds(30), 10));
         // N=1 → 与中央一致
         assertEquals(Duration.ofSeconds(30),
-                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), Duration.ofSeconds(30), 1));
+                CacheStrategy.deriveNullTtl(Duration.ofMinutes(5), Duration.ofSeconds(30), 1));
         // 不缓存空值（ZERO / null）→ ZERO
         assertEquals(Duration.ZERO,
-                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), Duration.ZERO, 10));
+                CacheStrategy.deriveNullTtl(Duration.ofMinutes(5), Duration.ZERO, 10));
         assertEquals(Duration.ZERO,
-                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), null, 10));
+                CacheStrategy.deriveNullTtl(Duration.ofMinutes(5), null, 10));
         // 除子非法时按 1 处理（防御，配置层已校验）
         assertEquals(Duration.ofSeconds(30),
-                LocalCacheSpec.deriveNullTtl(Duration.ofMinutes(5), Duration.ofSeconds(30), 0));
+                CacheStrategy.deriveNullTtl(Duration.ofMinutes(5), Duration.ofSeconds(30), 0));
     }
 
     @Test

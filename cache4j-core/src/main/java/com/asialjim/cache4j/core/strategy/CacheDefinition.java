@@ -57,24 +57,10 @@ public record CacheDefinition(String namespace, CacheStrategy strategy, int loca
     }
 
     /**
-     * @return 本地配置视图（过渡期兼容旧调用面）
-     */
-    public com.asialjim.cache4j.core.local.LocalCacheSpec local() {
-        return com.asialjim.cache4j.core.local.LocalCacheSpec.of(strategy);
-    }
-
-    /**
-     * @return 中央配置视图（过渡期兼容旧调用面）
-     */
-    public com.asialjim.cache4j.core.central.CentralCacheSpec central() {
-        return com.asialjim.cache4j.core.central.CentralCacheSpec.of(strategy);
-    }
-
-    /**
      * 主动校验（策略本身在构造时已校验，这里再走一遍本地视图的边界检查）。
      */
     public void validate() {
-        local().validate();
+        strategy.validate();
     }
 
     private static CacheException invalid(String message) {

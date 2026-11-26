@@ -7,7 +7,7 @@ import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
 import com.asialjim.cache4j.core.central.VersionedLookup;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 
 import java.time.Duration;
 import java.util.Collection;

@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.central.redis;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.GlobalSpec;
 
 import com.asialjim.cache4j.core.DynamicSpec;
@@ -9,10 +10,9 @@ import com.asialjim.cache4j.core.VersionSpec;
 import com.asialjim.cache4j.core.twolevel.Cache4jImpl;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.CentralCache;
-import com.asialjim.cache4j.core.central.CentralCacheSpec;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import com.asialjim.cache4j.core.Cache4j;
 import com.asialjim.cache4j.local.LocalCaches;
@@ -52,12 +52,12 @@ class RedisSemanticIntegrationTest {
      */
     @SuppressWarnings("unchecked")
     private Cache4j<String, String> node(InMemoryValueStore<Object> store,
-                                               LocalCacheSpec spec,
+                                               com.asialjim.cache4j.core.CacheStrategy spec,
                                                HotKeyCoordinator coordinator) {
         CentralCache<String> central = new RedisCentralCache<>(
-                CentralCacheSpec.builder(NS).ttl(Duration.ofMinutes(10)).build().toStrategy(),
+                CacheStrategy.builder(NS).ttl(Duration.ofMinutes(10)).build(),
                 (RedisValueStore<String>) (RedisValueStore<?>) store);
-        LocalCache<String> local = LocalCaches.create(spec.toStrategy(), coordinator, clock::nanos,
+        LocalCache<String> local = LocalCaches.create(spec, coordinator, clock::nanos,
                 central::revisions, central.cacheStrategy().failOpen());
         return Cache4jImpl.<String, String>builder(NS)
                 .local(local)
@@ -69,8 +69,8 @@ class RedisSemanticIntegrationTest {
         return new InMemoryValueStore<>(namespace -> NS.equals(namespace) ? global : null, clock::millis);
     }
 
-    private LocalCacheSpec staticSpec() {
-        return LocalCacheSpec.staticCache(NS, 100, Duration.ofMinutes(1),
+    private com.asialjim.cache4j.core.CacheStrategy staticSpec() {
+        return CacheStrategy.staticCache(NS, 100, Duration.ofMinutes(1),
                 new VersionSpec(Duration.ofMillis(100), Duration.ZERO, Duration.ofMillis(50), 1_000));
     }
 
@@ -131,8 +131,8 @@ class RedisSemanticIntegrationTest {
                 new GlobalSpec(Duration.ofSeconds(1), 2L, 1L, 3, 3, 1),
                 base.sketchWidthBits(), base.sketchDepth(), base.hotReportPartitions(),
                 base.hotReportBatchMax(), base.candidateCapacity());
-        AtomicReference<LocalCacheSpec> holder = new AtomicReference<>(
-                LocalCacheSpec.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic));
+        AtomicReference<com.asialjim.cache4j.core.CacheStrategy> holder = new AtomicReference<>(
+                CacheStrategy.dynamicCache(NS, 1_000, Duration.ofMinutes(1), dynamic));
 
         Cache4j<String, String> nodeA = node(store, holder.get(), coordinator);
         nodeA.put("42", "u42");

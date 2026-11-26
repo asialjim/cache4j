@@ -31,14 +31,14 @@ class CacheDeclTranslatorTest {
 
         assertEquals(3, candidates.size());
         assertEquals("user:detail", candidates.get(0).namespace());
-        assertEquals(LocalStrategy.STATIC, candidates.get(0).definition().local().strategy());
-        assertEquals(LocalStrategy.DYNAMIC, candidates.get(1).definition().local().strategy());
-        assertEquals(LocalStrategy.NONE, candidates.get(2).definition().local().strategy());
+        assertEquals(LocalStrategy.STATIC, candidates.get(0).definition().strategy().localStrategy());
+        assertEquals(LocalStrategy.DYNAMIC, candidates.get(1).definition().strategy().localStrategy());
+        assertEquals(LocalStrategy.NONE, candidates.get(2).definition().strategy().localStrategy());
 
         // 内建默认：STATIC 有 maxSize/TTL，NONE 没有
-        assertEquals(BuiltinDefaults.MAX_SIZE, candidates.get(0).definition().local().maxSize());
-        assertEquals(BuiltinDefaults.CENTRAL_NULL_TTL, candidates.get(0).definition().central().nullTtl());
-        assertEquals(0L, candidates.get(2).definition().local().maxSize());
+        assertEquals(BuiltinDefaults.MAX_SIZE, candidates.get(0).definition().strategy().localMaxSize());
+        assertEquals(BuiltinDefaults.CENTRAL_NULL_TTL, candidates.get(0).definition().strategy().centralNullTtl());
+        assertEquals(0L, candidates.get(2).definition().strategy().localMaxSize());
     }
 
     @Test

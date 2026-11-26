@@ -1,11 +1,12 @@
 package com.asialjim.cache4j.local;
 
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.NoneLocalCache;
 import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.LocalEntry;
 import com.asialjim.cache4j.core.Lookup;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
+import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.local.VersionedLocalCache;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -237,7 +238,7 @@ public abstract class LocalCacheContractTest {
     @Test
     @DisplayName("NONE 策略：不存值、不参与版本对账")
     void noOpHasNoState() {
-        LocalCache<String> cache = new NoneLocalCache<>(LocalCacheSpec.noLocal("user:detail").toStrategy());
+        LocalCache<String> cache = new NoneLocalCache<>(CacheStrategy.noLocal("user:detail"));
         cache.put(key("a"), "va", Duration.ofMinutes(1));
         assertEquals(Lookup.Miss.class, cache.lookup(key("a")).getClass());
         // NONE 不在 VersionedLocalCache 层次里：没有 keys()、没有版本表、没有对账——

@@ -9,7 +9,6 @@ import com.asialjim.cache4j.core.CacheKey;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.central.HotKeyReport;
 import com.asialjim.cache4j.core.central.HotKeyStatus;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 
 import java.util.HashMap;
 import java.util.Map;

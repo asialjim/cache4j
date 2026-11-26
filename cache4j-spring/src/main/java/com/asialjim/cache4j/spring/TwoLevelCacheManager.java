@@ -20,7 +20,6 @@ import com.asialjim.cache4j.local.LocalCacheProvider;
 import com.asialjim.cache4j.core.KeyEncoder;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
 import com.asialjim.cache4j.core.local.LocalCache;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.strategy.CacheDefinition;
 import com.asialjim.cache4j.core.Cache4j;
 import org.springframework.util.ClassUtils;

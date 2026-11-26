@@ -5,7 +5,6 @@ import com.asialjim.cache4j.core.central.CentralCacheProvider;
 import com.asialjim.cache4j.core.GlobalSpec;
 import com.asialjim.cache4j.core.CacheStrategy;
 import com.asialjim.cache4j.core.central.HotKeyCoordinator;
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 
 import java.util.Optional;
 import java.util.function.Function;

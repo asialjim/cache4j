@@ -1,6 +1,5 @@
 package com.asialjim.cache4j.core;
 
-import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
@@ -144,32 +143,23 @@ public record CacheStrategy(
     }
 
     /**
-     * 合并"本地规格 + 中央规格"成<strong>一份</strong>策略。
+     * 完整校验：版本参数 + 热度参数（{@code NONE} 不校验——它没有这些概念）。
      *
-     * <p>装配时必须先造这一份，再同时交给本地层与中央层——三层共享同一实例，
-     * 否则会各自 {@code toStrategy()} 出两份（本地字段真实的、中央字段默认的），
-     * 门面取到哪份就决定了行为，这是最难查的一类错。</p>
+     * <p>基础非空/正数校验在紧凑构造器里做；这里补的是"跨字段约束"，
+     * 例如 {@code hotThresholdQps > coolQps}、{@code sketchWidthBits >= 10}、
+     * {@code cooldown >= demoteWindows × globalWindow}。</p>
      *
-     * @param local   本地规格
-     * @param central 中央规格
-     * @return 完整策略
+     * @return 自身
      */
-    public static CacheStrategy of(com.asialjim.cache4j.core.local.LocalCacheSpec local,
-                                   com.asialjim.cache4j.core.central.CentralCacheSpec central) {
-        CacheStrategy base = local.toStrategy();
-        return new CacheStrategy(
-                base.namespace(), base.description(), base.localStrategy(),
-                base.localMaxSize(), base.localTtl(), base.localNullTtl(),
-                base.versionCheckInterval(), base.versionJitter(), base.versionRetryBackoff(),
-                base.reconcileBatchSize(), base.reconcilePartitions(),
-                base.hotThresholdQps(), base.coolQps(), base.hotWindow(), base.hotWindowSlices(),
-                base.maxHotKeys(), base.hotSyncInterval(), base.hotCooldown(), base.coordination(),
-                base.sketchWidthBits(), base.sketchDepth(), base.hotReportPartitions(),
-                base.hotReportBatchMax(), base.candidateCapacity(),
-                base.globalWindow(), base.globalHotQps(), base.globalCoolQps(),
-                base.globalDemoteWindows(), base.globalStaleWindows(), base.globalClientEstimate(),
-                central.ttl(), central.nullTtl(), central.ttlJitter(),
-                central.failOpen(), central.allowNoExpiry());
+    public CacheStrategy validate() {
+        if (localStrategy == LocalStrategy.NONE) {
+            return this;
+        }
+        VersionSpec.of(this).validate();
+        if (isDynamic()) {
+            DynamicSpec.of(this).validate(localMaxSize);
+        }
+        return this;
     }
 
     /**
@@ -434,5 +424,93 @@ public record CacheStrategy(
         long estimate = Math.max(1, globalClientEstimate);
         long share = (globalHotQps + estimate - 1L) / estimate;
         return Math.max(1L, Math.min(share, upper));
+    }
+
+    /**
+     * @param namespace 命名空间
+     * @return 构建器（本地侧默认 {@code STATIC}，中央侧取内建默认）
+     */
+    public static Builder builder(String namespace) {
+        return new Builder(namespace);
+    }
+
+    /**
+     * 便捷构建器：只关心中央字段时用它，本地侧会被赋内建默认值。
+     */
+    public static final class Builder {
+
+        private final String namespace;
+        private Duration ttl = Duration.ofMinutes(10);
+        private Duration nullTtl = Duration.ZERO;   // 默认关闭空值缓存（与策略的 nullCachingEnabled 语义一致）
+        private boolean failOpen = true;
+        private double ttlJitter = 0D;
+        private boolean allowNoExpiry = false;
+
+        private Builder(String namespace) {
+            this.namespace = namespace;
+        }
+
+        /**
+         * @param value 中央 TTL
+         * @return this
+         */
+        public Builder ttl(Duration value) {
+            this.ttl = value;
+            return this;
+        }
+
+        /**
+         * @param value 中央负副本 TTL
+         * @return this
+         */
+        public Builder nullTtl(Duration value) {
+            this.nullTtl = value;
+            return this;
+        }
+
+        /**
+         * @param value 中央不可用时是否放行
+         * @return this
+         */
+        public Builder failOpen(boolean value) {
+            this.failOpen = value;
+            return this;
+        }
+
+        /**
+         * @param value TTL 抖动比例
+         * @return this
+         */
+        public Builder ttlJitter(double value) {
+            this.ttlJitter = value;
+            return this;
+        }
+
+        /**
+         * @param value 是否允许永不过期
+         * @return this
+         */
+        public Builder allowNoExpiry(boolean value) {
+            this.allowNoExpiry = value;
+            return this;
+        }
+
+        /**
+         * @return 策略（本地侧为 STATIC 默认值，中央侧按本构建器）
+         */
+        public CacheStrategy build() {
+            CacheStrategy base = staticCache(namespace, 1_000L, Duration.ofMinutes(1));
+            return new CacheStrategy(base.namespace(), base.description(), base.localStrategy(),
+                    base.localMaxSize(), base.localTtl(), base.localNullTtl(),
+                    base.versionCheckInterval(), base.versionJitter(), base.versionRetryBackoff(),
+                    base.reconcileBatchSize(), base.reconcilePartitions(),
+                    base.hotThresholdQps(), base.coolQps(), base.hotWindow(), base.hotWindowSlices(),
+                    base.maxHotKeys(), base.hotSyncInterval(), base.hotCooldown(), base.coordination(),
+                    base.sketchWidthBits(), base.sketchDepth(), base.hotReportPartitions(),
+                    base.hotReportBatchMax(), base.candidateCapacity(),
+                    base.globalWindow(), base.globalHotQps(), base.globalCoolQps(),
+                    base.globalDemoteWindows(), base.globalStaleWindows(), base.globalClientEstimate(),
+                    ttl, nullTtl, ttlJitter, failOpen, allowNoExpiry);
+        }
     }
 }
