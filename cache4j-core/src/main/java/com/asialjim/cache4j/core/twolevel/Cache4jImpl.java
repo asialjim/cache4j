@@ -237,13 +237,12 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
             return new ReadResult<>(Lookup.miss(), Source.NONE);
         }
         if (centralLookup.lookup().isHit()) {
-            backfill(cacheKey, centralLookup.lookup().optional().orElseThrow(),
-                    centralLookup.revision(), null, "回填到本地");
+            backfill(cacheKey, centralLookup.lookup().optional().orElseThrow(), centralLookup.revision());
             return new ReadResult<>(centralLookup.lookup(), Source.CENTRAL);
         }
         if (centralLookup.lookup().isNegative()) {
             if (centralSpec.nullCachingEnabled()) {
-                backfill(cacheKey, null, centralLookup.revision(), localNullTtl(), "负副本回填到本地");
+                backfillNegative(cacheKey, centralLookup.revision());
             } else {
                 local.evict(cacheKey);
             }
@@ -276,16 +275,31 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * 被另一个线程的更新版本抢先覆盖（D18 的竞态窗口）。</p>
      */
     /**
-     * 回填本地。
+     * 回填正副本：<strong>不带 TTL</strong>——存活多久由本地策略决定（{@code localSpec.ttl()}）。
      *
-     * <p>"该不该接、接不接得下"由本地层自己判断（{@code putIfNewer} 内部含准入与版本比较），
+     * <p>"该不该接、接不接得下"也由本地层判断（{@code putIfNewer} 内部含准入与版本比较），
      * 门面只负责把中央读到的值交过去。</p>
      *
      * @param cacheKey key
-     * @param entry    条目
+     * @param value    值
+     * @param revision 中央版本
+     * @return 是否真的写入了本地
      */
-    private void backfill(CacheKey cacheKey, V value, long revision, Duration ttl, String detail) {
-        putLocal(cacheKey, value, revision, ttl, detail);
+    private boolean backfill(CacheKey cacheKey, V value, long revision) {
+        return putLocal(cacheKey, value, revision, null, "回填到本地", false);
+    }
+
+    /**
+     * 回填负副本："确认不存在"这个标记的存活时长按
+     * {@code min(localTtl, centralNullTtl / N)} 派生——它只是防穿透的临时标记，
+     * 比中央活得久毫无意义（否则中央已能重新回源、本地还在说"不存在"）。
+     *
+     * @param cacheKey key
+     * @param revision 中央版本
+     * @return 是否真的写入了本地
+     */
+    private boolean backfillNegative(CacheKey cacheKey, long revision) {
+        return putLocal(cacheKey, null, revision, localNullTtl(), "负副本回填到本地", false);
     }
 
     /**
@@ -299,10 +313,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * @param effective  生效 TTL（可空）
      * @param detail     详细信息
      */
-    private boolean putLocal(CacheKey cacheKey, V value, long revision, Duration effective, String detail) {
-        return putLocal(cacheKey, value, revision, effective, detail, false);
-    }
-
     /**
      * 写本地。
      *
@@ -313,6 +323,18 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
      * @param writeOp   {@code true} 表示调用方写入（日志用"写"），{@code false} 表示内部回填（日志用"读"）
      * @return 是否真的写入了本地
      */
+    /**
+     * 写本地（调用方写入与内部回填共用）。
+     *
+     * @param cacheKey  key
+     * @param value     值；{@code null} 表示"确认不存在"（负副本）
+     * @param revision  版本（来自中央）
+     * @param effective 本次希望的 TTL；{@code null} = <strong>用本地策略的默认值</strong>。
+     *                  非空时与本地 TTL 取较小者——本地副本不该比中央活得久
+     * @param detail    日志详情
+     * @param writeOp   {@code true} 表示调用方写入（日志记"写"），{@code false} 表示内部回填（记"读"）
+     * @return 是否真的写入了本地
+     */
     private boolean putLocal(CacheKey cacheKey, V value, long revision, Duration effective,
                              String detail, boolean writeOp) {
         Duration localTtl = localSpec.ttl();
@@ -321,10 +343,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
 
         // 条件写入：准入（DYNAMIC 冷 key）与版本比较都在本地实现内部完成
         boolean written = local.putIfNewer(cacheKey, value, revision, chosen);
-        if (written) {
-        } else {
-            // 本地不持有副本 → 分区号也不保留，避免无界增长
-        }
         if (written) {
             String subject = localSubject(localSpec.strategy());
             LOG.debug("[{}]-{}-[{}]-{}", subject, writeOp ? "写" : "读", cacheKey.masked(), detail);
