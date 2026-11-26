@@ -542,3 +542,74 @@ Cache4jImpl  ──持有──►  MixedLocalCache4j  ──路由──►  No
 | `CacheStrategyProperty` 877 行 | 37 个字段的 getter/setter + equals/hashCode + 三种转换；样板为主，但它是"唯一定义"的代价 |
 | `PolicyCodec` 文本格式 | schema 从 1 升到 2（字段集合随 Property 扩展），旧文件读到会明确报错 |
 | 文档同步 | `DESIGN.md` / `LOCAL.md` / `CENTRAL.md` / `ADAPTERS.md` 里仍有旧实现的描述（如 CMS 双桶、`DefaultTwoLevelCache` 的类名），需要一轮回写 |
+
+---
+
+## 10. 第二轮：职责归属（6 批）
+
+> 第一轮（§1–§9）减的是**复杂度**；第二轮减的是**知情面**——同一个 `Cache4jImpl`，
+> 第一轮后 689 行，第二轮后 540 行，但减少的不是行数，是它"需要知道的事"。
+
+起点是：门面的 `read()` 70 行里，同时判断本地策略、热 key 升降、对账时机、版本号、
+负缓存开关。一个"组织本地与中央"的调度员，知道了五件与调度无关的事。
+
+### 10.1 六批改动
+
+| 批 | 内容 | commit |
+|---|---|---|
+| 1 | ②③④⑤⑥ 热 key 下沉到 `DynamicLocalCache.lookup()`；门面 `read()` 70 → 33 行 | `abe4e4f` |
+| 2 | `Reconciler` 与 `CentralCache` 解耦，只依赖版本读取函数 | `d0f1538` |
+| 3 | ⑦⑧⑫ 对账/版本下沉到 `VersionedLocalCache`；**装配顺序翻转**（先 central 后 local） | `7d7ebf6` |
+| 4 | 值类型 `LocalEntry<V>` → `V`；`LocalEntry` 成为本地内部类型 | `87201ca` |
+| 5 | `LocalCache` 收成交集；门面不再持有 `HotKeyCoordinator` | `28e1b21` |
+| 6 | `failOpen` 降级下沉为 `FailOpenCentralCache` 装饰器 | `6bf38fb` |
+
+### 10.2 新的分层（能力按需，不是策略并集）
+
+```text
+Cache4j<K,V>                     顶层契约
+LocalCache<V>                    交集 —— NoneLocalCache(record) 停在这里
+VersionedLocalCache<V>           + keys / onEntryRemoved / putIfNewer / entryOf
+StaticLocalCache / DynamicLocalCache   + 热 key（Dynamic 继承 Static 复用存储与版本部记）
+CentralCache<V>                  版本产生 / 负缓存 / TTL 抖动
+Cache4jImpl<K,V>                 只做编排：本地查不到就查中央，持有 SingleFlight
+```
+
+`NONE` 拿不到 `VersionedLocalCache`：它不存值，就没有版本、没有副本可对账。
+
+### 10.3 门面失去的知情面
+
+| 曾经在门面里 | 现在 |
+|---|---|
+| `if (local.available())` 判断本地是否启用 | `NoneLocalCache` 读恒 miss——"不开启本地"就是"未命中"，两条后续路径合流 |
+| 热 key 判定 / 记频次 / 升热 / 上报 | `DynamicLocalCache.lookup()` 内部（`HotKeyAdmission`） |
+| `reconciler.maybeReconcile / track / forget` | `VersionedLocalCache` 实现里，读路径内联 |
+| `LocalEntry.revision` | 本地内部部记，`toLookup()` 出口处丢掉 |
+| `local.accepts()` 回填准入 | `putIfNewer()` 内部判断，返回 `false` 就是"本地不收" |
+| 9 处 `try/catch + if (failOpen) throw` | `FailOpenCentralCache` 装饰器，按方法给出降级返回值 |
+
+### 10.4 两处容易写错的地方
+
+**① `revisions()` 失败不能返回空 map。** 对账会把"map 里没有这个 key"读成"中央已不再持有"，
+从而清空整个本地缓存。所以 `FailOpenCentralCache.revisions` 失败返回 `null`，
+`Reconciler` 见到 `null` 就放弃本次对账。"拿不到"与"都没有"必须区分。
+
+**② 装配顺序必须反过来。** 对账下沉后本地需要 `central::revisions`，而原来
+`TwoLevelCacheManager` 是"先建 local 再建 central"。改了 4 处装配点
+（声明的 + 未声明的 + 自举缓存 + 集成测试）。
+
+### 10.5 测试的相应变化
+
+- 直接调 `access` / `accepts` 的用例改成**行为断言**：连续 `lookup` 攒频次，
+  再断言 `put` 是否落本地。这比调内部方法更贴近生产路径——读是唯一的频次来源。
+- 断言 `keys()` 的用例改为 `(VersionedLocalCache) local()`；`NONE` 的用例改成
+  断言"根本没有版本部记"（`instanceof VersionedLocalCache` 为 false）。
+- 用例数 250 → 246：删掉的 4 个是"测试已被移除的接口方法"的用例，不是覆盖损失。
+
+### 10.6 仍未做
+
+| 项 | 说明 |
+|---|---|
+| 日志主语 | `localSubject(localSpec.strategy())` —— 门面为了写日志知道策略名。可让本地层提供 `subject()`，收益约等于零 |
+| `localNullTtlDivisor` | 门面调 `LocalCacheSpec.deriveNullTtl(...)` 算负副本 TTL——用的是工具方法，算配置传递而非职责泄漏 |
+| 统计 | 仍按 R1 全删，等核心稳定后重新设计 |
