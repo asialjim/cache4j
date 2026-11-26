@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -113,10 +114,9 @@ class HashMapDynamicLocalCacheTest {
         VersionedLocalCache<String> cache = dynamic(lowThreshold(), null);
         CacheKey key = key("hot");
 
-        cache.put(key, "v", Duration.ofSeconds(10));
-
-        for (int i = 0; i < 5; i++) {
-            cache.access(key);
+        // 读路径是唯一的频次来源：连续 lookup 把 key 推过阈值
+        for (int i = 0; i < 6; i++) {
+            cache.lookup(key);
         }
 
         cache.put(key, "v2", Duration.ofSeconds(10));
@@ -124,16 +124,20 @@ class HashMapDynamicLocalCacheTest {
     }
 
     @Test
-    @DisplayName("accepts：只有已升热的 key 才会被本地接受写入")
-    void acceptsOnlyHotKeys() {
+    @DisplayName("只有已升热的 key 才会被本地接受写入")
+    void onlyHotKeysGetWritten() {
         VersionedLocalCache<String> cache = dynamic(lowThreshold(), null);
         CacheKey hot = key("hot");
 
-        assertFalse(cache.accepts(hot), "冷 key 不应被接受");
-        for (int i = 0; i < 5; i++) {
-            cache.access(hot);
+        cache.put(hot, "cold-write", Duration.ofSeconds(10));
+        assertNull(cache.entryOf(hot), "冷 key 写入不应落本地");
+
+        for (int i = 0; i < 6; i++) {
+            cache.lookup(hot);          // 读路径攒够频次
         }
-        assertTrue(cache.accepts(hot), "升热后应被接受");
+
+        cache.put(hot, "hot-write", Duration.ofSeconds(10));
+        assertEquals("hot-write", cache.entryOf(hot).value(), "升热后写入应落本地");
     }
 
     @Test
@@ -141,7 +145,7 @@ class HashMapDynamicLocalCacheTest {
     void coldKeysStayOut() {
         VersionedLocalCache<String> cache = dynamic(highThreshold(), null);
         for (int i = 0; i < 4; i++) {
-            assertFalse(cache.access(key("cold")));
+            assertTrue(cache.lookup(key("cold")).isMiss());
         }
         cache.put(key("cold"), "v", Duration.ofSeconds(10));
         assertTrue(cache.keys().isEmpty());
@@ -162,7 +166,7 @@ class HashMapDynamicLocalCacheTest {
         // 前 100 次由 CMS 粗筛（达到候选阈值）后才建立精确窗口；窗口从建表时刻开始计数，
         // 因此还需要再攒 100 次才进候选桶——远低于升热阈值（2000 次）
         for (int i = 0; i < 300; i++) {
-            cache.access(key("warm"));
+            cache.lookup(key("warm"));
         }
     }
 
@@ -171,7 +175,7 @@ class HashMapDynamicLocalCacheTest {
     void localModeHasNoCandidates() {
         VersionedLocalCache<String> cache = dynamic(lowThreshold(), null);
         for (int i = 0; i < 4; i++) {
-            cache.access(key("warm"));
+            cache.lookup(key("warm"));
         }
     }
 
@@ -184,18 +188,18 @@ class HashMapDynamicLocalCacheTest {
 
         // 先把三个 key 升热
         for (int i = 0; i < 6; i++) {
-            cache.access(key("a"));
-            cache.access(key("b"));
-            cache.access(key("c"));
+            cache.lookup(key("a"));
+            cache.lookup(key("b"));
+            cache.lookup(key("c"));
         }
 
-        // 第一次热同步只设点
-        cache.hotSync(key("a"));
+        // 第一次读只设点：热同步由读路径内部驱动，门面与测试都不需要显式调用
+        cache.lookup(key("a"));
         assertEquals(0, reportCalls.get());
 
-        // 到点后一次上报该分区的全部 key
+        // 到点后的下一次读触发一次批量上报
         clock.advance(Duration.ofSeconds(2));
-        cache.hotSync(key("a"));
+        cache.lookup(key("a"));
         assertTrue(reportCalls.get() >= 1, "到点后应产生一次批量上报");
     }
 
@@ -208,19 +212,17 @@ class HashMapDynamicLocalCacheTest {
         CacheKey key = key("a");
 
         for (int i = 0; i < 6; i++) {
-            cache.access(key);
+            cache.lookup(key);
         }
 
         // 让中央返回 COOLING
         statuses.put(key, HotKeyStatus.COOLING);
-        cache.hotSync(key);
         clock.advance(Duration.ofSeconds(2));
-        cache.hotSync(key);
 
 
         // 冷却期内即使频次达标也不允许升热
         for (int i = 0; i < 10; i++) {
-            cache.access(key);
+            cache.lookup(key);
         }
     }
 

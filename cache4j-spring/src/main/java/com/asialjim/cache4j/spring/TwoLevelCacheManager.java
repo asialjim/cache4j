@@ -122,7 +122,6 @@ public final class TwoLevelCacheManager implements AutoCloseable {
                     .keyEncoder(options.keyEncoder())
                     .local(local)
                     .central(central)
-                    .hotKeyCoordinator(coordinator)
                     .build();
             built.put(namespace, cache);
             LOG.debug("[{}]-{}-{}", "缓存装配", "装配", "namespace=" + namespace + "，装配完成，strategy=" + localSpec.strategy()
@@ -265,7 +264,6 @@ public final class TwoLevelCacheManager implements AutoCloseable {
                 .keyEncoder(keyEncoder)
                 .local(local)
                 .central(central)
-                .hotKeyCoordinator(coordinator)
                 .localNullTtlDivisor(definition.localNullTtlDivisor())
                 .build();
         synchronized (caches) {

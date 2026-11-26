@@ -166,22 +166,6 @@ public abstract class LocalCacheContractTest {
     }
 
     @Test
-    @DisplayName("STATIC 的 access 恒为 true（不记频）")
-    void accessDoesNotGateStatic() {
-        VersionedLocalCache<String> cache = newCache(100);
-        assertTrue(cache.access(key("a")), implementation());
-        assertTrue(cache.available());
-        assertEquals(com.asialjim.cache4j.core.local.LocalStrategy.STATIC, cache.strategy());
-    }
-
-    @Test
-    @DisplayName("STATIC 接受任意 key 的写入（accepts 恒为 true）")
-    void acceptsAnyKeyForStatic() {
-        VersionedLocalCache<String> cache = newCache(100);
-        assertTrue(cache.accepts(key("a")), implementation());
-    }
-
-    @Test
     @DisplayName("显式失效会通知条目消失")
     void explicitEvictNotifiesRemoval() {
         VersionedLocalCache<String> cache = newCache(100);
@@ -254,8 +238,6 @@ public abstract class LocalCacheContractTest {
     @DisplayName("NONE 策略：不存值、不参与版本对账")
     void noOpHasNoState() {
         LocalCache<String> cache = new NoneLocalCache<>(LocalCacheSpec.noLocal("user:detail"));
-        assertFalse(cache.available());
-
         cache.put(key("a"), "va", Duration.ofMinutes(1));
         assertEquals(Lookup.Miss.class, cache.lookup(key("a")).getClass());
         // NONE 不在 VersionedLocalCache 层次里：没有 keys()、没有版本表、没有对账——

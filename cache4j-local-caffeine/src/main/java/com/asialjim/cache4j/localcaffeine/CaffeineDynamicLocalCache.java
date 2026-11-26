@@ -40,23 +40,19 @@ public final class CaffeineDynamicLocalCache<V> extends CaffeineLocalCache<V> im
         this.admission = new HotKeyAdmission(spec, coordinator, nanoClock, this::evict);
     }
 
-    @Override
-    public boolean accepts(CacheKey key) {
+    private boolean accepts(CacheKey key) {
         return admission.accepts(key);
     }
 
-    @Override
-    public boolean coordinationReady() {
+    boolean coordinationReady() {
         return admission.coordinationReady();
     }
 
-    @Override
-    public boolean access(CacheKey key) {
+    private boolean access(CacheKey key) {
         return admission.access(key);
     }
 
-    @Override
-    public void hotSync(CacheKey key) {
+    private void hotSync(CacheKey key) {
         admission.hotSync(key);
     }
 

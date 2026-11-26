@@ -123,11 +123,6 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
     }
 
     @Override
-    public boolean available() {
-        return true;
-    }
-
-    @Override
     public LocalCacheSpec spec() {
         return spec;
     }
@@ -198,12 +193,6 @@ public class CaffeineLocalCache<V> implements StaticLocalCache<V>, VersionedLoca
     @Override
     public Set<CacheKey> keys() {
         return new HashSet<>(cache.asMap().keySet());
-    }
-
-    @Override
-    public boolean access(CacheKey key) {
-        // STATIC 不记频；DYNAMIC 由装饰器负责
-        return true;
     }
 
     @Override

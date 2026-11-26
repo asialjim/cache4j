@@ -35,11 +35,6 @@ public interface LocalCache<V> extends Cache4j<CacheKey, V> {
     LocalStrategy strategy();
 
     /**
-     * @return {@code NONE} 返回 {@code false}；{@code STATIC} / {@code DYNAMIC} 返回 {@code true}
-     */
-    boolean available();
-
-    /**
      * 条件写入：本地已有<strong>更新</strong>版本时不覆盖。
      *
      * <p>回填用它消除"读版本 → 写副本"之间的竞态。{@code revision} 由调用方从<strong>中央</strong>
@@ -59,25 +54,6 @@ public interface LocalCache<V> extends Cache4j<CacheKey, V> {
     }
 
     /**
-     * 记录一次访问（按逻辑 key）。
-     *
-     * @param key key
-     * @return {@code STATIC} 返回 {@code true}；{@code DYNAMIC} 返回"本次访问后是否处于热点状态"；
-     * {@code NONE} 返回 {@code false}
-     */
-    boolean access(CacheKey key);
-
-    /**
-     * {@code DYNAMIC} 的访问驱动热同步：{@code STATIC} / {@code NONE} 为空实现。
-     *
-     * <p>到点且抢到门控时，一次性上报"当前 key 所属分区"的已热 key 与预选 key。</p>
-     *
-     * @param key 当前访问的 key
-     */
-    default void hotSync(CacheKey key) {
-    }
-
-    /**
      * 本地实现的自我维护：整批 TTL 清理 / 容量淘汰 / 冷却集合整批清理。
      *
      * <p>核心编排不创建调度线程，也<strong>不保证</strong>调用它；所有"必须发生"的维护
@@ -89,31 +65,6 @@ public interface LocalCache<V> extends Cache4j<CacheKey, V> {
      * @return 配置
      */
     LocalCacheSpec spec();
-
-    /**
-     * 本地是否会接受对该 key 的写入（<strong>不实际写入</strong>）。
-     *
-     * <p>编排层用它来准确描述"本地拒绝写入"的日志语义：
-     * 调用方写入与内部回填是两件事，日志里不能都写成"写"。</p>
-     *
-     * @param key key
-     * @return 是否会被接受；默认等于 {@link #available()}
-     */
-    default boolean accepts(CacheKey key) {
-        return available();
-    }
-
-    /**
-     * 热 key 协调是否已就绪。
-     *
-     * <p>{@code DYNAMIC + coordination=GLOBAL} 且未提供 {@code HotKeyCoordinator} 时必须返回
-     * {@code false}，由编排层在构建阶段判定为启动失败（不静默退化成本地协调）。</p>
-     *
-     * @return 是否就绪；默认 {@code true}
-     */
-    default boolean coordinationReady() {
-        return true;
-    }
 
     @Override
     default String name() {

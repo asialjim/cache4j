@@ -186,9 +186,11 @@ class SpringRedisTwoLevelCacheTest {
         assertEquals(1, NONE_LOADS.get(), "loader 只执行一次（第二次命中中央）");
         // NONE 策略不落本地：它的本地实现是 NoneLocalCache，连 keys() 都没有
         // （keys() 属于 VersionedLocalCache —— NONE 不存副本，也就没有版本簿记）
+        // NONE 的本地实现是 NoneLocalCache：读恒未命中、写恒无操作
         assertFalse(twoLevel(NS_NONE).local() instanceof VersionedLocalCache,
                 "NONE 不应是有版本簿记的本地缓存");
-        assertFalse(twoLevel(NS_NONE).local().available(), "NONE 本地不可用");
+        assertTrue(twoLevel(NS_NONE).local().lookup(new com.asialjim.cache4j.core.CacheKey(NS_NONE, "k")).isMiss(),
+                "NONE 的本地读应恒为未命中");
     }
 
     // ------------------------------------------------------------------ 辅助

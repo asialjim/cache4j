@@ -505,7 +505,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
         private KeyEncoder keyEncoder = com.asialjim.cache4j.core.KeyEncoders.plain();
         private LocalCache<V> local;
         private CentralCache<V> central;
-        private HotKeyCoordinator hotKeyCoordinator;
         private int localNullTtlDivisor = 10;
         private LongSupplier nanoClock = System::nanoTime;
         private LongSupplier milliClock = System::currentTimeMillis;
@@ -545,11 +544,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
          * @param value 热 key 协调器；{@code DYNAMIC + GLOBAL} 时必填
          * @return this
          */
-        public Builder<K, V> hotKeyCoordinator(HotKeyCoordinator value) {
-            this.hotKeyCoordinator = value;
-            return this;
-        }
-
         /**
          * 本地空值副本的除子 N（默认 10）：{@code localNullTtl = min(localTtl, centralNullTtl / N)}。
          *
@@ -608,12 +602,6 @@ public final class Cache4jImpl<K, V> implements Cache4j<K, V> {
                         + central.spec().namespace());
             }
             spec.validate();
-            if (spec.strategy() == LocalStrategy.DYNAMIC
-                    && spec.dynamic().coordination() == LocalCacheSpec.Coordination.GLOBAL) {
-                if (hotKeyCoordinator == null && !local.coordinationReady()) {
-                    throw invalid("coordination=GLOBAL 必须提供 HotKeyCoordinator，不静默退化为单节点模式");
-                }
-            }
             return new Cache4jImpl<>(this);
         }
 

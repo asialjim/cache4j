@@ -26,11 +26,6 @@ public record NoneLocalCache<V>(LocalCacheSpec spec) implements LocalCache<V> {
     }
 
     @Override
-    public boolean available() {
-        return false;
-    }
-
-    @Override
     public Lookup<V> lookup(CacheKey key) {
         return Lookup.miss();
     }
@@ -47,11 +42,6 @@ public record NoneLocalCache<V>(LocalCacheSpec spec) implements LocalCache<V> {
 
     @Override
     public boolean putIfAbsent(CacheKey key, V value, Duration ttl) {
-        return false;
-    }
-
-    @Override
-    public boolean access(CacheKey key) {
         return false;
     }
 

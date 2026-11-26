@@ -101,13 +101,9 @@ public final class Reconciler<V> {
      * 取 key 的分区号：<strong>第一次访问时计算并保存</strong>，之后直接命中缓存，不再算 hash。
      *
      * @param cacheKey key
-     * @return 分区号；本地不可用时恒为 0
+     * @return 分区号
      */
     public int partitionOf(CacheKey cacheKey) {
-        if (!local.available()) {
-            // 没有本地副本也就没有"分区"可言；保存分区号只会无界增长
-            return 0;
-        }
         Integer saved = keyPartitions.get(cacheKey);
         if (saved != null) {
             return saved;

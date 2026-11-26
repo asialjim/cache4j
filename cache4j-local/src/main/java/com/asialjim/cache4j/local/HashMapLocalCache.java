@@ -92,11 +92,6 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
     }
 
     @Override
-    public boolean available() {
-        return true;
-    }
-
-    @Override
     public LocalCacheSpec spec() {
         return spec;
     }
@@ -261,12 +256,6 @@ public class HashMapLocalCache<V> implements StaticLocalCache<V>, VersionedLocal
             }
         }
         return result;
-    }
-
-    @Override
-    public boolean access(CacheKey key) {
-        // STATIC 不记频；DYNAMIC 由装饰器负责
-        return true;
     }
 
     @Override
