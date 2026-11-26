@@ -1,151 +1,124 @@
 package com.asialjim.cache4j.core.local;
 
-import com.asialjim.cache4j.core.CacheException;
-import com.asialjim.cache4j.core.CacheResCode;
+import com.asialjim.cache4j.core.CacheStrategy;
+import com.asialjim.cache4j.core.Coordination;
 
 import java.time.Duration;
 
 /**
- * 本地缓存配置。
+ * 本地配置的<strong>过渡壳</strong>：内部只有一份 {@link CacheStrategy}，所有取值转发过去。
  *
- * <p>版本参数<strong>只存在</strong>于 {@link #version}；编排门面不重复接收。
- * {@code checkInterval} 是"整个命名空间的最大不一致窗口"的上界，不是后台调度周期。</p>
+ * <p>它不再是"配置的来源"，只是旧调用面（{@code spec.ttl()} / {@code spec.version()} …）
+ * 的适配层。运行期真正被引用的是 {@code CacheStrategy}——见 {@code Cache4j.cacheStrategy()}。
+ * 这样做是为了让"删掉这个类"变成纯删除，而不是一次跨 60 个文件的类型手术。</p>
  *
- * @param namespace 缓存名
- * @param strategy  策略
- * @param maxSize   本地条目上限（{@code NONE} 忽略）
- * @param ttl       本地副本最长存活（{@code NONE} 忽略）
- * @param version   版本对账参数
- * @param dynamic   {@code DYNAMIC} 专属参数；其它策略为 {@code null}
+ * <p>{@link VersionSpec} / {@link DynamicSpec} / {@link GlobalSpec} 同理：它们是
+ * "构造 CacheStrategy 的参数分组"与"从策略派生的只读视图"，不再承担配置语义。</p>
+ *
  * @author Asial Jim
  */
-public record LocalCacheSpec(
-        String namespace,
-        LocalStrategy strategy,
-        long maxSize,
-        Duration ttl,
-        /**
-         * 负副本（"确认不存在"）的存活时长：{@code min(localTtl, centralNullTtl / N)}。
-         *
-         * <p>装配时由 {@link #deriveNullTtl} 算好——本地缓存的写路径直接用，
-         * 不需要在运行时回头去读中央配置。<strong>{@code ZERO}</strong> 表示不缓存负副本。</p>
-         */
-        Duration nullTtl,
-        VersionSpec version,
-        DynamicSpec dynamic
-) {
-
-    /**
-     * 紧凑构造器：只做非空与基础校验，完整校验见 {@link #validate()}。
-     */
-    public LocalCacheSpec {
-        if (namespace == null || namespace.isBlank()) {
-            throw invalid("namespace 不能为空");
-        }
-        if (strategy == null) {
-            throw invalid("strategy 不能为空");
-        }
-        if (strategy != LocalStrategy.NONE) {
-            if (maxSize <= 0) {
-                throw invalid("maxSize 必须大于 0：" + maxSize);
-            }
-            if (ttl == null || ttl.isZero() || ttl.isNegative()) {
-                throw invalid("本地 ttl 必须为正：" + ttl);
-            }
-            if (version == null) {
-                throw invalid("STATIC / DYNAMIC 的 version 不允许为 null");
-            }
-        }
-        if (strategy == LocalStrategy.DYNAMIC && dynamic == null) {
-            throw invalid("DYNAMIC 必须提供 DynamicSpec");
-        }
-    }
-
-    // ------------------------------------------------------------------ 工厂
+public final class LocalCacheSpec {
 
     /**
      * 未显式配置时的负副本除子。
      */
-    public static final int DEFAULT_NULL_TTL_DIVISOR = 10;
+    public static final int DEFAULT_NULL_TTL_DIVISOR = CacheStrategy.DEFAULT_NULL_TTL_DIVISOR;
 
-    /**
-     * 转成运行期策略（<strong>过渡用</strong>：中央侧字段取内建默认值）。
-     *
-     * <p>生产装配走 {@code CacheStrategyProperty.toStrategy()}，那里中央字段是真实的。</p>
-     *
-     * @return 运行期策略
-     */
-    public com.asialjim.cache4j.core.CacheStrategy toStrategy() {
-        DynamicSpec d = dynamic;
-        GlobalSpec g = d == null ? null : d.global();
-        return new com.asialjim.cache4j.core.CacheStrategy(
-                namespace, null, strategy, maxSize, ttl,
-                nullTtl != null ? nullTtl : Duration.ZERO,
-                version == null ? Duration.ofSeconds(10) : version.checkInterval(),
-                version == null ? Duration.ofSeconds(1) : version.jitter(),
-                version == null ? Duration.ofSeconds(1) : version.retryBackoff(),
-                version == null ? 64 : version.reconcileBatchSize(),
-                version == null ? 16 : version.reconcilePartitions(),
-                d == null ? 0L : d.hotThresholdQps(),
-                d == null ? 0L : d.coolQps(),
-                d == null ? null : d.window(),
-                d == null ? 16 : d.windowSlices(),
-                d == null ? 1_000 : d.maxHotKeys(),
-                d == null ? Duration.ofSeconds(1) : d.syncInterval(),
-                d == null ? Duration.ofSeconds(30) : d.cooldown(),
-                d == null ? com.asialjim.cache4j.core.Coordination.LOCAL
-                        : com.asialjim.cache4j.core.Coordination.valueOf(d.coordination().name()),
-                d == null ? 14 : d.sketchWidthBits(),
-                d == null ? 4 : d.sketchDepth(),
-                d == null ? 16 : d.hotReportPartitions(),
-                d == null ? 64 : d.hotReportBatchMax(),
-                d == null ? 1 << 12 : d.candidateCapacity(),
-                g == null ? null : g.window(),
-                g == null ? 100L : g.hotQps(),
-                g == null ? 25L : g.coolQps(),
-                g == null ? 1 : g.demoteWindows(),
-                g == null ? 6 : g.staleWindows(),
-                g == null ? 1 : g.clientEstimate(),
-                Duration.ofMinutes(10), Duration.ofMinutes(1), 0D, true, false);
+    private final CacheStrategy strategy;
+
+    private LocalCacheSpec(CacheStrategy strategy) {
+        this.strategy = strategy;
     }
 
     /**
-     * 派生本地空值副本的存活时长：{@code min(localTtl, centralNullTtl / divisor)}。
+     * @param strategy 完整策略
+     * @return 本地配置视图
+     */
+    public static LocalCacheSpec of(CacheStrategy strategy) {
+        return new LocalCacheSpec(strategy);
+    }
+
+    /**
+     * @return 完整策略
+     */
+    public CacheStrategy toStrategy() {
+        return strategy;
+    }
+
+    public String namespace() {
+        return strategy.namespace();
+    }
+
+    public LocalStrategy strategy() {
+        return strategy.localStrategy();
+    }
+
+    public long maxSize() {
+        return strategy.localMaxSize();
+    }
+
+    public Duration ttl() {
+        return strategy.localTtl();
+    }
+
+    public Duration nullTtl() {
+        return strategy.localNullTtl();
+    }
+
+    public VersionSpec version() {
+        return strategy.localStrategy() == LocalStrategy.NONE ? null : VersionSpec.of(strategy);
+    }
+
+    public DynamicSpec dynamic() {
+        return strategy.isDynamic() ? DynamicSpec.of(strategy) : null;
+    }
+
+    /**
+     * 完整校验：版本参数 + 热度参数（{@code NONE} 不校验——它没有这些概念）。
      *
-     * <p>空值副本只是"防穿透的临时标记"，比中央活得久毫无意义；让本地比中央<strong>更早</strong>
-     * 放下标记，避免"中央已能重新回源、本地还在回答不存在"。</p>
+     * @return 自身
+     */
+    public LocalCacheSpec validate() {
+        if (strategy.localStrategy() == LocalStrategy.NONE) {
+            return this;
+        }
+        version().validate();
+        DynamicSpec d = dynamic();
+        if (d != null) {
+            d.validate(this);
+        }
+        return this;
+    }
+
+    static com.asialjim.cache4j.core.CacheException invalid(String message) {
+        return new com.asialjim.cache4j.core.CacheException(
+                com.asialjim.cache4j.core.CacheResCode.INVALID_SPEC, message);
+    }
+
+    /**
+     * 派生负副本 TTL。
      *
-     * <p>收敛成一处实现：编排层（{@code Cache4jImpl}）与运维视图
-     * （{@code StrategyView}）都要这个值，各写一份必然漂移。</p>
-     *
-     * @param localTtl       本地非空副本存活（可空）
-     * @param centralNullTtl 中央空值存活；{@code null} 或 {@code ZERO} 表示不缓存空值
-     * @param divisor        除子 N（≥ 1）
-     * @return 本地空值副本存活；不缓存空值时返回 {@link Duration#ZERO}
+     * @param localTtl       本地非空副本存活
+     * @param centralNullTtl 中央空值存活
+     * @param divisor        除子
+     * @return 本地空值副本存活
      */
     public static Duration deriveNullTtl(Duration localTtl, Duration centralNullTtl, int divisor) {
-        if (centralNullTtl == null || centralNullTtl.isZero()) {
-            return Duration.ZERO;
-        }
-        Duration derived = centralNullTtl.dividedBy(Math.max(1, divisor));
-        if (localTtl == null) {
-            return derived;
-        }
-        return derived.compareTo(localTtl) < 0 ? derived : localTtl;
+        return CacheStrategy.deriveNullTtl(localTtl, centralNullTtl, divisor);
     }
 
     /**
-     * 构造 {@code NONE} 策略配置。
+     * {@code NONE}：本地不缓存。
      *
      * @param namespace 缓存名
      * @return 配置
      */
     public static LocalCacheSpec noLocal(String namespace) {
-        return new LocalCacheSpec(namespace, LocalStrategy.NONE, 0L, null, Duration.ZERO, null, null);
+        return of(CacheStrategy.noLocal(namespace));
     }
 
     /**
-     * 构造 {@code STATIC} 策略配置，版本参数取默认。
+     * {@code STATIC}。
      *
      * @param namespace 缓存名
      * @param maxSize   条目上限
@@ -153,12 +126,11 @@ public record LocalCacheSpec(
      * @return 配置
      */
     public static LocalCacheSpec staticCache(String namespace, long maxSize, Duration ttl) {
-        return new LocalCacheSpec(namespace, LocalStrategy.STATIC, maxSize, ttl,
-                deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR), VersionSpec.defaults(), null);
+        return of(CacheStrategy.staticCache(namespace, maxSize, ttl));
     }
 
     /**
-     * 构造 {@code STATIC} 策略配置。
+     * {@code STATIC}，显式给版本参数。
      *
      * @param namespace 缓存名
      * @param maxSize   条目上限
@@ -167,27 +139,26 @@ public record LocalCacheSpec(
      * @return 配置
      */
     public static LocalCacheSpec staticCache(String namespace, long maxSize, Duration ttl, VersionSpec version) {
-        return staticCache(namespace, maxSize, ttl, null, version);
+        return of(CacheStrategy.staticCache(namespace, maxSize, ttl, version));
     }
 
     /**
-     * 构造 {@code STATIC} 策略配置，显式给出负副本 TTL。
+     * {@code STATIC}，显式给负副本 TTL 与版本参数。
      *
      * @param namespace 缓存名
      * @param maxSize   条目上限
      * @param ttl       本地 TTL
-     * @param nullTtl   负副本 TTL（可空 → 按默认除子派生）
+     * @param nullTtl   负副本 TTL
      * @param version   版本参数
      * @return 配置
      */
     public static LocalCacheSpec staticCache(String namespace, long maxSize, Duration ttl, Duration nullTtl,
                                              VersionSpec version) {
-        return new LocalCacheSpec(namespace, LocalStrategy.STATIC, maxSize, ttl,
-                nullTtl != null ? nullTtl : deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR), version, null);
+        return of(CacheStrategy.staticCache(namespace, maxSize, ttl, nullTtl, version));
     }
 
     /**
-     * 构造 {@code DYNAMIC} 策略配置，版本参数取默认。
+     * {@code DYNAMIC}。
      *
      * @param namespace 缓存名
      * @param maxSize   条目上限
@@ -196,12 +167,11 @@ public record LocalCacheSpec(
      * @return 配置
      */
     public static LocalCacheSpec dynamicCache(String namespace, long maxSize, Duration ttl, DynamicSpec dynamic) {
-        return new LocalCacheSpec(namespace, LocalStrategy.DYNAMIC, maxSize, ttl,
-                deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR), VersionSpec.defaults(), dynamic);
+        return of(CacheStrategy.dynamicCache(namespace, maxSize, ttl, dynamic));
     }
 
     /**
-     * 构造 {@code DYNAMIC} 策略配置。
+     * {@code DYNAMIC}，显式给版本参数。
      *
      * @param namespace 缓存名
      * @param maxSize   条目上限
@@ -212,51 +182,28 @@ public record LocalCacheSpec(
      */
     public static LocalCacheSpec dynamicCache(String namespace, long maxSize, Duration ttl,
                                               VersionSpec version, DynamicSpec dynamic) {
-        return dynamicCache(namespace, maxSize, ttl, null, version, dynamic);
+        return of(CacheStrategy.dynamicCache(namespace, maxSize, ttl, version, dynamic));
     }
 
     /**
-     * 构造 {@code DYNAMIC} 策略配置，显式给出负副本 TTL。
+     * {@code DYNAMIC}，显式给负副本 TTL、版本参数与热度参数。
      *
      * @param namespace 缓存名
      * @param maxSize   条目上限
      * @param ttl       本地 TTL
-     * @param nullTtl   负副本 TTL（可空 → 按默认除子派生）
+     * @param nullTtl   负副本 TTL
      * @param version   版本参数
      * @param dynamic   热度参数
      * @return 配置
      */
     public static LocalCacheSpec dynamicCache(String namespace, long maxSize, Duration ttl, Duration nullTtl,
                                               VersionSpec version, DynamicSpec dynamic) {
-        return new LocalCacheSpec(namespace, LocalStrategy.DYNAMIC, maxSize, ttl,
-                nullTtl != null ? nullTtl : deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR), version, dynamic);
+        return of(CacheStrategy.dynamicCache(namespace, maxSize, ttl, nullTtl, version, dynamic));
     }
 
-    // ------------------------------------------------------------------ 校验
+    // ------------------------------------------------------------------ 参数分组 / 派生视图
 
-    /**
-     * 完整参数校验，在构建/启动阶段调用；不合法直接抛 {@link CacheResCode#INVALID_SPEC}。
-     *
-     * @return this
-     */
-    public LocalCacheSpec validate() {
-        if (strategy == LocalStrategy.NONE) {
-            return this;
-        }
-        version.validate();
-        if (dynamic != null) {
-            dynamic.validate(this);
-        }
-        return this;
-    }
-
-    private static CacheException invalid(String message) {
-        return new CacheException(CacheResCode.INVALID_SPEC, message);
-    }
-
-    // ------------------------------------------------------------------ 版本参数
-
-    /**
+/**
      * 版本对账参数。
      *
      * @param checkInterval     命名空间级对账间隔；必须为正
@@ -298,6 +245,18 @@ public record LocalCacheSpec(
          *
          * @return 默认值
          */
+        /**
+         * 从策略派生。
+         *
+         * @param strategy 策略
+         * @return 版本参数视图
+         */
+        public static VersionSpec of(com.asialjim.cache4j.core.CacheStrategy strategy) {
+            return new VersionSpec(strategy.versionCheckInterval(), strategy.versionJitter(),
+                    strategy.versionRetryBackoff(), strategy.reconcileBatchSize(),
+                    strategy.reconcilePartitions());
+        }
+
         public static VersionSpec defaults() {
             return new VersionSpec(Duration.ofSeconds(5), Duration.ofMillis(100),
                     Duration.ofMillis(200), 1_000, DEFAULT_PARTITIONS);
@@ -332,12 +291,7 @@ public record LocalCacheSpec(
         }
     }
 
-    // ------------------------------------------------------------------ 热度参数
-
-    /**
-     * 热度协调模式。
-     */
-    /**
+/**
      * {@code DYNAMIC} 策略参数。
      *
      * @param hotThresholdQps   本地升热阈值（<strong>QPS</strong>；本进程对该 key 的读速率）
@@ -416,6 +370,25 @@ public record LocalCacheSpec(
          *
          * @return 默认值
          */
+        /**
+         * 从策略派生。
+         *
+         * @param strategy 策略
+         * @return 热度参数视图
+         */
+        public static DynamicSpec of(com.asialjim.cache4j.core.CacheStrategy strategy) {
+            GlobalSpec global = strategy.globalWindow() == null ? null
+                    : new GlobalSpec(strategy.globalWindow(), strategy.globalHotQps(), strategy.globalCoolQps(),
+                    strategy.globalDemoteWindows(), strategy.globalStaleWindows(),
+                    strategy.globalClientEstimate());
+            return new DynamicSpec((int) strategy.hotThresholdQps(), (int) strategy.coolQps(),
+                    strategy.hotWindow(), strategy.hotWindowSlices(), strategy.maxHotKeys(),
+                    strategy.hotSyncInterval(), strategy.hotCooldown(), strategy.coordination(),
+                    global, strategy.sketchWidthBits(), strategy.sketchDepth(),
+                    strategy.hotReportPartitions(), strategy.hotReportBatchMax(),
+                    strategy.candidateCapacity());
+        }
+
         public static DynamicSpec defaults() {
             return new DynamicSpec(100, 25, Duration.ofSeconds(5), 16, 1_000,
                     Duration.ofSeconds(1), Duration.ofSeconds(30), com.asialjim.cache4j.core.Coordination.LOCAL, null,
@@ -523,7 +496,7 @@ public record LocalCacheSpec(
         }
     }
 
-    /**
+/**
      * 中央（集群级）阈值。
      *
      * @param window           中央窗口

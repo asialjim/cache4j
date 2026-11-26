@@ -20,14 +20,37 @@ import java.time.Duration;
  * @param allowNoExpiry   是否允许永不过期（默认 {@code false}）
  * @author Asial Jim
  */
-public record CentralCacheSpec(
-        String namespace,
-        Duration ttl,
-        Duration nullTtl,
-        boolean failOpen,
-        double ttlJitter,
-        boolean allowNoExpiry
-) {
+public final class CentralCacheSpec {
+
+    private final com.asialjim.cache4j.core.CacheStrategy strategy;
+
+    private CentralCacheSpec(com.asialjim.cache4j.core.CacheStrategy strategy) {
+        this.strategy = strategy;
+    }
+
+    public String namespace() {
+        return strategy.namespace();
+    }
+
+    public Duration ttl() {
+        return strategy.centralTtl();
+    }
+
+    public Duration nullTtl() {
+        return strategy.centralNullTtl();
+    }
+
+    public boolean failOpen() {
+        return strategy.failOpen();
+    }
+
+    public double ttlJitter() {
+        return strategy.centralTtlJitter();
+    }
+
+    public boolean allowNoExpiry() {
+        return strategy.allowNoExpiry();
+    }
 
     /**
      * 从完整策略里取出中央侧部分（全局唯一实例可能同时含本地字段，这里只保留中央那几个）。
@@ -36,9 +59,7 @@ public record CentralCacheSpec(
      * @return 中央规格
      */
     public static CentralCacheSpec of(com.asialjim.cache4j.core.CacheStrategy strategy) {
-        return new CentralCacheSpec(strategy.namespace(), strategy.centralTtl(),
-                strategy.centralNullTtl(), strategy.failOpen(), strategy.centralTtlJitter(),
-                strategy.allowNoExpiry());
+        return new CentralCacheSpec(strategy);
     }
 
     /**
@@ -47,37 +68,7 @@ public record CentralCacheSpec(
      * @return 运行期策略
      */
     public com.asialjim.cache4j.core.CacheStrategy toStrategy() {
-        return new com.asialjim.cache4j.core.CacheStrategy(
-                namespace, null, com.asialjim.cache4j.core.local.LocalStrategy.STATIC,
-                1_000L, java.time.Duration.ofMinutes(1), java.time.Duration.ZERO,
-                java.time.Duration.ofSeconds(10), java.time.Duration.ofSeconds(1),
-                java.time.Duration.ofSeconds(1), 64, 16,
-                0L, 0L, null, 16, 1_000,
-                java.time.Duration.ofSeconds(1), java.time.Duration.ofSeconds(30),
-                com.asialjim.cache4j.core.Coordination.LOCAL, 14, 4, 16, 64, 1 << 12,
-                null, 100L, 25L, 1, 6, 1,
-                ttl, nullTtl, ttlJitter, failOpen, allowNoExpiry);
-    }
-
-    /**
-     * 紧凑构造器：基础校验。
-     */
-    public CentralCacheSpec {
-        if (namespace == null || namespace.isBlank()) {
-            throw invalid("namespace 不能为空");
-        }
-        if (ttl == null || ttl.isNegative()) {
-            throw invalid("中央 ttl 不能为负：" + ttl);
-        }
-        if (ttl.isZero() && !allowNoExpiry) {
-            throw invalid("中央缓存不允许无 TTL；如确需永不过期请显式设置 allowNoExpiry=true");
-        }
-        if (nullTtl == null || nullTtl.isNegative()) {
-            throw invalid("nullTtl 不能为负：" + nullTtl);
-        }
-        if (ttlJitter < 0D || ttlJitter > 0.5D) {
-            throw invalid("ttlJitter 必须在 [0, 0.5]：" + ttlJitter);
-        }
+        return strategy;
     }
 
     /**
@@ -94,7 +85,7 @@ public record CentralCacheSpec(
      * @return 是否启用空值缓存
      */
     public boolean nullCachingEnabled() {
-        return nullTtl != null && !nullTtl.isZero();
+        return strategy.nullCachingEnabled();
     }
 
     private static CacheException invalid(String message) {
@@ -168,7 +159,11 @@ public record CentralCacheSpec(
          * @return 不可变配置
          */
         public CentralCacheSpec build() {
-            return new CentralCacheSpec(namespace, ttl, nullTtl, failOpen, ttlJitter, allowNoExpiry);
+            com.asialjim.cache4j.core.CacheStrategy base =
+                    com.asialjim.cache4j.core.CacheStrategy.staticCache(namespace,
+                            Math.max(1L, 1_000L), Duration.ofMinutes(1));
+            return new CentralCacheSpec(base.withCentral(ttl, nullTtl == null ? Duration.ZERO : nullTtl,
+                    failOpen));
         }
     }
 }

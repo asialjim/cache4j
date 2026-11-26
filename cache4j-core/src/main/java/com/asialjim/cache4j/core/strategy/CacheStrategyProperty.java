@@ -416,8 +416,12 @@ public class CacheStrategyProperty {
      * @return 版本对账参数
      */
     public LocalCacheSpec.VersionSpec versionSpec() {
+        // 未配置时用默认检查间隔（不能留 0：策略要求正数）
+        Duration checkInterval = versionCheckInterval == null
+                ? LocalCacheSpec.VersionSpec.defaults().checkInterval()
+                : duration(versionCheckInterval, localTimeUnit, TimeUnit.SECONDS);
         return new LocalCacheSpec.VersionSpec(
-                duration(versionCheckInterval, localTimeUnit, TimeUnit.SECONDS),
+                checkInterval,
                 duration(versionJitter, localTimeUnit, TimeUnit.MILLISECONDS),
                 duration(versionRetryBackoff, localTimeUnit, TimeUnit.MILLISECONDS),
                 reconcileBatchSize == null ? 1_000 : reconcileBatchSize,
@@ -498,11 +502,11 @@ public class CacheStrategyProperty {
                 resolved == LocalStrategy.NONE ? 0L : maxSize(),
                 localTtl,
                 nullTtl,
-                duration(versionCheckInterval, localTimeUnit, TimeUnit.SECONDS),
-                duration(versionJitter, localTimeUnit, TimeUnit.SECONDS),
-                duration(versionRetryBackoff, localTimeUnit, TimeUnit.SECONDS),
-                intOf(reconcileBatchSize, 1 << 6),
-                intOf(reconcilePartitions, 1 << 4),
+                versionSpec().checkInterval(),
+                versionSpec().jitter(),
+                versionSpec().retryBackoff(),
+                versionSpec().reconcileBatchSize(),
+                versionSpec().reconcilePartitions(),
                 dynamic && hotThresholdQps != null ? hotThresholdQps : 0L,
                 dynamic && coolQps != null ? coolQps : 0L,
                 dynamic ? duration(hotWindow, localTimeUnit, TimeUnit.SECONDS) : null,
@@ -545,9 +549,9 @@ public class CacheStrategyProperty {
                 getLocalNullTtlDivisor() == null ? LocalCacheSpec.DEFAULT_NULL_TTL_DIVISOR
                         : getLocalNullTtlDivisor());
         if (resolved == LocalStrategy.STATIC) {
-            return new LocalCacheSpec(namespace, resolved, maxSize(), localTtl, nullTtl, version, null);
+            return LocalCacheSpec.staticCache(namespace, maxSize(), localTtl, nullTtl, version);
         }
-        return new LocalCacheSpec(namespace, resolved, maxSize(), localTtl, nullTtl, version, dynamicSpec());
+        return LocalCacheSpec.dynamicCache(namespace, maxSize(), localTtl, nullTtl, version, dynamicSpec());
     }
 
     /**
@@ -556,13 +560,7 @@ public class CacheStrategyProperty {
      * @return 中央规格
      */
     public CentralCacheSpec toCentralSpec() {
-        return new CentralCacheSpec(
-                namespace,
-                centralTtlDuration(),
-                centralNullTtlDuration(),
-                failOpenValue(),
-                centralTtlJitter == null ? 0D : centralTtlJitter,
-                allowNoExpiry != null && allowNoExpiry);
+        return CentralCacheSpec.of(toStrategy());
     }
 
     private LocalCacheSpec.GlobalSpec globalSpec() {

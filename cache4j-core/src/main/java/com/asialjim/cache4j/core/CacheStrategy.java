@@ -1,5 +1,6 @@
 package com.asialjim.cache4j.core;
 
+import com.asialjim.cache4j.core.local.LocalCacheSpec;
 import com.asialjim.cache4j.core.local.LocalStrategy;
 
 import java.time.Duration;
@@ -116,6 +117,21 @@ public record CacheStrategy(
         if (localStrategy == null) {
             throw new CacheException(CacheResCode.INVALID_SPEC, "localStrategy 不能为空");
         }
+        if (localStrategy != LocalStrategy.NONE) {
+            if (localMaxSize <= 0) {
+                throw new CacheException(CacheResCode.INVALID_SPEC, "localMaxSize 必须大于 0：" + localMaxSize);
+            }
+            if (localTtl == null || localTtl.isZero() || localTtl.isNegative()) {
+                throw new CacheException(CacheResCode.INVALID_SPEC, "本地 ttl 必须为正：" + localTtl);
+            }
+            if (localNullTtl == null) {
+                throw new CacheException(CacheResCode.INVALID_SPEC, "localNullTtl 不能为空（ZERO 表示不缓存负副本）");
+            }
+            if (versionCheckInterval == null || versionCheckInterval.isZero() || versionCheckInterval.isNegative()) {
+                throw new CacheException(CacheResCode.INVALID_SPEC,
+                        "versionCheckInterval 必须为正：" + versionCheckInterval);
+            }
+        }
         if (centralTtl == null || centralTtl.isNegative()) {
             throw new CacheException(CacheResCode.INVALID_SPEC, "centralTtl 不能为负：" + centralTtl);
         }
@@ -175,6 +191,198 @@ public record CacheStrategy(
      */
     public boolean nullCachingEnabled() {
         return centralNullTtl != null && !centralNullTtl.isZero();
+    }
+
+
+    /**
+     * 替换中央侧字段（本地与热 key 部分保持原样）。
+     *
+     * @param centralTtl     中央 TTL
+     * @param centralNullTtl 中央负副本 TTL
+     * @param failOpen       中央不可用时是否放行
+     * @return 新策略
+     */
+    public CacheStrategy withCentral(Duration centralTtl, Duration centralNullTtl, boolean failOpen) {
+        return new CacheStrategy(namespace, description, localStrategy,
+                localMaxSize, localTtl, localNullTtl,
+                versionCheckInterval, versionJitter, versionRetryBackoff,
+                reconcileBatchSize, reconcilePartitions,
+                hotThresholdQps, coolQps, hotWindow, hotWindowSlices, maxHotKeys,
+                hotSyncInterval, hotCooldown, coordination, sketchWidthBits, sketchDepth,
+                hotReportPartitions, hotReportBatchMax, candidateCapacity,
+                globalWindow, globalHotQps, globalCoolQps, globalDemoteWindows, globalStaleWindows,
+                globalClientEstimate,
+                centralTtl, centralNullTtl, centralTtlJitter, failOpen, allowNoExpiry);
+    }
+
+    // ------------------------------------------------------------------ 工厂（装配与测试共用）
+
+    /**
+     * 未显式配置时的负副本除子。
+     */
+    public static final int DEFAULT_NULL_TTL_DIVISOR = 10;
+
+    /**
+     * 派生负副本存活时长：{@code min(localTtl, centralNullTtl / divisor)}。
+     *
+     * <p>负副本是"防穿透的临时标记"，比中央活得久毫无意义——让本地比中央更早放下标记，
+     * 避免"中央已能重新回源、本地还在说不存在"。</p>
+     *
+     * @param localTtl       本地非空副本存活（可空）
+     * @param centralNullTtl 中央空值存活；{@code null} 或 {@code ZERO} 表示不缓存空值
+     * @param divisor        除子 N（≥ 1）
+     * @return 本地空值副本存活
+     */
+    public static Duration deriveNullTtl(Duration localTtl, Duration centralNullTtl, int divisor) {
+        if (centralNullTtl == null || centralNullTtl.isZero()) {
+            return Duration.ZERO;
+        }
+        Duration derived = centralNullTtl.dividedBy(Math.max(1, divisor));
+        if (localTtl == null) {
+            return derived;
+        }
+        return derived.compareTo(localTtl) < 0 ? derived : localTtl;
+    }
+
+    /**
+     * {@code NONE}：本地不缓存。
+     *
+     * @param namespace 命名空间
+     * @return 策略
+     */
+    public static CacheStrategy noLocal(String namespace) {
+        return build(namespace, LocalStrategy.NONE, 0L, null, Duration.ZERO, null, null);
+    }
+
+    /**
+     * {@code STATIC}。
+     *
+     * @param namespace 命名空间
+     * @param maxSize   条目上限
+     * @param ttl       本地 TTL
+     * @return 策略
+     */
+    public static CacheStrategy staticCache(String namespace, long maxSize, Duration ttl) {
+        return staticCache(namespace, maxSize, ttl, null, LocalCacheSpec.VersionSpec.defaults());
+    }
+
+    /**
+     * {@code STATIC}，显式给版本参数。
+     *
+     * @param namespace 命名空间
+     * @param maxSize   条目上限
+     * @param ttl       本地 TTL
+     * @param version   版本参数
+     * @return 策略
+     */
+    public static CacheStrategy staticCache(String namespace, long maxSize, Duration ttl, LocalCacheSpec.VersionSpec version) {
+        return staticCache(namespace, maxSize, ttl, null, version);
+    }
+
+    /**
+     * {@code STATIC}，显式给负副本 TTL 与版本参数。
+     *
+     * @param namespace 命名空间
+     * @param maxSize   条目上限
+     * @param ttl       本地 TTL
+     * @param nullTtl   负副本 TTL（可空 → 按默认除子派生）
+     * @param version   版本参数
+     * @return 策略
+     */
+    public static CacheStrategy staticCache(String namespace, long maxSize, Duration ttl, Duration nullTtl,
+                                            LocalCacheSpec.VersionSpec version) {
+        return build(namespace, LocalStrategy.STATIC, maxSize, ttl,
+                nullTtl != null ? nullTtl : deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR),
+                version == null ? LocalCacheSpec.VersionSpec.defaults() : version, null);
+    }
+
+    /**
+     * {@code DYNAMIC}。
+     *
+     * @param namespace 命名空间
+     * @param maxSize   条目上限
+     * @param ttl       本地 TTL
+     * @param dynamic   热度参数
+     * @return 策略
+     */
+    public static CacheStrategy dynamicCache(String namespace, long maxSize, Duration ttl, LocalCacheSpec.DynamicSpec dynamic) {
+        return dynamicCache(namespace, maxSize, ttl, null, LocalCacheSpec.VersionSpec.defaults(), dynamic);
+    }
+
+    /**
+     * {@code DYNAMIC}，显式给版本参数。
+     *
+     * @param namespace 命名空间
+     * @param maxSize   条目上限
+     * @param ttl       本地 TTL
+     * @param version   版本参数
+     * @param dynamic   热度参数
+     * @return 策略
+     */
+    public static CacheStrategy dynamicCache(String namespace, long maxSize, Duration ttl,
+                                             LocalCacheSpec.VersionSpec version, LocalCacheSpec.DynamicSpec dynamic) {
+        return dynamicCache(namespace, maxSize, ttl, null, version, dynamic);
+    }
+
+    /**
+     * {@code DYNAMIC}，显式给负副本 TTL、版本参数与热度参数。
+     *
+     * @param namespace 命名空间
+     * @param maxSize   条目上限
+     * @param ttl       本地 TTL
+     * @param nullTtl   负副本 TTL（可空 → 按默认除子派生）
+     * @param version   版本参数
+     * @param dynamic   热度参数
+     * @return 策略
+     */
+    public static CacheStrategy dynamicCache(String namespace, long maxSize, Duration ttl, Duration nullTtl,
+                                             LocalCacheSpec.VersionSpec version, LocalCacheSpec.DynamicSpec dynamic) {
+        return build(namespace, LocalStrategy.DYNAMIC, maxSize, ttl,
+                nullTtl != null ? nullTtl : deriveNullTtl(ttl, ttl, DEFAULT_NULL_TTL_DIVISOR),
+                version == null ? LocalCacheSpec.VersionSpec.defaults() : version, dynamic);
+    }
+
+    /**
+     * 统一构造：中央侧取内建默认（10 分钟 TTL / 1 分钟负副本 / failOpen=true）。
+     *
+     * @param namespace 命名空间
+     * @param strategy  本地策略
+     * @param maxSize   条目上限
+     * @param ttl       本地 TTL
+     * @param nullTtl   负副本 TTL
+     * @param version   版本参数
+     * @param dynamic   热度参数（非 DYNAMIC 传 null）
+     * @return 策略
+     */
+    private static CacheStrategy build(String namespace, LocalStrategy strategy, long maxSize, Duration ttl,
+                                       Duration nullTtl, LocalCacheSpec.VersionSpec version, LocalCacheSpec.DynamicSpec dynamic) {
+        LocalCacheSpec.VersionSpec v = version == null ? LocalCacheSpec.VersionSpec.defaults() : version;
+        LocalCacheSpec.GlobalSpec g = dynamic == null ? null : dynamic.global();
+        return new CacheStrategy(
+                namespace, null, strategy, maxSize, ttl,
+                nullTtl != null ? nullTtl : Duration.ZERO,
+                v.checkInterval(), v.jitter(), v.retryBackoff(),
+                v.reconcileBatchSize(), v.reconcilePartitions(),
+                dynamic == null ? 0L : dynamic.hotThresholdQps(),
+                dynamic == null ? 0L : dynamic.coolQps(),
+                dynamic == null ? null : dynamic.window(),
+                dynamic == null ? 16 : dynamic.windowSlices(),
+                dynamic == null ? 1_000 : dynamic.maxHotKeys(),
+                dynamic == null ? Duration.ofSeconds(1) : dynamic.syncInterval(),
+                dynamic == null ? Duration.ofSeconds(30) : dynamic.cooldown(),
+                dynamic == null ? Coordination.LOCAL : dynamic.coordination(),
+                dynamic == null ? 14 : dynamic.sketchWidthBits(),
+                dynamic == null ? 4 : dynamic.sketchDepth(),
+                dynamic == null ? 16 : dynamic.hotReportPartitions(),
+                dynamic == null ? 64 : dynamic.hotReportBatchMax(),
+                dynamic == null ? 1 << 12 : dynamic.candidateCapacity(),
+                g == null ? null : g.window(),
+                g == null ? 100L : g.hotQps(),
+                g == null ? 25L : g.coolQps(),
+                g == null ? 1 : g.demoteWindows(),
+                g == null ? 6 : g.staleWindows(),
+                g == null ? 1 : g.clientEstimate(),
+                Duration.ofMinutes(10), Duration.ofMinutes(1), 0D, true, false);
     }
 
     // ------------------------------------------------------------------ 派生量
