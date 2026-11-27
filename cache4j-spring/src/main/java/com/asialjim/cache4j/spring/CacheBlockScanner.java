@@ -69,6 +69,7 @@ public final class CacheBlockScanner {
             if (type == null || !type.isEnum() || !CacheBlock.class.isAssignableFrom(type)) {
                 continue;
             }
+            //noinspection unchecked
             found.add((Class<? extends CacheBlock>) type);
         }
         log.debug("[cache-block]-scan-found count={} packages={}", found.size(), List.of(basePackages));

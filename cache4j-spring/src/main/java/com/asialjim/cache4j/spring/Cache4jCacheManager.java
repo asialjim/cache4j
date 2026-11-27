@@ -1,15 +1,18 @@
 package com.asialjim.cache4j.spring;
 
 import com.asialjim.cache4j.KeyEncoder;
+import com.asialjim.cache4j.key.StringKeyEncoder;
 import com.asialjim.cache4j.level.Cache4jImpl;
 import com.asialjim.cache4j.level.CentralCache4j;
 import com.asialjim.cache4j.level.DynamicLocalCache4j;
 import com.asialjim.cache4j.level.StaticLocalCache4j;
 import com.asialjim.cache4j.strategy.CacheStrategy;
 import com.asialjim.cache4j.strategy.CacheStrategyReader;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.lang.NonNull;
+import org.springframework.stereotype.Component;
 
 import java.util.Collection;
 import java.util.Map;
@@ -41,27 +44,25 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * @author Asial Jim
  */
+@Component
 public final class Cache4jCacheManager implements CacheManager {
     private final Map<String, Cache> caches = new ConcurrentHashMap<>();
 
     private final CacheStrategyReader cacheStrategyReader;
-    private final boolean allowDynamicCreation;
     private final KeyEncoder keyEncoder;
     private final StaticLocalCache4j.Provider staticLocalCacheProvider;
     private final DynamicLocalCache4j.Provider dynamicLocalCacheProvider;
     private final CentralCache4j.Provider centralCache4jProvider;
 
     public Cache4jCacheManager(
-            boolean allowDynamicCreation,
-            KeyEncoder keyEncoder,
+            ObjectProvider<KeyEncoder> keyEncoder,
             CacheStrategyReader cacheStrategyReader,
             StaticLocalCache4j.Provider staticLocalCacheProvider,
             DynamicLocalCache4j.Provider dynamicLocalCacheProvider,
             CentralCache4j.Provider centralCache4jProvider
     ) {
         this.cacheStrategyReader = cacheStrategyReader;
-        this.allowDynamicCreation = allowDynamicCreation;
-        this.keyEncoder = keyEncoder;
+        this.keyEncoder = keyEncoder.getIfAvailable(() -> StringKeyEncoder.INSTANCE);
         this.staticLocalCacheProvider = staticLocalCacheProvider;
         this.dynamicLocalCacheProvider = dynamicLocalCacheProvider;
         this.centralCache4jProvider = centralCache4jProvider;
@@ -71,14 +72,7 @@ public final class Cache4jCacheManager implements CacheManager {
     @Override
     @SuppressWarnings("NullableProblems")
     public Cache getCache(String name) {
-        Cache existing = caches.get(name);
-        if (existing != null) {
-            return existing;
-        }
-        if (!allowDynamicCreation) {
-            return null;
-        }
-        return doGetCache(name);
+        return this.caches.computeIfAbsent(name, this::doGetCache);
     }
 
     @NonNull

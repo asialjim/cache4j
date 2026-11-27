@@ -2,6 +2,8 @@ package com.asialjim.cache4j.spring;
 
 import com.asialjim.cache4j.KeyEncoder;
 import org.springframework.cache.interceptor.KeyGenerator;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -22,6 +24,7 @@ import java.util.StringJoiner;
  *
  * @author Asial Jim
  */
+@Component
 @SuppressWarnings("NullableProblems")
 public final class Cache4jKeyGenerator implements KeyGenerator {
 

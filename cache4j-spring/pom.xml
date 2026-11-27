@@ -24,10 +24,12 @@
         </dependency>
         <!-- 只依赖 spring-context：@Cacheable / @CacheEvict / CacheManager / Cache 都在这里。
              刻意不引 spring-boot、不引任何 Redis 客户端缓存实现——本模块只做 @Cache* 桥接。 -->
+        <!--suppress VulnerableLibrariesLocal -->
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-context</artifactId>
             <version>${spring.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
