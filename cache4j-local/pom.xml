@@ -3,55 +3,20 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-
     <parent>
-        <groupId>com.asialjim</groupId>
+        <groupId>com.asialjim.cache4j</groupId>
         <artifactId>cache4j</artifactId>
         <version>1.0.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>cache4j-local</artifactId>
-    <packaging>jar</packaging>
-    <name>AsialJim::Cache4J::Local</name>
-    <description>本地缓存实现：NONE / STATIC / DYNAMIC 三种策略 + 零依赖 HashMap 存储</description>
+    <name>AsialJim::Cache4j::Local</name>
 
     <dependencies>
         <dependency>
-            <groupId>com.asialjim</groupId>
+            <groupId>com.asialjim.cache4j</groupId>
             <artifactId>cache4j-core</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <!--
-          ~ 仅测试作用域：策略矩阵 / 单飞 / 对账 / 热 key 的集成测试需要同时装配
-          ~ 本地实现与中央内存实现。编译期依赖方向不变（local 与 central 仍然同级、互不依赖）。
-          -->
-        <dependency>
-            <groupId>com.asialjim</groupId>
-            <artifactId>cache4j-central</artifactId>
-            <version>${project.version}</version>
-            <scope>test</scope>
-        </dependency>
     </dependencies>
-
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-jar-plugin</artifactId>
-                <version>3.4.2</version>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>test-jar</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
-    </build>
 </project>

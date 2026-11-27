@@ -3,32 +3,18 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-
     <parent>
-        <groupId>com.asialjim</groupId>
+        <groupId>com.asialjim.cache4j</groupId>
         <artifactId>cache4j</artifactId>
         <version>1.0.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>cache4j-core</artifactId>
-    <packaging>jar</packaging>
-    <name>AsialJim::Cache4J::Core</name>
-    <description>内核：通用契约 + LocalCache / CentralCache SPI + TwoLevelCache 接口与默认编排实现</description>
 
-    <dependencies>
-        <dependency>
-            <groupId>com.asialjim</groupId>
-            <artifactId>standard4j</artifactId>
-        </dependency>
-        <dependency>
-            <!-- 日志门面：核心唯一的第三方依赖；实现由使用方提供（Spring Boot 默认 Logback） -->
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
-    </dependencies>
+    <properties>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
 </project>

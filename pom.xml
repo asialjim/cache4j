@@ -20,7 +20,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.asialjim</groupId>
+    <groupId>com.asialjim.cache4j</groupId>
     <artifactId>cache4j</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <!-- 唯一的 pom 聚合工程；其余模块全部是 jar，不做聚合 pom -->
@@ -42,9 +42,7 @@
         <module>cache4j-local-caffeine</module>
         <module>cache4j-central</module>
         <module>cache4j-central-redis</module>
-        <module>cache4j-spring-redis</module>
         <module>cache4j-spring</module>
-        <module>cache4j-spring-redis-test</module>
     </modules>
 
     <properties>
@@ -58,18 +56,7 @@
 
     <dependencyManagement>
         <dependencies>
-            <dependency>
-                <groupId>com.asialjim</groupId>
-                <artifactId>standard4j</artifactId>
-                <version>${standard4j.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.junit.jupiter</groupId>
-                <artifactId>junit-jupiter</artifactId>
-                <version>${junit.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
+           <dependency>
                 <groupId>org.slf4j</groupId>
                 <artifactId>slf4j-api</artifactId>
                 <version>${slf4j.version}</version>
@@ -80,16 +67,35 @@
                 <version>${slf4j.version}</version>
                 <scope>test</scope>
             </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter</artifactId>
+                <version>${junit.version}</version>
+                <scope>test</scope>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
     <dependencies>
-        <!-- 测试期日志绑定：让各模块单测有输出、避免 "No SLF4J providers" 提示 -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>1.18.42</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <!-- 日志门面：核心唯一的第三方依赖；实现由使用方提供（Spring Boot 默认 Logback） -->
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <scope>test</scope>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>2.0.20</version>
+            <scope>provided</scope>
         </dependency>
+
     </dependencies>
 
     <build>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="Encoding">
+    <file url="file://$PROJECT_DIR$/cache4j-central-redis/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-central-redis/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-central/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-central/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-core/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-core/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-local-caffeine/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-local-caffeine/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-local/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-local/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-spring-redis-test/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-spring-redis-test/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-spring-redis/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-spring-redis/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-spring/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/cache4j-spring/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/src/main/resources" charset="UTF-8" />
+  </component>
+</project>

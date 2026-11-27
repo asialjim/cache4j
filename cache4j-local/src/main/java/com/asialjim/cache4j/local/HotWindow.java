@@ -1,111 +1,107 @@
 package com.asialjim.cache4j.local;
 
-import java.util.Arrays;
-
 /**
- * 单个 key 的滑动窗口计数：把 {@code window} 切成 {@code windowSlices} 个时间片，
- * 循环数组保存最近若干片的计数，判定时累加"当前片 + 前 windowSlices-1 片"。
+ * 每个 key 的<strong>精确</strong>滑动窗口计数（16 片环形）。
  *
- * <p>结构照抄 JD HotKey 的 {@code SlidingWindow}：<strong>数组长度取 2 × windowSlices</strong>，
- * 这样每前进一片只清理"新片对应的槽"，清理区间与统计区间永不重叠，访问路径平摊 O(1)。</p>
+ * <p>它是热 key 判定的第二段。{@link FrequencySketch} 只会高估，用它升热会把冷 key 误判成热；
+ * 所以只对"CMS 粗筛达到候选阈值"的 key 建这个窗口，用精确计数决定是否真的升热。</p>
  *
- * <p>与共享的 Count-Min Sketch 分工：<strong>本类做精确判定</strong>（升热），CMS 只做粗筛
- * （决定"谁值得建这个窗口"）。CMS 只会高估，适合"宁多勿少"的候选阶段；
- * 升热会真实占用本地内存，必须精确。</p>
+ * <h2>为什么是分片而不是两个计数器</h2>
+ * <p>两桶方案（当前桶 + 上一桶）在桶边界会让计数瞬间腰斩，同一个 key 在边界前后可能反复升降。
+ * 分片环形数组把窗口切成 N 份，读数时求和最近一整窗的分片，边界只掉 1/N，不会阶跃。</p>
+ *
+ * <h2>为什么用 synchronized</h2>
+ * <p>窗口是<strong>每个 key 一个</strong>的，锁的争用只发生在"同一个热 key 的并发读"上，
+ * 而那种场景本来就会在别处串行化（单飞/存储锁）。用分段原子数组换来的复杂度
+ * 与这里的实际争用不成比例。</p>
  *
  * @author Asial Jim
  */
 final class HotWindow {
 
-    private final int[] slices;
-
-    private final int windowSlices;
-
-    private final long sliceNanos;
-
-    private long currentSliceId;
+    private final long[] counts;
+    private final long[] stamps;
+    private final long sliceMillis;
+    private final int slices;
 
     /**
-     * @param windowSlices 时间片数（≥ 2）
-     * @param windowNanos  窗口总长度（纳秒）
-     * @param nowNanos     当前单调时钟
+     * @param slices      分片数（≥ 2）
+     * @param windowMillis 统计窗口（毫秒）
      */
-    HotWindow(int windowSlices, long windowNanos, long nowNanos) {
-        this(windowSlices, windowNanos, nowNanos, 0);
+    HotWindow(int slices, long windowMillis) {
+        int n = Math.max(2, slices);
+        this.slices = n;
+        this.counts = new long[n];
+        this.stamps = new long[n];
+        this.sliceMillis = Math.max(1L, windowMillis / n);
     }
 
     /**
-     * @param windowSlices 时间片数（≥ 2）
-     * @param windowNanos  窗口总长度（纳秒）
-     * @param nowNanos     当前单调时钟
-     * @param initialCount 建表时的初始计数（见 {@code DynamicLocalCache#preciseCount}：
-     *                     用粗筛阈值做种，避免丢掉"建立精确统计之前"已经攒下的访问量）
+     * 建表时把"建表前已攒的访问量"写入当前时间片。
+     *
+     * <p>不做这一步的话，建表瞬间计数会从 1 重新开始——低速热点永远攒不够一个完整窗口，
+     * 表现为"明明访问了 N 次却迟迟不升热"。调用方传入的 {@code count} 应已扣除紧随其后的
+     * 那次 {@link #incrementAndCount}，否则会多算一次。</p>
+     *
+     * @param nowMillis 当前毫秒时间
+     * @param count     初始计数（≥ 0）
      */
-    HotWindow(int windowSlices, long windowNanos, long nowNanos, int initialCount) {
-        this.windowSlices = windowSlices;
-        this.slices = new int[windowSlices * 2];
-        this.sliceNanos = Math.max(1L, windowNanos / windowSlices);
-        this.currentSliceId = nowNanos / sliceNanos;
-        if (initialCount > 0) {
-            this.slices[slotOf(currentSliceId)] = initialCount;
+    synchronized void seed(long nowMillis, long count) {
+        long currentSlice = nowMillis / sliceMillis;
+        int slot = slotOf(currentSlice);
+        stamps[slot] = currentSlice;
+        counts[slot] = Math.max(0L, count);
+    }
+
+    /**
+     * 记一次访问并返回<strong>最近一整窗</strong>的累计次数。
+     *
+     * @param nowMillis 当前毫秒时间
+     * @return 窗口内累计次数
+     */
+    long incrementAndCount(long nowMillis) {
+        long currentSlice = nowMillis / sliceMillis;
+        synchronized (this) {
+            int slot = slotOf(currentSlice);
+            if (stamps[slot] != currentSlice) {
+                // 这一格属于更早的时间片 → 先清掉再加入本次
+                counts[slot] = 0L;
+                stamps[slot] = currentSlice;
+            }
+            counts[slot]++;
+            return sumWithinWindow(currentSlice);
         }
     }
 
     /**
-     * 记录一次访问并返回窗口内累计次数。
+     * 读取最近一整窗的累计次数（<strong>不</strong>增加计数）。
      *
-     * @param nowNanos 当前单调时钟
-     * @return 最近 {@code windowSlices} 片的计数之和
+     * @param nowMillis 当前毫秒时间
+     * @return 窗口内累计次数
      */
-    synchronized long advanceAndIncrement(long nowNanos) {
-        advanceTo(nowNanos / sliceNanos);
-        slices[slotOf(currentSliceId)]++;
-        return sum();
+    long count(long nowMillis) {
+        long currentSlice = nowMillis / sliceMillis;
+        synchronized (this) {
+            return sumWithinWindow(currentSlice);
+        }
     }
 
     /**
-     * 只读累计次数（会顺手推进窗口）。
-     *
-     * @param nowNanos 当前单调时钟
-     * @return 最近 {@code windowSlices} 片的计数之和
+     * 只累加"最近 {@code slices} 个时间片"的计数；更早的格子视为过期，不参与求和
+     * （也不必主动清零——下次写入到同一格时会清）。
      */
-    synchronized long total(long nowNanos) {
-        advanceTo(nowNanos / sliceNanos);
-        return sum();
-    }
-
-    private long sum() {
+    private long sumWithinWindow(long currentSlice) {
+        long oldest = currentSlice - slices + 1;
         long total = 0L;
-        for (int i = 0; i < windowSlices; i++) {
-            total += slices[slotOf(currentSliceId - i)];
+        for (int i = 0; i < slices; i++) {
+            if (stamps[i] >= oldest) {
+                total += counts[i];
+            }
         }
         return total;
     }
 
-    /**
-     * 把窗口推进到指定片，并清掉这期间滑过期的槽。
-     *
-     * @param sliceId 目标片编号
-     */
-    private void advanceTo(long sliceId) {
-        long elapsed = sliceId - currentSliceId;
-        if (elapsed <= 0L) {
-            return;
-        }
-        if (elapsed >= slices.length) {
-            // 超过两倍窗口：全部过期
-            Arrays.fill(slices, 0);
-        } else {
-            // 逐片清理"新片要用的槽"——该槽上一次使用在 2×windowSlices 片之前
-            for (long i = currentSliceId + 1L; i <= sliceId; i++) {
-                slices[slotOf(i)] = 0;
-            }
-        }
-        currentSliceId = sliceId;
-    }
-
-    private int slotOf(long sliceId) {
-        long mod = sliceId % slices.length;
-        return (int) (mod < 0L ? mod + slices.length : mod);
+    private int slotOf(long slice) {
+        return (int) Math.floorMod(slice, (long) slices);
     }
 }

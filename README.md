@@ -180,7 +180,193 @@ Redis 只是我们默认提供的适配层之一，换成其他中央存储只�
 
 所有模块中只有父工程 `cache4j` 是 `pom` 打包；`cache4j-local`、`cache4j-central` 以及各实现/适配模块都是普通 `jar`，不做聚合 `pom`。
 
-## 快速示例（设计稿 API）
+## 中央缓存适配度
+
+本库的中央缓存抽象（`cache4j-central`）不绑定具体存储，但对存储能力有明确要求。
+下表用于判断"某个中央缓存能不能接、接进来要付多少代价"。
+
+### 体系对中央缓存的八项要求
+
+八项都从 `cache4j-central` 的抽象方法反推，不是凭空列的：
+
+| # | 要求 | 来源 | 缺失后果 |
+|---|---|---|---|
+| 1 | 单 key 读 / 写 / 删 | `readRaw` / `writeRaw` / `deleteRaw` | 不可用 |
+| 2 | **per-key TTL**（秒级、逐条不同） | `writeRaw(key, value, ttlSeconds, strategy)` | 负副本更短 TTL、防雪崩抖动全部失效 |
+| 3 | **原子"写值 + 更新版本"** | `writeRaw` 契约 | 出现"值已新、版本还旧"的中间态，本地副本被误判为新鲜 |
+| 4 | **批量读多 key** | `readVersions(Set)` / `readCounts(Set)` | 一次对账变成 N 倍往返 |
+| 5 | 批量累加 | `accumulate(Map)` | 热 key 计数出现竞态 |
+| 6 | **按前缀删除**（只需 `prefix*` 范围内可定位，无需枚举全量 key） | `deleteNamespace` | 命名空间清空无法实现 |
+| 7 | **中央时钟** | 热度窗口划分 | 只能客户端估算，会漂移 |
+| 8 | 一个 key 内多 field | `revisionKey` + `revisionField` | **非硬需求**：两者拼起来当独立 key 即可 |
+
+其中 **2、4、6 是不可妥协的**——前两个决定功能是否成立，第三个决定 `clear` 有没有办法实现。
+
+> 第 6 条容易被误解成"要能列举所有 key"。**不是。** namespace 是固定的，前缀就是固定的
+> （`C4J-L2:{namespace}:#{hash}:`），只需要"删掉这个前缀下的全部 key"，不需要知道库里
+> 还存了什么。Redis 的 `SCAN MATCH prefix*` 是前缀范围内的迭代，不是全量枚举。
+
+### 分级
+
+| 级别 | 含义 | 代表 |
+|---|---|---|
+| **A** | 零适配，契约每一条都能直接落地 | Redis、KeyDB、Dragonfly、ElastiCache、阿里云 Tair、腾讯云 CKV |
+| **B** | 改实现、不改抽象；功能等价，某些操作效率低一档 | Memcached、Hazelcast、Apache Ignite、Couchbase、MongoDB |
+| **C** | 显著适配，部分能力需降级或自建 | DynamoDB、etcd、TiKV |
+| — | 不适用 | RocksDB / LevelDB / SQLite 等嵌入式 KV（单进程内，本质是本地缓存） |
+
+### 逐项对照（含补救方案）
+
+`✅` 原生可用 · `⚠️` 可用但有代价 · `❌` 缺该项能力
+**`→` 后面是补救手段**——每一格都能补，只是代价不同。
+
+| 存储 | per-key TTL | 批量读 | 原子写+版本 | 前缀删除 | 中央时钟 | 原子计数 | 适配度 |
+|---|---|---|---|---|---|---|---|
+| **Redis**<br>standalone / Sentinel / Cluster | ✅ 秒级精确 | ✅ `HMGET` | ✅ Lua | ✅ `SCAN MATCH` | ✅ `TIME` | ✅ `HINCRBY` | **A** |
+| **Memcached** | ✅ 秒级精确 | ✅ `getMulti` | ⚠️ 仅 `cas`<br>**→ 版本并进 value，一次 CAS** | ❌ 无<br>**→ 命名空间代际号** | ✅ `stats` 的 `time` | ✅ `incr` | **B** |
+| **Hazelcast / Ignite** | ✅ | ✅ | ✅ `EntryProcessor` | ✅ predicate + `removeAll` | ⚠️ 节点时间<br>**→ 版本号 + `LOCAL`** | ✅ | **A−** |
+| **Couchbase** | ✅ | ✅ | ✅ sub-document | ✅ N1QL | ✅ 服务端时间 | ✅ | **A−** |
+| **MongoDB** | ✅ TTL index | ✅ | ✅ `$set` | ✅ 正则 `deleteMany` | ✅ `$$NOW` | ✅ | **A−** |
+| **DynamoDB** | ⚠️ 删除延迟 ≤48h<br>**→ 逻辑过期** | ✅ `BatchGetItem` | ✅ 条件写 | ❌ 需 GSI<br>**→ PK/SK 复合主键** | ❌ 无<br>**→ 版本号 + `LOCAL`** | ✅ | **B** |
+| **etcd** | ❌ lease 是保活续约<br>**→ 逻辑过期** | ✅ range | ✅ `Txn` | ✅ `DeleteRange` | ❌ 无<br>**→ 版本号 + `LOCAL`** | ⚠️ `Txn` + 重试 | **B** |
+| **TiKV** | ❌ 无原生 TTL<br>**→ 逻辑过期** | ✅ range | ✅ 事务 | ✅ range delete | ❌ 无<br>**→ 版本号 + `LOCAL`** | ✅ `Txn` | **B** |
+
+**不适用的只有嵌入式 KV**（RocksDB / LevelDB / SQLite）：它不是跨进程共享存储，
+不是能力问题而是定位问题——往里加网络层，它就已经不是它了。
+
+#### 五类补救手段的通用性
+
+这些手段不绑定具体存储，同一类缺口换个存储也是同样的解法：
+
+| 缺口 | 补救手段 | 关键点 |
+|---|---|---|
+| **无 HASH**（一个 key 内多 field） | **复合主键**<br>`PK = namespace, SK = "{kind}#{key}"` | 版本表从"一次 `HMGET` 拿 500 个 field" 变成 "一次 `Query` 拿 500 条记录"，性能同级 |
+| **TTL 不精确** | **逻辑过期**<br>`value = { payload, expireAtMillis }` | 读时 `now > expireAt` → 当 miss。行为正确，代价是过期条目占存储到物理清除 |
+| **无法按前缀删除** | **命名空间代际号**<br>清空 = `incr __gen:{ns}` | 见下一节 |
+| **无中央时钟** | **版本号**（`version = version + 1`）+ `coordination=LOCAL` | 比较只看"是否相等"，完全不依赖时钟 |
+| **无原子写+版本** | **版本并进 value**，一次 CAS | 天然没有"值写了版本没写"的中间态 |
+
+**没有哪一条是"只有 Redis 能做"的**，差别只在性能与复杂度。
+
+#### 关于 `coordination=LOCAL`
+
+第 7 项（中央时钟）缺失时，最省事的补救是把热 key 协调降级为本地：
+
+| 选择 | 得到 | 失去 |
+|---|---|---|
+| 客户端估算时钟 | 跨节点热度协调 | 会漂移，需定期重同步 |
+| **降级 `coordination=LOCAL`** | 本地热点保护（通常够用） | 全局热点识别 |
+
+对一个"保护中央缓存"的库来说，**本地热点保护才是主要收益**，全局识别是加分项。
+所以这是合理降级，不是残缺。
+
+### 两个最容易踩的坑
+
+补救方案本身不复杂，难的是**意识到需要它**——下面两条都是"代码看起来完全正确、
+问题却在别处冒出来"的类型。
+
+**① per-key TTL 的精确性**
+
+`centralNullTtl` 与 `centralTtl` 差一个数量级（默认 5 分钟 vs 2 小时），`centralTtlJitter`
+要把过期时刻打散到十二分钟的区间以防雪崩。**任何"TTL 最终一致"的存储都会让这两条失效。**
+
+DynamoDB 是典型：配了 5 分钟，实际可能两天后才消失。负副本会远超预期存活，
+新注册的用户查不到自己。逻辑过期能把行为纠正回来，但**必须真的把它写进去**，
+不能指望"存储的 TTL 大概也行"。
+
+**② 按前缀删除的能力**
+
+`deleteNamespace` 只需要"删掉 `C4J-L2:{namespace}:#{hash}:` 下的全部 key"，
+**不需要枚举全量 key**——namespace 固定、前缀就固定，这是范围操作而非枚举操作。
+
+Redis 用 `SCAN MATCH prefix*`（前缀范围内的迭代）+ `UNLINK`；etcd / TiKV 有原生
+range delete；Hazelcast 用 predicate + `removeAll`；MongoDB 用正则 `deleteMany`。
+**Memcached 和 DynamoDB 没有这个能力**：前者只能靠 `stats cachedump`（调试命令，不可用于生产），
+后者需要额外建 GSI 才能按前缀查。
+
+### 无法按前缀删除时的解法：命名空间代际号
+
+Memcached 这类存储无法按前缀定位 key，但清空语义仍然可以实现：
+
+```text
+__gen:{namespace}  =  当前代际号（整数，incr 即可）
+data key           =  C4J-L2:{namespace}:{gen}:{key}
+__rev:{key}        =  版本
+```
+
+**清空 = `incr __gen:{namespace}`**
+
+- 一条命令、O(1)、原子
+- 旧代际的数据全部逻辑失效——新请求用新代际号，压根读不到旧条目
+- 旧数据靠**已经设好的 TTL** 自然消失，不需要扫、不需要删
+
+代价是每次读要先取代际号（一次额外的 `get`），可通过客户端缓存代际号摊销。
+
+这个方案对 Redis 也成立，只是 Redis 能按前缀删，没必要为它引入代际号。
+
+> **清空是语义要求，不是物理删除要求。** 契约里没有规定必须真的删物理 key，
+> 从调用方看"清空之后读不到"即满足。代际号方案正是利用了这一点。
+
+### 对适配层的建议
+
+- **A 级存储**：契约里的参考实现可以直接照抄。
+- **B 级存储**：`revisionKey` 与 `revisionField` 拼起来当独立 key 存版本，功能等价；
+  批量读退化成 `MGET` 或逐个读，注意把 `reconcileBatchSize` 调小。
+- **C 级存储**：先确认 per-key TTL 的语义能否满足。不能满足时要么改走逻辑过期
+  （把 `expireAt` 塞进 value，读取时校验），要么接受负副本存活时间失控——
+  后者通常不可接受，因为它是用户可见的行为差异。
+
+### namespace 清空：合法操作，但影响面是整个 namespace
+
+`clear()` 清空的是**整个 namespace**，这与 `evict(key)` 只动一条完全不同。
+但它**不是"运维专属的危险动作"**——业务代码里本来就会用到。
+
+#### 它对应的业务语义
+
+最典型的是 Spring Cache 的 `@CacheEvict` 不给 `key`：
+
+```java
+@CacheEvict(cacheNames = "user:detail")          // 没给 key = 清空整个 cache
+public void importUsers(List<User> users) { ... }
+```
+
+批量导入后全量失效、配置变更后整块刷新、数据迁移后重建——这些都靠它，
+而且都是正当需求。所以本库不会、也不该对它设任何额外门槛。
+
+#### 但要知道自己在做什么
+
+| 操作 | 影响面 | 可撤回 |
+|---|---|---|
+| `evict(key)` | 一条 | — |
+| **`clear()`** | **整个 namespace，所有节点** | ❌ |
+
+它更接近 SQL 的 `DELETE FROM table`（不带 `WHERE`）——**有意为之的批量操作，
+不是误操作**，但影响面摆在那里。
+
+建议的用法是把它**收在集中、可审计的地方**，而不是散落在各种失败分支里：
+
+```java
+// 好：业务动作与缓存失效一一对应，看得懂为什么清
+@CacheEvict(cacheNames = "user:detail")
+public void importUsers(List<User> users) { ... }
+
+// 坏：清空挂在失败分支上
+if (orderFailed) {
+    orderCache.clear();      // ← 一次故障就可能清掉整个 namespace
+}
+```
+
+框架不阻止第二种写法，但契约里写明了影响面，代码评审时"这行该不该存在"就有据可依。
+
+#### 为什么必须分批（与频率无关）
+
+清空是低频操作，慢一点没人抱怨——所以**不必优化延迟**。但要分批的原因不是效率，
+而是**不能把实例打挂**：
+
+- 低频 ≠ 可以阻塞。一次阻塞打挂实例的代价，远高于把删除分成十批。
+- 所以「不必优化延迟」和「必须分批、不能用长脚本」这两条**不冲突**，追求的是不同的东西。
+
+## 快速示例（设计稿 API）## 快速示例（设计稿 API）## 快速示例（设计稿 API）
 
 ```java
 // 本地：STATIC 策略（所有读到的 key 都放本地，受 maxSize 与 TTL 约束）

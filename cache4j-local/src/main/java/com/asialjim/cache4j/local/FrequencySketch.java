@@ -1,157 +1,133 @@
 package com.asialjim.cache4j.local;
 
-import com.asialjim.cache4j.core.CacheKey;
-
-import java.util.function.LongSupplier;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 
 /**
- * 双桶 Count-Min Sketch：估算滑动窗口内的<strong>读</strong>频次。
+ * Count-Min Sketch：<strong>固定的、共享的</strong>频次粗筛。
  *
- * <p>结构：</p>
+ * <p>它是热 key 判定的第一段：为所有 key 提供近似频次，但只占固定内存
+ * （{@code (1 << widthBits) × depth} 个计数器，与访问过的 key 数量无关）。</p>
+ *
+ * <h2>两个刻意的方向性</h2>
  * <ul>
- *   <li>两个桶 {@code current} / {@code previous}，每 {@code window} 旋转一次
- *       （{@code previous = current}，{@code current = new}）；</li>
- *   <li>估计值 = {@code current.estimate + previous.estimate}；</li>
- *   <li>每格 <strong>16 位</strong>计数器（0–65 535），宽度为 2 的幂（由 {@code sketchWidthBits} 配置），
- *       深度 ≥ 2，取多行最小值降低碰撞高估。</li>
+ *   <li><strong>只会高估，不会低估</strong>——多个 key 撞到同一格时计数被叠加。
+ *       在"候选预选"阶段这是<strong>安全</strong>方向：漏判热点会让流量全打到中央，
+ *       多判一个冷 key 只是让它多建一个窗口。</li>
+ *   <li><strong>因此不能拿它直接升热</strong>——升热的判据必须来自精确窗口
+ *       （见 {@link HotWindow}）。</li>
  * </ul>
  *
- * <p>内存固定：{@code 2 * width * depth * 2} 字节（16 位；width=4096、depth=4 → 64KB），
- * 不随 key 基数增长。Count-Min 只会<strong>高估</strong>——在本库里这是<strong>安全方向</strong>：
- * 它只用于"候选预选"，候选阶段宁可多进几个，也不能漏掉热点。</p>
+ * <h2>衰减</h2>
+ * <p>每过一个 {@code windowMillis} 整体清零一次（惰性触发：由 {@link #incrementAndEstimate} 检查），
+ * 所以统计的是"最近一个窗口"的访问量，而不是"从进程启动至今"。没有后台线程。</p>
  *
- * <p><strong>它不参与升热判定</strong>：升热由每 key 的滑动窗口精确计数决定（8 位饱和与
- * "只会高估"这两点在升热阶段都会出问题）。</p>
+ * <p>计数器用 {@code long} 而非压缩位宽：撞格叠加容易把 4bit 计数打满，
+ * 打满后就再也不会高估（退化成"永远处于阈值"），对候选阶段反而有害。用 {@code long}
+ * 换来正确的饱和语义，代价是 {@code 8 字节 × 格数}。</p>
  *
  * @author Asial Jim
  */
 final class FrequencySketch {
 
-    /**
-     * 单格计数上限（16 位无符号）。
-     *
-     * <p>8 位（255）在"候选阈值 = 25 QPS × 5s = 125 次"时看似够用，但阈值一调高就饱和，
-     * 饱和后无法区分"刚过阈值"和"远超阈值"；32 位则内存翻四倍、工作集挤出 L2 舒适区，
-     * 换来的上限永远用不到。16 位（65 535 次/窗口 ≈ 13 107 QPS）是甜点。</p>
-     */
-    private static final int MAX_COUNT = 65_535;
-
     private final int width;
-    private final int mask;
     private final int depth;
-    private final long windowNanos;
-    private final LongSupplier nanoClock;
+    private final long[] table;
+    private final AtomicLongArray seeds;
+    private final long windowMillis;
+    private final AtomicLong nextResetMillis = new AtomicLong();
 
-    private short[][] current;
-    private short[][] previous;
-    private long nextRotateAtNanos;
-
-    FrequencySketch(int width, int depth, long windowNanos, long now, LongSupplier nanoClock) {
-        this.width = width;
-        this.mask = width - 1;
-        this.depth = depth;
-        this.windowNanos = windowNanos;
-        this.nanoClock = nanoClock;
-        this.current = allocate();
-        this.previous = allocate();
-        this.nextRotateAtNanos = now + windowNanos;
-    }
-
-    private short[][] allocate() {
-        short[][] table = new short[depth][];
-        for (int i = 0; i < depth; i++) {
-            table[i] = new short[width];
+    /**
+     * @param widthBits    宽度位数（{@code width = 1 << widthBits}）
+     * @param depth        深度（哈希函数个数）
+     * @param windowMillis 统计窗口（毫秒），每过一个窗口整体衰减
+     * @param nowMillis    当前毫秒时间
+     */
+    FrequencySketch(int widthBits, int depth, long windowMillis, long nowMillis) {
+        int w = 1 << Math.max(1, widthBits);
+        int d = Math.max(1, depth);
+        this.width = w;
+        this.depth = d;
+        this.windowMillis = Math.max(1L, windowMillis);
+        this.table = new long[w * d];
+        this.seeds = new AtomicLongArray(d);
+        for (int i = 0; i < d; i++) {
+            // 每层一个独立的种子，避免不同层之间出现相同的碰撞模式
+            seeds.set(i, mix(i * 0x9E3779B97F4A7C15L + 0x165667B19E3779F9L));
         }
-        return table;
+        this.nextResetMillis.set(nowMillis + this.windowMillis);
     }
 
     /**
-     * 窗口旋转（惰性，访问路径触发）。
+     * 记一次访问并返回当前估计值。
      *
-     * @param now 当前纳秒
+     * @param key       key
+     * @param nowMillis 当前毫秒时间
+     * @return 估计频次（≥ 1，且只会高估）
      */
-    void rotateIfNeeded(long now) {
-        if (now - nextRotateAtNanos < 0L) {
+    long incrementAndEstimate(String key, long nowMillis) {
+        rotateIfNeeded(nowMillis);
+        long hash = hash(key);
+        long estimate = Long.MAX_VALUE;
+        for (int layer = 0; layer < depth; layer++) {
+            int index = layer * width + slot(hash, seeds.get(layer));
+            long value = ++table[index];
+            if (value < estimate) {
+                // Count-Min：取各层最小值，这仍然只会高估（不会低估）
+                estimate = value;
+            }
+        }
+        return estimate == Long.MAX_VALUE ? 0L : estimate;
+    }
+
+    /**
+     * @return 计数器格数（观测用）
+     */
+    int size() {
+        return width * depth;
+    }
+
+    /**
+     * 整体清零（{@code clear()} 时调用）。
+     */
+    void reset() {
+        for (int i = 0; i < table.length; i++) {
+            table[i] = 0L;
+        }
+    }
+
+    /**
+     * 窗口到了就整体衰减；用 CAS 保证只有一个线程执行清零。
+     */
+    private void rotateIfNeeded(long nowMillis) {
+        long next = nextResetMillis.get();
+        if (nowMillis < next) {
             return;
         }
-        previous = current;
-        current = allocate();
-        nextRotateAtNanos = now + windowNanos;
-    }
-
-    /**
-     * 累加一次访问并返回双窗口估计值。
-     *
-     * @param key key
-     * @param now 当前纳秒
-     * @return 估计频次
-     */
-    int incrementAndEstimate(CacheKey key, long now) {
-        rotateIfNeeded(now);
-        int hash = spread(key.logical().hashCode());
-        increment(hash);
-        return estimate(current, hash) + estimate(previous, hash);
-    }
-
-    /**
-     * 只读估算，不累加。
-     *
-     * @param key key
-     * @param now 当前纳秒
-     * @return 估计频次
-     */
-    int estimate(CacheKey key, long now) {
-        rotateIfNeeded(now);
-        int hash = spread(key.logical().hashCode());
-        return estimate(current, hash) + estimate(previous, hash);
-    }
-
-    private void increment(int hash) {
-        for (int row = 0; row < depth; row++) {
-            int index = index(hash, row);
-            if ((current[row][index] & 0xFFFF) < MAX_COUNT) {
-                current[row][index]++;
-            }
+        long target = nowMillis + windowMillis;
+        if (nextResetMillis.compareAndSet(next, target)) {
+            reset();
         }
     }
 
-    private int estimate(short[][] table, int hash) {
-        int min = MAX_COUNT;
-        for (int row = 0; row < depth; row++) {
-            int value = table[row][index(hash, row)] & 0xFFFF;
-            if (value < min) {
-                min = value;
-            }
-        }
-        return min;
+    private int slot(long hash, long seed) {
+        long mixed = mix(hash ^ seed);
+        return (int) (mixed & (width - 1));      // width 是 2 的幂，用位与代替取模
     }
 
-    private int index(int hash, int row) {
-        return (hash ^ (row * 0x9E3779B9)) & mask;
-    }
-
-    private static int spread(int hash) {
-        return hash ^ (hash >>> 16);
+    private static long hash(String key) {
+        // 用 String 自带的 hashCode 打底再混淆一次：CMS 只需要均匀，不需要密码学强度
+        return mix(key == null ? 0L : key.hashCode());
     }
 
     /**
-     * @return 当前窗口起点（纳秒），用于观测
+     * MurmurHash3 的 finalizer：把低位熵扩散到高位，避免 {@code hashCode} 的低位规律性
+     * 直接落到固定宽度的槽位上。
      */
-    long nextRotateAtNanos() {
-        return nextRotateAtNanos;
-    }
-
-    /**
-     * @return 草图固定内存占用（字节）
-     */
-    long estimatedBytes() {
-        return 2L * width * depth;
-    }
-
-    /**
-     * @return 当前纳秒
-     */
-    long now() {
-        return nanoClock.getAsLong();
+    private static long mix(long value) {
+        long z = value;
+        z = (z ^ (z >>> 33)) * 0xFF51AFD7ED558CCDL;
+        z = (z ^ (z >>> 33)) * 0xC4CEB9FE1A85EC53L;
+        return z ^ (z >>> 33);
     }
 }

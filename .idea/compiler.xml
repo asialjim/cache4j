@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <annotationProcessing>
+      <profile name="Maven default annotation processors profile" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+        <module name="cache4j-central" />
+        <module name="cache4j-central-redis" />
+        <module name="cache4j-spring" />
+        <module name="cache4j-local-caffeine" />
+        <module name="cache4j-local" />
+        <module name="cache4j-core" />
+      </profile>
+    </annotationProcessing>
+    <bytecodeTargetLevel>
+      <module name="cache4j-spring-redis" target="17" />
+      <module name="cache4j-spring-redis-test" target="17" />
+    </bytecodeTargetLevel>
+  </component>
+  <component name="JavacSettings">
+    <option name="ADDITIONAL_OPTIONS_OVERRIDE">
+      <module name="cache4j-central" options="-parameters" />
+      <module name="cache4j-central-redis" options="-parameters" />
+      <module name="cache4j-core" options="-parameters" />
+      <module name="cache4j-local" options="-parameters" />
+      <module name="cache4j-local-caffeine" options="-parameters" />
+      <module name="cache4j-spring" options="-parameters" />
+      <module name="cache4j-spring-redis" options="-parameters" />
+      <module name="cache4j-spring-redis-test" options="-parameters" />
+    </option>
+  </component>
+</project>
